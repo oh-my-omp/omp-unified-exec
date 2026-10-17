@@ -31,6 +31,7 @@
  */
 
 import { constants as osConstants } from "node:os";
+import { resolve } from "node:path";
 import { type AgentToolResult, type AgentToolUpdateCallback, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type TUnsafe } from "typebox";
 
@@ -58,7 +59,7 @@ import {
 } from "./script-result.ts";
 import { ExecSession } from "./session.ts";
 import { SessionStore } from "./session-store.ts";
-import { buildShellCommand, IS_WINDOWS, resolveDefaultShell, resolveWindowsShell } from "./shell.ts";
+import { buildShellCommand, IS_WINDOWS, resolveBinary, resolveDefaultShell, resolveWindowsShell } from "./shell.ts";
 import type { TerminalAppearance } from "./terminal-screen.ts";
 import { MIN_EMPTY_YIELD_TIME_MS, nowUtcIso, parseYieldUntil, resolveEmptyPollYield } from "./time.ts";
 export { MAX_EMPTY_POLL_ENV_VAR, resolveMaxEmptyPollMs } from "./time.ts";
@@ -164,6 +165,8 @@ interface ExtensionCtx {
 	shuttingDown: boolean;
 	/** The host's light/dark appearance, which sessions answer to OSC 10/11. */
 	appearance: () => TerminalAppearance;
+	/** Live omp-owned setting. Called for each new process. */
+	shellPath?: () => string | undefined;
 }
 
 type ExecCommandArgs = {
@@ -240,7 +243,7 @@ async function runExecCommand(
 
 	let shellBin = args.shell;
 	if (!shellBin) {
-		const resolved = resolveDefaultShell();
+		const resolved = resolveDefaultShell(undefined, ctx.shellPath?.());
 		shellBin = resolved.shell;
 		if (resolved.fellBack && !ctx.warnedShellFallback) {
 			ctx.warnedShellFallback = true;
@@ -260,15 +263,14 @@ async function runExecCommand(
 			ctx.notifiedBashSource = true;
 			ctx.ui?.notify(`unified-exec: using bash at ${resolved.shell} (not on PATH)`, "info");
 		}
-	} else if (IS_WINDOWS) {
-		// Resolve bare names to the absolute PATH match, failing closed —
-		// Windows' CreateProcess checks the child's cwd (the LLM-supplied
-		// workdir) before PATH for bare names, so an unresolved name must
-		// never reach spawn.
-		shellBin = resolveWindowsShell(shellBin);
 	}
-	const shellCommand = buildShellCommand(shellBin, args.cmd);
 	const effectiveCwd = args.workdir && args.workdir.length > 0 ? args.workdir : cwd;
+	// Resolve before building argv so the result names exactly what is spawned.
+	// Windows resolution fails closed to avoid cwd-first executable lookup.
+	shellBin = /[\\/]/.test(shellBin)
+		? resolve(effectiveCwd, shellBin)
+		: IS_WINDOWS ? resolveWindowsShell(shellBin) : resolveBinary(shellBin);
+	const shellCommand = buildShellCommand(shellBin, args.cmd);
 	const yieldTimeMs = clampYield(args.yield_time_ms, DEFAULT_EXEC_YIELD_MS);
 	const wantsWake = args.on_exit === "wake";
 
@@ -280,7 +282,6 @@ async function runExecCommand(
 		cols: args.cols !== undefined ? clamp(Math.floor(args.cols), MIN_PTY_COLS, MAX_PTY_COLS) : undefined,
 		rows: args.rows !== undefined ? clamp(Math.floor(args.rows), MIN_PTY_ROWS, MAX_PTY_ROWS) : undefined,
 		displayCommand: args.cmd,
-		shell: shellBin,
 		windowsVerbatimArguments: shellCommand.windowsVerbatimArguments,
 		appearance: ctx.appearance,
 	});
@@ -295,6 +296,7 @@ async function runExecCommand(
 			failure: session.failureMessage,
 			logPath: undefined, // spawn failed — no log file
 			cwd: effectiveCwd,
+			shell: session.shell,
 			command: args.cmd,
 			yieldTimeMs,
 		});
@@ -331,6 +333,7 @@ async function runExecCommand(
 				failure: session.failureMessage,
 				logPath: session.logPath,
 				cwd: effectiveCwd,
+				shell: session.shell,
 				command: args.cmd,
 				yieldTimeMs,
 				extra: {
@@ -412,6 +415,7 @@ async function runExecCommand(
 				failure: null,
 				logPath: session.logPath,
 				cwd: effectiveCwd,
+				shell: session.shell,
 				command: args.cmd,
 				yieldTimeMs,
 				extra: {
@@ -435,6 +439,7 @@ async function runExecCommand(
 			failure: session.failureMessage,
 			logPath: session.logPath,
 			cwd: effectiveCwd,
+			shell: session.shell,
 			command: args.cmd,
 			yieldTimeMs,
 			extra: {
@@ -522,6 +527,7 @@ async function runWriteStdin(
 					failure: session.failureMessage,
 					logPath: session.logPath,
 					cwd: session.cwd,
+					shell: session.shell,
 					command: session.displayCommand,
 					yieldTimeMs,
 					// This path is only reachable for input writes (never an empty
@@ -556,6 +562,7 @@ async function runWriteStdin(
 				failure: session.failureMessage ?? writeFailure,
 				logPath: session.logPath,
 				cwd: session.cwd,
+				shell: session.shell,
 				command: session.displayCommand,
 				yieldTimeMs,
 				extra: terminalWaitExtra(undefined, armed),
@@ -575,6 +582,7 @@ async function runWriteStdin(
 			failure: writeFailure,
 			logPath: session.logPath,
 			cwd: session.cwd,
+			shell: session.shell,
 			command: session.displayCommand,
 			yieldTimeMs,
 			extra: {
@@ -675,6 +683,7 @@ async function runAttachedWait(
 			failure: outcome === "exit" ? session.failureMessage : null,
 			logPath: session.logPath,
 			cwd: session.cwd,
+			shell: session.shell,
 			command: session.displayCommand,
 			extra,
 		});
@@ -856,6 +865,7 @@ function buildStreamUpdate(
 			total_bytes: session.totalBytesSeen,
 			command: session.displayCommand,
 			cwd: session.cwd,
+			shell: session.shell,
 			log_path: session.logPath,
 			// Populate `output` so renderResult has a single source regardless
 			// of streaming vs final state.
@@ -896,8 +906,12 @@ function startStreaming(
 	};
 }
 
-/** Activate the tool core; the default factory supplies omp's theme appearance. */
-export function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () => "dark"): ActivatedExtension {
+/** Activate the tool core; the default factory supplies omp's appearance and live shell setting. */
+export function activate(
+	pi: ExtensionAPI,
+	appearance: () => TerminalAppearance = () => "dark",
+	shellPath?: () => string | undefined,
+): ActivatedExtension {
 	const coordinator = new CompletionCoordinator({
 		send: (message) => {
 			// If pi is idle this starts a model turn; if a run is active it is
@@ -941,6 +955,7 @@ export function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance 
 		pendingSessions: new Set(),
 		shuttingDown: false,
 		appearance,
+		shellPath,
 	};
 
 	// Observation finalization: "observed" is committed at pi's finalized
@@ -1063,6 +1078,7 @@ export function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance 
 		promptSnippet: "Run a long-running or interactive command in a PTY session",
 		promptGuidelines: [
 			"Use bash for short one-shot commands. Use exec_command for long-running commands, interactive programs (REPLs, TUIs, ssh, sudo), concurrent computation and dev-time daemons: it runs in a PTY, has no command deadline, and never restarts a process that exits.",
+			"Shell selection: explicit shell argument, then omp shellPath, then $SHELL, then the platform default (bash, or Git Bash/PowerShell on Windows). Results name the selected shell; write commands in that shell's syntax. Working directory defaults to the current host session cwd.",
 			"The 10s default yield suits most starts; interactive processes return a session_id you then drive with write_stdin.",
 			"For a long non-interactive command, start with a short yield to obtain a session_id, then use a monitor (with a condition for progress lines, or without one to await completion) or an empty write_stdin poll with a finite yield_time_ms suited to its expected duration. There is no built-in empty-poll maximum; an operator may configure one. Keep waits short for interactive or indefinite processes. omp manages cache warming independently.",
 			'on_exit defaults to "none". Prefer polling or human follow-up. Use on_exit: "wake" ONLY when the human explicitly wants auto-resume on unobserved completion — not for indefinite processes (dev servers, watchers). If you armed wake by mistake or the job is wrong/abandoned, call set_on_exit(session_id, on_exit: "none") promptly (does not kill the process). kill_session still kills and suppresses wake. Combining wake with an observing write_stdin is safe: direct completion consumes the wake.',
@@ -1075,7 +1091,7 @@ export function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance 
 			shell: Type.Optional(
 				Type.String({
 					description:
-						"Shell binary. Defaults to bash (on Windows: bash if on PATH, else powershell). cmd and powershell/pwsh get shell-appropriate flags.",
+						"Shell executable. Defaults to omp shellPath, then $SHELL, then bash (Windows: Git Bash, else PowerShell). Results report the actual shell. cmd and PowerShell receive shell-appropriate flags; other shells use -c.",
 				}),
 			),
 			cols: Type.Optional(
@@ -1330,6 +1346,7 @@ export function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance 
 				failure: killFailure || null,
 				logPath: session.logPath,
 				cwd: session.cwd,
+				shell: session.shell,
 				command: session.displayCommand,
 				escalated,
 				killed,
@@ -1376,6 +1393,7 @@ export function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance 
 					session_id: s.id,
 					command: s.displayCommand,
 					cwd: s.cwd,
+					shell: s.shell,
 					pid: s.pid,
 					started_at_ms: s.startedAt,
 					elapsed_ms: now - s.startedAt,
@@ -1397,7 +1415,7 @@ export function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance 
 							: `  [exited${s.exit_code !== undefined && s.exit_code !== null ? ` exit_code=${s.exit_code}` : ""}${s.signal ? ` signal=${s.signal}` : ""}; removed from store]`;
 						const wake = s.wake_armed ? " [wake]" : "";
 						const monitor = s.monitor ? ` [monitor ${s.monitor.returns}/${s.monitor.max_returns} condition=${JSON.stringify(s.monitor.condition)}]` : "";
-						return `  ${String(s.session_id).padStart(3)}  pid=${String(s.pid ?? "?").padStart(6)}  ${((s.elapsed_ms / 1000).toFixed(1) + "s").padStart(8)}${wake}${monitor}  ${oneLineCommand(s.command, 60)}${exitedSuffix}\n        log: ${s.log_path}${s.terminal_url ? `\n        terminal_url: ${s.terminal_url}` : ""}`;
+						return `  ${String(s.session_id).padStart(3)}  pid=${String(s.pid ?? "?").padStart(6)}  ${((s.elapsed_ms / 1000).toFixed(1) + "s").padStart(8)}${wake}${monitor}  ${oneLineCommand(s.command, 60)}${exitedSuffix}\n        shell: ${sanitizeMeta(s.shell ?? "")}\n        log: ${s.log_path}${s.terminal_url ? `\n        terminal_url: ${s.terminal_url}` : ""}`;
 					})
 				: ["  (no live sessions)"];
 			const header = reaped.length

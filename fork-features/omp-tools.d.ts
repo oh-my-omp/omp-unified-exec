@@ -22,3 +22,7 @@ declare module "@oh-my-pi/pi-coding-agent/internal-urls" {
 declare module "@oh-my-pi/pi-natives" {
 	export function rasterizeSvg(input: Uint8Array, maxWidthPx: number, maxHeightPx: number): Promise<Uint8Array>;
 }
+
+declare module "@oh-my-pi/pi-coding-agent/config/registry" {
+	export const lookup: unknown;
+}

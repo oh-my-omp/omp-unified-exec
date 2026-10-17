@@ -13,8 +13,9 @@ deadline, and a human can watch and type into them from Tern.
 This is a fork of [iamwrm/pi-unified-exec](https://github.com/iamwrm/pi-unified-exec),
 a Pi port of codex's `unified_exec`. The original tools (`exec_command`,
 `write_stdin`, `set_on_exit`, `kill_session`, `list_sessions`) retain their
-session model; the fork runs every session in a PTY, leaves short commands to
-the host's `bash`, and adds terminal reads/images and `monitor` for omp. The full list
+session model; the fork runs every session in a PTY under the host's shell
+setting, leaves short commands to the host's `bash`, and adds terminal
+reads/images and `monitor` for omp. The full list
 of fork changes, why each exists and how to requalify them on omp/Tern
 upgrades is in [fork-features/README.md](fork-features/README.md).
 
@@ -51,6 +52,10 @@ that same factory before omp modules load or any tools register.
   `write_stdin` writes bytes to it verbatim (text, `\x03` Ctrl-C, arrow keys) or
   polls it. Cancelling a call never kills the process. There is no command
   deadline, and a process that exits is never restarted.
+- **The host's shell.** Unless the call names a `shell`, commands run in omp's
+  `shellPath` setting, else the environment's `SHELL`, else the platform
+  default. Every result names the shell it started, so the model writes that
+  shell's syntax.
 - **Output is what a terminal shows.** Every session runs through a headless
   terminal emulator, so progress bars, redraws and full-screen programs return
   the current screen plus unseen history while running, not every redraw
@@ -138,8 +143,8 @@ rendered terminal screen (see [Terminal output](#terminal-output)).
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `cmd` | string | — | Shell command. Required. |
-| `workdir` | string | turn cwd | Working directory. |
-| `shell` | string | `bash` | Shell binary. On Windows: `bash` if found, else `powershell`. `cmd` / `powershell` / `pwsh` get shell-appropriate flags. |
+| `workdir` | string | host session cwd | Working directory. The default is read from the host for each call; a `cd` inside a session never changes it. |
+| `shell` | string | omp `shellPath`, else `SHELL`, else `bash` | Shell executable; see [Shell selection](#shell-selection). `cmd` / `powershell` / `pwsh` get shell-appropriate flags; every other shell gets `-c`. |
 | `cols` | number | `120` | PTY width. Clamped to [20, 500]. |
 | `rows` | number | `80` | PTY height. Clamped to [5, 300]. |
 | `yield_time_ms` | number | `10_000` | How long this call stays attached waiting for output (not the command's lifetime), clamped to [250, 30_000]. |
@@ -155,6 +160,7 @@ signal: SIGTERM                     (optional, if killed)
 log_path: /tmp/pi-unified-exec-1-5cc5e104.log
 terminal_url: term://1-9f2c1a7e-…
 cwd: /home/you/project
+shell: /bin/zsh                     (absolute path of the shell the session started with)
 wall_time_seconds: 0.502
 chunk_id: a4f2c1
 original_token_count: 37
@@ -173,6 +179,37 @@ When output exceeds the caps (50 KiB / 2000 lines), a footer is appended:
 
 [Showing lines 3900-4120 of 4500 (50.0KB limit). Full output: /tmp/pi-unified-exec-1-5cc5e104.log]
 ```
+
+#### Shell selection
+
+Each new process uses the first of these that is set; a blank `shellPath` or
+`SHELL` counts as unset:
+
+1. the call's `shell` argument;
+2. the omp `shellPath` setting, read from omp's settings registry each
+   time a process starts rather than copied at load;
+3. `SHELL` from the environment;
+4. the platform default: `bash`, or on Windows Git Bash with PowerShell last
+   (see [Windows](#windows)).
+
+The selected shell is resolved to an absolute executable path before the
+process starts: a bare name through `PATH`, a relative path containing `/` or
+`\` against the effective `workdir`. A selected shell that cannot be found or
+started fails the call (`failure_message: spawn <file> ENOENT: …`, or on
+Windows an error naming a shell that is not on `PATH`); the command never runs
+under a lower-priority shell.
+
+`cmd` (Windows) gets `/d /s /c` with its own quoting and `powershell` / `pwsh`
+get `-NoProfile -NoLogo -Command`; every other shell runs as
+`<shell> -c <cmd>`. The command text is passed unchanged, so write it in the
+syntax of the shell the result names.
+
+The result header, `details` and `structuredContent` carry the
+resolved executable as `shell`: for short commands, started sessions and spawn
+failures alike. `write_stdin` results, streaming updates, `kill_session`
+results and `list_sessions` entries repeat the shell the session started
+with; they never select again. The shell is metadata only and is never added
+to `output`.
 
 #### Terminal output
 
@@ -395,8 +432,9 @@ path.
 
 Lists live sessions and reports each exited one a final time (with
 `running: false`, `exit_code`/`signal` and `log_path`) before pruning it. Each
-entry has `wake_armed` and an active monitor's condition/returns/limit; the
-response carries `tool_time_utc` for computing `yield_until` deadlines.
+entry has the `shell` it started with, `wake_armed` and an active monitor's
+condition/returns/limit; the response carries `tool_time_utc` for computing
+`yield_until` deadlines.
 
 ## Command
 
@@ -439,7 +477,8 @@ DEFAULT_MAX_LINES            = 2000
 - **Exits between calls** stay in the store until the next `write_stdin` or
   `list_sessions` reports them.
 - **Spawn failures** (missing shell or `workdir`) are checked before the PTY
-  starts and surface as `failure_message` (`spawn <file> ENOENT: …`).
+  starts and surface as `failure_message` (`spawn <file> ENOENT: …`). A
+  missing selected shell is never replaced by another shell.
 - **Bun PTY required:** a host without `Bun.spawn` and `Bun.Terminal` is rejected at the extension factory, before tools register.
 - **No deadline, no restart:** the package never ends a command for running
   long and never restarts a process that exits.
@@ -521,10 +560,17 @@ completion_notification: armed
 
 Every session runs in ConPTY through Bun's native `Bun.Terminal`.
 
-- **Default shell:** `bash`, found via `PI_UNIFIED_EXEC_BASH`, then `bash` on
-  PATH (excluding System32's WSL stub), then Git for Windows derived from
-  `git.exe` or well-known install roots, then `powershell` with a one-time
-  warning. Shell names are resolved to absolute paths before spawning.
+- **Platform default shell** (no `shell` argument, omp `shellPath` or
+  `SHELL`): `bash`, found via `PI_UNIFIED_EXEC_BASH`, then `bash` on PATH
+  (excluding System32's WSL stub), then Git for Windows derived from `git.exe`
+  or well-known install roots, then `powershell` with a one-time warning. This
+  probe is cached for the process lifetime.
+- **Shell names** are resolved to absolute paths before spawning (`bash`
+  through the same Git Bash probe). A bare name not found on PATH fails the
+  call instead of being looked up in the workdir.
+- **`SHELL` inherited from Git Bash or MSYS** is used like any other
+  selection, so it must name a path Windows can spawn; otherwise pass `shell`,
+  set omp's `shellPath`, or unset `SHELL`.
 - **PowerShell** (`powershell`, or `pwsh` on any platform) runs as
   `-NoProfile -NoLogo -Command <cmd>`, so its interactive prompts can be
   answered with `write_stdin`.
@@ -552,7 +598,7 @@ src/
 ├── script-result.ts      # tool outputSchema / structuredContent
 └── unescape.ts           # C-style escape decoder for `chars`
 fork-features/
-├── omp-presentation.ts   # omp host detection, bash-renderer delegation, theme appearance
+├── omp-presentation.ts   # omp host detection, bash-renderer delegation, theme appearance, shellPath setting
 ├── omp-tools.d.ts        # types of the omp modules loaded at runtime
 ├── tern-terminal-hud.ts  # counter pill, Terminals sheet, terminal page
 ├── terminal-resource.ts  # process-global terminal keys, live/frozen projections

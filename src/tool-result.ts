@@ -34,6 +34,8 @@ export interface OutputResultDetails {
 	/** Non-consuming retained terminal projection. */
 	terminal_url?: string;
 	cwd?: string;
+	/** Shell executable selected when the session was spawned. */
+	shell?: string;
 	command?: string;
 	truncation?: TruncationResult;
 	/** Cumulative bytes this session has produced since spawn. */
@@ -111,6 +113,7 @@ export interface FinalizeProcessInput extends OutputEnvelopeInput {
 	signal: NodeJS.Signals | null;
 	failure: string | null;
 	cwd?: string;
+	shell?: string;
 	command?: string;
 	yieldTimeMs?: number;
 	/** Long-wait / wake metadata merged into the result (undefined values skipped). */
@@ -125,6 +128,7 @@ export interface FinalizeKillInput extends OutputEnvelopeInput {
 	signal: NodeJS.Signals | null;
 	failure: string | null;
 	cwd?: string;
+	shell?: string;
 	command?: string;
 	escalated: boolean;
 	killed: boolean;
@@ -264,6 +268,7 @@ export function finalizeProcessResult(input: FinalizeProcessInput): ProcessResul
 	if (input.signal) shape.signal = input.signal;
 	if (input.failure) shape.failure_message = input.failure;
 	if (input.cwd) shape.cwd = input.cwd;
+	if (input.shell) shape.shell = input.shell;
 	if (input.command) shape.command = input.command;
 	if (input.yieldTimeMs) shape.yield_time_ms = input.yieldTimeMs;
 	if (input.extra) {
@@ -292,6 +297,7 @@ export function finalizeKillResult(input: FinalizeKillInput): KillResultDetails 
 	if (input.signal) shape.signal = input.signal;
 	if (input.failure) shape.failure_message = input.failure;
 	if (input.cwd) shape.cwd = input.cwd;
+	if (input.shell) shape.shell = input.shell;
 	if (input.command) shape.command = input.command;
 	return shape;
 }
@@ -338,6 +344,7 @@ export function renderProcessResultText(shape: ProcessResultDetails): string {
 	if (shape.log_path) lines.push(`log_path: ${safeMeta(shape.log_path)}`);
 	if (shape.terminal_url) lines.push(`terminal_url: ${safeMeta(shape.terminal_url)}`);
 	if (shape.cwd) lines.push(`cwd: ${safeMeta(shape.cwd)}`);
+	if (shape.shell) lines.push(`shell: ${safeMeta(shape.shell)}`);
 	lines.push(`wall_time_seconds: ${shape.wall_time_seconds.toFixed(3)}`);
 	lines.push(`chunk_id: ${shape.chunk_id}`);
 	if (shape.original_token_count !== undefined) lines.push(`original_token_count: ${shape.original_token_count}`);
@@ -360,6 +367,7 @@ export function renderKillResultText(shape: KillResultDetails): string {
 	if (shape.log_path) lines.push(`log_path: ${safeMeta(shape.log_path)}`);
 	if (shape.terminal_url) lines.push(`terminal_url: ${safeMeta(shape.terminal_url)}`);
 	if (shape.cwd) lines.push(`cwd: ${safeMeta(shape.cwd)}`);
+	if (shape.shell) lines.push(`shell: ${safeMeta(shape.shell)}`);
 	lines.push(`wall_time_seconds: ${shape.wall_time_seconds.toFixed(3)}`);
 	lines.push(`chunk_id: ${shape.chunk_id}`);
 	if (shape.original_token_count !== undefined) lines.push(`original_token_count: ${shape.original_token_count}`);

@@ -405,6 +405,30 @@ async function loadOmpAppearance(): Promise<() => TerminalAppearance> {
 	return () => (isLightTheme(getCurrentThemeName()) ? "light" : "dark");
 }
 
+/** Read omp's effective external shell at spawn time, not an activation-time copy. */
+async function loadOmpShellPath(host: ExtensionAPI): Promise<() => string | undefined> {
+	// Load with the other omp modules inside the admitted factory.
+	const registry: unknown = await import("@oh-my-pi/pi-coding-agent/config/registry");
+	if (typeof registry !== "object" || registry === null ||
+		!("lookup" in registry) || typeof registry.lookup !== "function") {
+		throw new Error("omp-unified-exec: settings registry lacks lookup");
+	}
+	const handle: unknown = registry.lookup("shellPath");
+	const runtime: unknown = "pi" in host ? host.pi : undefined;
+	if (typeof handle !== "object" || handle === null ||
+		!("get" in handle) || typeof handle.get !== "function" ||
+		typeof runtime !== "object" || runtime === null || !("settings" in runtime)) {
+		throw new Error("omp-unified-exec: host lacks shellPath setting or pi.settings scope");
+	}
+	const get = handle.get.bind(handle);
+	return () => {
+		const value: unknown = get(runtime.settings);
+		if (value === undefined) return undefined;
+		if (typeof value !== "string") throw new Error("omp-unified-exec: shellPath must be a string or undefined");
+		return value.trim() || undefined;
+	};
+}
+
 /**
  * Admit only omp, identified by its injected `arktype` builder, and activate
  * through {@link presentOnOmp} with omp's theme appearance
@@ -413,7 +437,7 @@ async function loadOmpAppearance(): Promise<() => TerminalAppearance> {
  * factory during package install/force-reinstall validation.
  */
 export function withHostPresentation(
-	activate: (pi: ExtensionAPI, appearance?: () => TerminalAppearance) => ActivatedExtension,
+	activate: (pi: ExtensionAPI, appearance?: () => TerminalAppearance, shellPath?: () => string | undefined) => ActivatedExtension,
 ): (host: ExtensionAPI) => void | Promise<void> {
 	return (host) => {
 		if (!("arktype" in host)) {
@@ -421,10 +445,10 @@ export function withHostPresentation(
 		}
 		requireBunRuntime();
 		// The omp modules load before activating, so a reshaped omp fails plugin loading with nothing registered.
-		return Promise.all([presentOnOmp(host), loadNativeRenderingState(), loadOmpAppearance()]).then(async ([pi, native, appearance]) => {
+		return Promise.all([presentOnOmp(host), loadNativeRenderingState(), loadOmpAppearance(), loadOmpShellPath(host)]).then(async ([pi, native, appearance, shellPath]) => {
 			await initializeTernPlugin();
 			await initializeTerminalUrls();
-			const activated = activate(pi, appearance);
+			const activated = activate(pi, appearance, shellPath);
 			mountTerminalHud(pi, activated.store, native, activated.kill);
 		});
 	};

@@ -5,7 +5,7 @@
 为 [oh-my-pi](https://github.com/can1357/oh-my-pi)（omp）提供长时间运行的终端
 会话，并在 Tern 里带一个终端 HUD。宿主的 `bash` 负责短的一次性命令；长命令、交互程序（REPL、TUI、`ssh`、`sudo`）、并发计算和开发期 daemon 交给 `exec_command`，它把每条命令放进一个 PTY 会话，由模型通过写入和轮询来驱动，而不是一次阻塞到底的调用。会话在多轮对话之间持续运行，没有命令截止时间，人也可以在 Tern 里查看它们、向它们输入。
 
-本仓库 fork 自 [iamwrm/pi-unified-exec](https://github.com/iamwrm/pi-unified-exec)，后者是 codex `unified_exec` 的 Pi 移植。原有工具（`exec_command`、`write_stdin`、`set_on_exit`、`kill_session`、`list_sessions`）保留其会话模型；fork 让每个会话都在 PTY 中运行，把短命令留给宿主的 `bash`，并为 omp 增加终端读取/截图和 `monitor`。fork 的全部改动、每项改动的原因，以及 omp/Tern 升级后如何重新验证，见 [fork-features/README.zh-CN.md](fork-features/README.zh-CN.md)。
+本仓库 fork 自 [iamwrm/pi-unified-exec](https://github.com/iamwrm/pi-unified-exec)，后者是 codex `unified_exec` 的 Pi 移植。原有工具（`exec_command`、`write_stdin`、`set_on_exit`、`kill_session`、`list_sessions`）保留其会话模型；fork 让每个会话都按宿主的 shell 设置在 PTY 中运行，把短命令留给宿主的 `bash`，并为 omp 增加终端读取/截图和 `monitor`。fork 的全部改动、每项改动的原因，以及 omp/Tern 升级后如何重新验证，见 [fork-features/README.zh-CN.md](fork-features/README.zh-CN.md)。
 
 ## 安装
 
@@ -28,6 +28,7 @@ Tern 更新会在这条命令成功返回前完成，无需单独执行 Tern 命
 ## 功能
 
 - **会话，而不是调用。** `exec_command` 在 PTY 中启动进程，在等待窗口内返回已有输出和一个 `session_id`；之后的轮次里，`write_stdin` 把字节原样写给它（文本、`\x03` Ctrl-C、方向键），或轮询它。取消调用永远不会杀掉进程。没有命令截止时间，退出的进程也不会被重启。
+- **宿主的 shell。** 调用没有指定 `shell` 时，命令使用 omp 的 `shellPath` 设置，未设置时用环境变量 `SHELL`，再没有则用平台默认值。每个结果都写明启动所用的 shell，模型据此按该 shell 的语法写命令。
 - **输出就是终端上看到的内容。** 每个会话都经过无头终端模拟器。运行中的结果返回当前屏幕、自上次调用以来滚出的未见历史与光标位置，而不是叠加每次重绘；退出结果只返回最终活动屏，其余保留行通过 `terminal_url` 读取。模拟器会像真实终端一样回应光标位置、设备属性与默认颜色查询，因此等待回应或选择配色的程序表现与真实终端一致。
 - **输出有上限，完整内容可找回。** 模型看到的每个结果都从尾部截取，最多 50 KiB / 2000 行，并去掉终端控制序列；每个会话的完整原始输出都写入 `log_path`。
 - **可选的完成唤醒。** `on_exit: "wake"` 让后台进程在无人观察时退出后唤醒一次 agent；`set_on_exit` 可以取消。
@@ -65,8 +66,8 @@ CLI 继承 omp 的环境，由 Tern 决定目标目录并负责重新加载。da
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `cmd` | string | — | Shell 命令。必填。 |
-| `workdir` | string | 当前轮次的 cwd | 工作目录。 |
-| `shell` | string | `bash` | Shell 程序。Windows 上找得到 `bash` 就用它，否则用 `powershell`。`cmd` / `powershell` / `pwsh` 会带上各自对应的参数。 |
+| `workdir` | string | 宿主会话的 cwd | 工作目录。默认值在每次调用时从宿主读取；会话里的 `cd` 不会改变它。 |
+| `shell` | string | omp `shellPath`，否则 `SHELL`，否则 `bash` | Shell 可执行文件，见 [Shell 选择](#shell-selection)。`cmd` / `powershell` / `pwsh` 会带上各自对应的参数；其他 shell 一律使用 `-c`。 |
 | `cols` | number | `120` | PTY 宽度。限制在 [20, 500]。 |
 | `rows` | number | `80` | PTY 高度。限制在 [5, 300]。 |
 | `yield_time_ms` | number | `10_000` | 本次调用保持连接、等待输出的时长（不是命令的生命期），限制在 [250, 30_000]。 |
@@ -82,6 +83,7 @@ signal: SIGTERM                     (optional, if killed)
 log_path: /tmp/pi-unified-exec-1-5cc5e104.log
 terminal_url: term://1-9f2c1a7e-…
 cwd: /home/you/project
+shell: /bin/zsh                     (absolute path of the shell the session started with)
 wall_time_seconds: 0.502
 chunk_id: a4f2c1
 original_token_count: 37
@@ -100,6 +102,23 @@ history_lines: 2                   (running, optional: lines scrolled off above 
 
 [Showing lines 3900-4120 of 4500 (50.0KB limit). Full output: /tmp/pi-unified-exec-1-5cc5e104.log]
 ```
+
+<a id="shell-selection"></a>
+
+#### Shell 选择
+
+每个新进程使用下列第一个已设置的值；空白的 `shellPath` 或 `SHELL` 视为未设置：
+
+1. 调用的 `shell` 参数；
+2. omp 的 `shellPath` 设置：每次启动进程时从 omp 的设置注册表读取，而不是在加载时复制一份；
+3. 环境变量 `SHELL`；
+4. 平台默认值：`bash`；Windows 上依次探测 Git Bash，最后是 PowerShell（见 [Windows](#windows)）。
+
+进程启动前，选中的 shell 会被解析成绝对可执行路径：裸名称经 `PATH` 查找，包含 `/` 或 `\` 的相对路径相对于实际生效的 `workdir` 解析。选中的 shell 找不到或无法启动时，调用失败（`failure_message: spawn <file> ENOENT: …`；Windows 上若 `PATH` 中找不到该 shell，则报错并给出其名称）；命令绝不会改用优先级更低的 shell 执行。
+
+`cmd`（Windows）使用 `/d /s /c` 及其自身的引号规则，`powershell` / `pwsh` 使用 `-NoProfile -NoLogo -Command`；其他 shell 都以 `<shell> -c <cmd>` 运行。命令文本原样传入，所以要按结果中写明的 shell 的语法来写。
+
+结果头、`details` 和 `structuredContent` 都以 `shell` 字段给出解析后的可执行文件：短命令、已启动的会话和启动失败都一样。`write_stdin` 结果、流式更新、`kill_session` 结果和 `list_sessions` 条目沿用会话启动时的 shell，不会重新选择。shell 只是元数据，从不加入 `output`。
 
 <a id="terminal-output"></a>
 
@@ -256,7 +275,7 @@ write_stdin chars_b64="G3s6wgo="  → exact 5 decoded bytes
 
 ### `list_sessions`
 
-列出存活的会话，并把每个已退出的会话最后报告一次（带 `running: false`、`exit_code`/`signal` 和 `log_path`）后再移除。每条记录带 `wake_armed` 及活动 monitor 的条件/成功次数/上限；响应带 `tool_time_utc`，用于计算 `yield_until` 截止时间。
+列出存活的会话，并把每个已退出的会话最后报告一次（带 `running: false`、`exit_code`/`signal` 和 `log_path`）后再移除。每条记录带启动时的 `shell`、`wake_armed` 及活动 monitor 的条件/成功次数/上限；响应带 `tool_time_utc`，用于计算 `yield_until` 截止时间。
 
 ## 命令
 
@@ -286,7 +305,7 @@ DEFAULT_MAX_LINES            = 2000
 
 - **提前退出：**150 毫秒内结束的命令不会进入会话存储；结果带 `exit_code`，没有 `session_id`。
 - **在两次调用之间退出**的会话会留在存储里，直到下一次 `write_stdin` 或 `list_sessions` 报告它。
-- **启动失败**（shell 或 `workdir` 不存在）在 PTY 启动前检查，以 `failure_message` 报告（`spawn <file> ENOENT: …`）。
+- **启动失败**（shell 或 `workdir` 不存在）在 PTY 启动前检查，以 `failure_message` 报告（`spawn <file> ENOENT: …`）。选中的 shell 不存在时，绝不会换用另一个 shell。
 - **必须有 Bun PTY：**宿主缺少 `Bun.spawn` 或 `Bun.Terminal` 时，在扩展 factory 阶段、工具注册之前被拒绝。
 - **没有截止时间，也不重启：**本包从不因运行太久而结束命令，也从不重启已退出的进程。
 - **shell 退出与终端关闭：**会话一直运行到其终端关闭。在 shell 退出后仍存活并持有 PTY 的后代进程（例如 `nohup` 或忽略 SIGHUP 的任务）会让终端保持打开；这类结果会带一条 `note`，说明如何把它分离出去（`setsid cmd >log 2>&1 </dev/null &`），运行中会话小部件会把该会话标为 `terminal held`。
@@ -351,7 +370,9 @@ completion_notification: armed
 
 每个会话都通过 Bun 原生的 `Bun.Terminal` 在 ConPTY 中运行。
 
-- **默认 shell：**`bash`，依次查找 `PI_UNIFIED_EXEC_BASH`、PATH 上的 `bash`（排除 System32 里的 WSL 存根）、由 `git.exe` 推导或常见安装位置下的 Git for Windows，最后退回 `powershell` 并提示一次。启动前会把 shell 名解析成绝对路径。
+- **平台默认 shell**（没有 `shell` 参数、omp `shellPath` 或 `SHELL` 时）：`bash`，依次查找 `PI_UNIFIED_EXEC_BASH`、PATH 上的 `bash`（排除 System32 里的 WSL 存根）、由 `git.exe` 推导或常见安装位置下的 Git for Windows，最后退回 `powershell` 并提示一次。这一探测结果在进程生命期内缓存。
+- **Shell 名称**在启动前解析成绝对路径（`bash` 经同一 Git Bash 探测）。PATH 上找不到的裸名称会让调用失败，而不会在 workdir 中查找。
+- **从 Git Bash 或 MSYS 继承的 `SHELL`** 与其他选择一样生效，所以它必须是 Windows 能启动的路径；否则请传 `shell`、设置 omp 的 `shellPath`，或取消 `SHELL`。
 - **PowerShell**（`powershell`，或任何平台上的 `pwsh`）以 `-NoProfile -NoLogo -Command <cmd>` 运行，所以它的交互式提示可以用 `write_stdin` 回答。
 - **没有 POSIX 信号：**每次 kill 都是结束整个进程树（`taskkill /T /F`）；被结束的进程报告 `exit_code: 1`，kill 失败会如实报告。
 
@@ -376,7 +397,7 @@ src/
 ├── script-result.ts      # tool outputSchema / structuredContent
 └── unescape.ts           # C-style escape decoder for `chars`
 fork-features/
-├── omp-presentation.ts   # omp host detection, bash-renderer delegation, theme appearance
+├── omp-presentation.ts   # omp host detection, bash-renderer delegation, theme appearance, shellPath setting
 ├── omp-tools.d.ts        # types of the omp modules loaded at runtime
 ├── tern-terminal-hud.ts  # counter pill, Terminals sheet, terminal page
 ├── terminal-resource.ts  # process-global terminal keys, live/frozen projections
