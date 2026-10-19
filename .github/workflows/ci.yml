@@ -3,14 +3,15 @@ on:
   pull_request:
     branches: [main]
 jobs:
-  crash:
-    name: Crash (${{ matrix.shard }})
+  stress:
+    name: Stress (${{ matrix.mode }} / ${{ matrix.shard }})
     runs-on: windows-latest
-    timeout-minutes: 50
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        mode: [mixed, exit, kill]
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -18,34 +19,25 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci
-      - name: Install procdump as postmortem debugger
+      - name: Get procdump
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\dumps" | Out-Null
           Invoke-WebRequest https://download.sysinternals.com/files/Procdump.zip -OutFile pd.zip
           Expand-Archive pd.zip -DestinationPath "$env:RUNNER_TEMP\pd"
-          & "$env:RUNNER_TEMP\pd\procdump64.exe" -accepteula -ma -i "$env:RUNNER_TEMP\dumps"
-          "DIAG procdump installed $LASTEXITCODE"
-          if ("${{ matrix.shard }}" -eq "1") { node -e "process.dlopen({exports:{}}, process.execPath)" 2>&1 | Out-Null; "DIAG sanity exit $LASTEXITCODE"; Get-ChildItem "$env:RUNNER_TEMP\dumps" | ForEach-Object { "DIAG sanity dump $($_.Name)" } }
-      - name: Loop npm test
-        shell: bash
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\dumps" | Out-Null
+      - name: Stress under procdump
+        shell: pwsh
         env:
-          EXPECT_PTY: "1"
+          STRESS_MODE: ${{ matrix.mode }}
+          STRESS_N: "300"
+          STRESS_C: "4"
         run: |
-          set +e
-          mkdir -p keep
-          crashes=0; hangs=0
-          for i in 1 2 3 4 5 6; do
-            t0=$SECONDS
-            timeout 420 npm test > "run-$i.log" 2>&1; rc=$?
-            dt=$((SECONDS-t0))
-            done_files=$(grep -oE "^(not )?ok [0-9]+ - tests\\\\[^ ]+" "run-$i.log" | sed -E 's/.*tests\\\\//' | sort)
-            missing=$(ls tests/*.test.ts | sed 's#tests/##' | sort | comm -23 - <(echo "$done_files"))
-            if grep -q "3221225477" "run-$i.log"; then crashes=$((crashes+1)); echo "DIAGRUN $i CRASH ${dt}s"; grep -n "3221225477" -B4 "run-$i.log" | grep -E "Subtest|location"; cp "run-$i.log" keep/
-            elif [ $rc -eq 124 ]; then hangs=$((hangs+1)); echo "DIAGRUN $i HANG ${dt}s missing=[$missing]"; cp "run-$i.log" keep/; tasklist | grep -iE "node|bash|sleep|OpenConsole|conhost" | head -20; taskkill //F //IM node.exe >/dev/null 2>&1; taskkill //F //IM OpenConsole.exe >/dev/null 2>&1
-            else echo "DIAGRUN $i rc=$rc ${dt}s fail=$(grep -E '^# fail ' run-$i.log | head -1)"; fi
-          done
-          echo "DIAGSUMMARY crashes=$crashes hangs=$hangs"
+          $tsx = (Resolve-Path node_modules\tsx\dist\cli.mjs).Path
+          for ($i = 1; $i -le 6; $i++) {
+            $out = & "$env:RUNNER_TEMP\pd\procdump64.exe" -accepteula -ma -e -x "$env:RUNNER_TEMP\dumps" node.exe "--import" "tsx" "tests\zz-stress.ts" 2>&1
+            "DIAGITER $i exit $LASTEXITCODE"
+            $out | Select-String -Pattern "STRESS done|Exception|Dump|exited|terminated|C0000005|0xc0000005" | Select-Object -Last 12 | ForEach-Object { "  $_" }
+          }
       - name: Analyze dumps
         if: always()
         shell: pwsh
@@ -53,16 +45,13 @@ jobs:
           $dumps = Get-ChildItem "$env:RUNNER_TEMP\dumps" -Filter *.dmp -ErrorAction SilentlyContinue
           "DIAGDUMPS $($dumps.Count) $($dumps.Name -join ',')"
           $cdb = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
-          if (-not (Test-Path $cdb)) { "DIAG no cdb"; exit 0 }
-          foreach ($d in $dumps) {
+          foreach ($d in ($dumps | Select-Object -First 2)) {
             "===== DIAGDUMP $($d.Name)"
-            & $cdb -z $d.FullName -c ".symfix; .reload; .lastevent; .ecxr; r; kn 60; lmv m conpty*; lm; ~* kn 12; q" 2>&1 | ForEach-Object { "DIAGCDB $_" } | Select-Object -First 400
+            & $cdb -z $d.FullName -c ".symfix; .reload; .lastevent; .ecxr; r; kn 60; lmv m conpty*; ~* kn 12; q" 2>&1 | ForEach-Object { "DIAGCDB $_" } | Select-Object -First 500
           }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: diag-${{ matrix.shard }}
-          path: |
-            ${{ runner.temp }}/dumps
-            keep
+          name: stress-${{ matrix.mode }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/dumps
           if-no-files-found: ignore
