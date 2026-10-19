@@ -478,9 +478,10 @@ The focused process regression:
 2. emits 4000 long lines and then remains alive;
 3. waits until the final line reaches the log;
 4. calls `kill_session`;
-5. asserts `details.output` is at most Pi's byte cap, the model text carries a
-   truncation marker, no `final_output` exists, and the log contains line 1
-   through line 4000.
+5. asserts `details.output` is at most Pi's byte cap and no taller than the
+   terminal, shows line 4000, carries no `final_output`, and that the log holds
+   every line from 1 through 4000 (counted by content, since ConPTY prefixes
+   the first lines with its own control sequences).
 
 Pure and renderer tests additionally exercise CSI/SGR mode changes, OSC
 clipboard/title writes, terminal strings, C0/C1 controls, unterminated
