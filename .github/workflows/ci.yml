@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build: [stock, patched]
+        build: [patched]
         shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v6
@@ -23,9 +23,9 @@ jobs:
         if: matrix.build == 'patched'
         shell: bash
         run: |
-          git clone -q --depth 1 --branch v0.14.1 https://github.com/homebridge/node-pty-prebuilt-multiarch.git "$RUNNER_TEMP/hb"
+          git clone -q --depth 1 --recurse-submodules --shallow-submodules --branch v0.14.1 https://github.com/homebridge/node-pty-prebuilt-multiarch.git "$RUNNER_TEMP/hb"
           cp diagpatch/conpty.cc "$RUNNER_TEMP/hb/src/win/conpty.cc"
-          cd "$RUNNER_TEMP/hb" && npm install --ignore-scripts --no-audit --no-fund >/dev/null && npx --yes node-gyp rebuild 2>&1 | tail -3
+          cd "$RUNNER_TEMP/hb" && npm install --ignore-scripts --no-audit --no-fund >/dev/null && (npx --yes node-gyp rebuild > gyp.log 2>&1; rc=$?; grep -iE 'error|warning C|fatal' gyp.log | head -40; tail -5 gyp.log; exit $rc)
           dest="$GITHUB_WORKSPACE/node_modules/@homebridge/node-pty-prebuilt-multiarch/build/Release"
           ls -la "$dest"/conpty.node build/Release/conpty.node
           cp build/Release/conpty.node "$dest/conpty.node"
