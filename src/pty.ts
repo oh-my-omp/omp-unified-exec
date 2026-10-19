@@ -526,7 +526,7 @@ function spawnNodePty(mod: PtyModule, opts: SpawnOptions): SpawnedChild {
 		}
 		exitHandlers.clear();
 		dataHandlers.clear();
-		if (IS_WINDOWS && process.env.PI_DIAG_NO_DISPOSE !== "1") setImmediate(() => disposeWindowsConpty(child));
+		if (IS_WINDOWS) setImmediate(() => disposeWindowsConpty(child));
 	});
 
 	return {

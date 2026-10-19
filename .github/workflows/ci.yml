@@ -4,15 +4,13 @@ on:
     branches: [main]
 jobs:
   crash:
-    name: Crash (${{ matrix.variant }} / ${{ matrix.target }} / ${{ matrix.shard }})
+    name: Crash (${{ matrix.shard }})
     runs-on: windows-latest
-    timeout-minutes: 75
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        variant: [dispose, no-dispose]
-        target: [wake, npm-test]
-        shard: [1, 2]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -20,46 +18,52 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci
-      - name: Enable crash dumps for node.exe
+      - name: Enable crash dumps
         shell: pwsh
         run: |
-          New-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\node.exe" -Force | Out-Null
-          New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\node.exe" -Name DumpFolder -Value "$env:RUNNER_TEMP\dumps" -PropertyType ExpandString -Force | Out-Null
-          New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\node.exe" -Name DumpType -Value 2 -PropertyType DWord -Force | Out-Null
+          $k = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps"
+          New-Item -Path $k -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpFolder -Value "$env:RUNNER_TEMP\dumps" -PropertyType ExpandString -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpType -Value 2 -PropertyType DWord -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpCount -Value 20 -PropertyType DWord -Force | Out-Null
           New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\dumps" | Out-Null
-      - name: Loop
+          if ("${{ matrix.shard }}" -eq "1") { node -e "process.abort()"; "DIAG sanity abort exit $LASTEXITCODE" }
+      - name: Loop npm test
         shell: bash
         env:
           EXPECT_PTY: "1"
-          PI_DIAG_NO_DISPOSE: ${{ matrix.variant == 'no-dispose' && '1' || '0' }}
         run: |
           set +e
+          mkdir -p keep
           crashes=0; hangs=0
-          for i in $(seq 1 ${{ matrix.target == 'npm-test' && 4 || 10 }}); do
-            if [ "${{ matrix.target }}" = "npm-test" ]; then cmd="npm test"; else cmd="npx tsx --test --test-reporter=tap tests/wake-e2e.test.ts"; fi
+          for i in 1 2 3 4 5; do
             t0=$SECONDS
-            timeout 420 $cmd > "run-$i.log" 2>&1; rc=$?
+            timeout 420 npm test > "run-$i.log" 2>&1; rc=$?
             dt=$((SECONDS-t0))
-            if grep -q "3221225477" "run-$i.log"; then crashes=$((crashes+1)); echo "DIAGRUN $i CRASH ${dt}s"; grep -n "3221225477" -B60 "run-$i.log" | grep -E "Subtest|location" | tail -8
-            elif [ $rc -eq 124 ]; then hangs=$((hangs+1)); echo "DIAGRUN $i HANG ${dt}s"; grep -nE "# Subtest|^ *(not )?ok " "run-$i.log" | tail -8; tasklist | grep -iE "node|bash|sleep|conpty|OpenConsole" | head -20
-            else echo "DIAGRUN $i rc=$rc ${dt}s"; grep -E "^(# |ℹ )(fail) " "run-$i.log" | head -2; fi
+            done_files=$(grep -oE "^(not )?ok [0-9]+ - tests\\\\[^ ]+" "run-$i.log" | sed -E 's/.*tests\\\\//' | sort)
+            missing=$(ls tests/*.test.ts | sed 's#tests/##' | sort | comm -23 - <(echo "$done_files"))
+            if grep -q "3221225477" "run-$i.log"; then crashes=$((crashes+1)); echo "DIAGRUN $i CRASH ${dt}s"; grep -n "3221225477" -B4 "run-$i.log" | grep -E "Subtest|location"; cp "run-$i.log" keep/
+            elif [ $rc -eq 124 ]; then hangs=$((hangs+1)); echo "DIAGRUN $i HANG ${dt}s missing=[$missing]"; cp "run-$i.log" keep/; tasklist | grep -iE "node|bash|sleep|OpenConsole|conhost" | head -20; taskkill //F //IM node.exe >/dev/null 2>&1; taskkill //F //IM OpenConsole.exe >/dev/null 2>&1
+            else echo "DIAGRUN $i rc=$rc ${dt}s fail=$(grep -E '^# fail ' run-$i.log | head -1)"; fi
           done
-          echo "DIAGSUMMARY variant=${{ matrix.variant }} target=${{ matrix.target }} crashes=$crashes hangs=$hangs"
+          echo "DIAGSUMMARY crashes=$crashes hangs=$hangs"
       - name: Analyze dumps
         if: always()
         shell: pwsh
         run: |
           $dumps = Get-ChildItem "$env:RUNNER_TEMP\dumps" -Filter *.dmp -ErrorAction SilentlyContinue
-          "DIAGDUMPS $($dumps.Count)"
+          "DIAGDUMPS $($dumps.Count) $($dumps.Name -join ',')"
           $cdb = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
-          if (-not (Test-Path $cdb)) { "DIAG no cdb"; Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -ErrorAction SilentlyContinue; exit 0 }
-          foreach ($d in ($dumps | Select-Object -First 3)) {
+          if (-not (Test-Path $cdb)) { "DIAG no cdb"; exit 0 }
+          foreach ($d in $dumps) {
             "===== DIAGDUMP $($d.Name)"
-            & $cdb -z $d.FullName -c ".symfix; .reload /f node.exe; .ecxr; kn 40; lm; q" 2>&1 | Select-String -Pattern "ExceptionCode|ExceptionAddress|^ *[0-9a-f]{2} |conpty|pty|node_modules" | Select-Object -First 120
+            & $cdb -z $d.FullName -c ".symfix; .reload; .ecxr; .lastevent; kn 50; ~* kn 8; q" 2>&1 | ForEach-Object { "DIAGCDB $_" } | Select-Object -First 400
           }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: dumps-${{ matrix.variant }}-${{ matrix.target }}-${{ matrix.shard }}
-          path: ${{ runner.temp }}/dumps
+          name: diag-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/dumps
+            keep
           if-no-files-found: ignore
