@@ -33,6 +33,7 @@ jobs:
           EXPECT_PTY: "1"
           PI_DIAG_NO_DISPOSE: ${{ matrix.variant == 'no-dispose' && '1' || '0' }}
         run: |
+          set +e
           crashes=0; hangs=0
           for i in $(seq 1 ${{ matrix.target == 'npm-test' && 4 || 10 }}); do
             if [ "${{ matrix.target }}" = "npm-test" ]; then cmd="npm test"; else cmd="npx tsx --test --test-reporter=tap tests/wake-e2e.test.ts"; fi
@@ -40,7 +41,7 @@ jobs:
             timeout 420 $cmd > "run-$i.log" 2>&1; rc=$?
             dt=$((SECONDS-t0))
             if grep -q "3221225477" "run-$i.log"; then crashes=$((crashes+1)); echo "DIAGRUN $i CRASH ${dt}s"; grep -n "3221225477" -B60 "run-$i.log" | grep -E "Subtest|location" | tail -8
-            elif [ $rc -eq 124 ]; then hangs=$((hangs+1)); echo "DIAGRUN $i HANG ${dt}s"; grep -nE "# Subtest|^ *(not )?ok " "run-$i.log" | tail -8
+            elif [ $rc -eq 124 ]; then hangs=$((hangs+1)); echo "DIAGRUN $i HANG ${dt}s"; grep -nE "# Subtest|^ *(not )?ok " "run-$i.log" | tail -8; tasklist | grep -iE "node|bash|sleep|conpty|OpenConsole" | head -20
             else echo "DIAGRUN $i rc=$rc ${dt}s"; grep -E "^(# |ℹ )(fail) " "run-$i.log" | head -2; fi
           done
           echo "DIAGSUMMARY variant=${{ matrix.variant }} target=${{ matrix.target }} crashes=$crashes hangs=$hangs"
