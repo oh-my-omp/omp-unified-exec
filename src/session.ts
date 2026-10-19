@@ -308,17 +308,18 @@ export class ExecSession {
 	/**
 	 * Wait until `deadlineMs` (or exit/abort). A running session then consumes
 	 * an observation of its screen; a completed session returns its immutable
-	 * final active screen.
+	 * final active screen. A session whose live terminal was already released
+	 * (shutdown does not wait for the process to die) has nothing to observe.
 	 */
 	async collect(opts: { deadlineMs: number; externalAbort?: AbortSignal }): Promise<CollectResult> {
-		const screen = this.screen;
-		if (!screen) throw new Error("session has no terminal: its spawn failed");
 		await waitForExitOrDeadline({
 			exited: this.exited,
 			externalAbort: opts.externalAbort,
 			durationMs: opts.deadlineMs - Date.now(),
 		});
 		if (this.hasExited) return this.finalScreenOutput();
+		const screen = this.screen;
+		if (!screen) return NO_OUTPUT;
 		const observation = await screen.observe();
 		// Exit may land while the observation's parser barrier is pending.
 		if (this.hasExited) return this.finalScreenOutput();
@@ -340,13 +341,23 @@ export class ExecSession {
 	/** Normal removal waits for output closure and the one session-owned freeze. */
 	async release(): Promise<void> {
 		await this.terminalFinalized;
-		await this.screen?.release();
+		await this.detachScreen()?.release();
 	}
 
 	/** Shutdown need not retain an unfinished projection; completed resources survive. */
 	async releaseForShutdown(): Promise<void> {
 		if (this.terminalKey !== undefined && discardLiveTerminal(this.terminalKey)) this.terminalKey = undefined;
-		await this.screen?.release();
+		await this.detachScreen()?.release();
+	}
+
+	/**
+	 * End the session's ownership of its screen. Observations already queued
+	 * on the screen still run before its release; later callers see no screen.
+	 */
+	private detachScreen(): TerminalScreen | undefined {
+		const screen = this.screen;
+		this.screen = undefined;
+		return screen;
 	}
 
 	/** Write bytes to the PTY input. Returns true on success, false if closed/dead. */

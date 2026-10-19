@@ -95,6 +95,11 @@ shutdown are also silent. Human HUD/slash termination and LRU termination
 retain the monitor until actual closure. Direct write/listing observations
 do not cancel it. A source acceptance before model kill is cancelled; a new
 parallel acceptance after the kill request may still observe a running source.
+On Windows, node-pty closes the output about 1 s after the process ends (it
+waits 1000 ms for trailing output, `FLUSH_DATA_INTERVAL` in its
+`windowsPtyAgent`), and reports the exit only then. Matches printed just
+before exit fall outside the 250 ms coalescing window and arrive as a match
+message ahead of End.
 
 The completion coordinator owns both distinct objects: optional wake intent
 and actual monitor subscription. An active/closing monitor blocks ordinary

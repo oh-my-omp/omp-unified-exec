@@ -377,6 +377,9 @@ already-armed ordinary completion wake. Model `kill_session`, explicit cancel,
 replacement, reset and shutdown end monitoring silently, including a failed
 model kill. Already-enqueued follow-ups cannot be recalled. Unknown/ended
 sessions, invalid regexes and invalid limits return typed errors.
+On Windows, node-pty reports output closure (and the exit) about 1 s after the
+process ends, because it waits 1000 ms for trailing output; matches printed
+just before exit therefore arrive as a match message ahead of End.
 
 ### `kill_session`
 

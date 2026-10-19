@@ -332,11 +332,12 @@ describe("unified-exec e2e", () => {
 		assert.ok(r2.details.output.includes("hello from stdin"), `got ${JSON.stringify(r2.details)}`);
 		assert.ok(typeof r2.details.session_id === "number");
 
-		// Send EOF so cat exits.
+		// Send EOF so cat exits. The call returns as soon as the exit is
+		// observed; on Windows node-pty reports it ~1 s after the process ends.
 		const r3 = await h.call("write_stdin", {
 			session_id: sid,
 			chars: "\x04",
-			yield_time_ms: 1000,
+			yield_time_ms: 5000,
 		});
 		assert.equal(r3.details.exit_code, 0);
 		assert.equal(r3.details.session_id, undefined);
@@ -404,9 +405,11 @@ describe("unified-exec e2e", () => {
 			);
 
 			const fullLog = readFileSync(logPath, "utf8");
-			assert.match(fullLog, /kill-line-1-/);
-			assert.match(fullLog, /kill-line-4000-/);
-			assert.ok(fullLog.split("\n").filter((line) => line.startsWith("kill-line-")).length >= 4000);
+			// Count by content, not line start: ConPTY (Windows) writes its own
+			// init and window-title sequences in front of the first lines.
+			const logged = new Set([...fullLog.matchAll(/kill-line-(\d+)-/g)].map((m) => Number(m[1])));
+			assert.equal(logged.size, 4000);
+			assert.ok(logged.has(1) && logged.has(4000));
 		} finally {
 			await h.emit("session_shutdown");
 		}
@@ -587,6 +590,33 @@ describe("unified-exec e2e", () => {
 			);
 		} else {
 			assert.ok(r.details.exit_code != null || r.details.signal, JSON.stringify(r.details));
+		}
+	});
+
+	it("session_shutdown that releases the terminal before the child dies does not break the in-flight exec_command", { skip: IS_WINDOWS }, async () => {
+		// Shutdown discards the live terminal without waiting for the process.
+		// A child that ignores SIGTERM outlives the yield window, so the
+		// in-flight call must not observe the released screen.
+		const unhandled: unknown[] = [];
+		const onUnhandled = (reason: unknown) => unhandled.push(reason);
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			const h = makeHarness();
+			await h.emit("session_start");
+			const inflight = h.call("exec_command", { cmd: "trap '' TERM HUP; sleep 30", yield_time_ms: 500 });
+			// Real delay: the race needs shutdown to land inside the real 150 ms grace window.
+			const { promise: inGrace, resolve: enterGrace } = Promise.withResolvers<void>();
+			setTimeout(enterGrace, 40);
+			await inGrace;
+			await h.emit("session_shutdown"); // returns after the SIGKILL escalation
+			const r = await inflight;
+			assert.equal(r.details.failure_message, undefined, JSON.stringify(r.details));
+			const l = await h.call("list_sessions", {});
+			const sessions: Array<{ running: boolean }> = l.details.sessions;
+			assert.ok(!sessions.some((s) => s.running), `orphaned live session: ${JSON.stringify(l.details)}`);
+			assert.deepEqual(unhandled.map(String), []);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
 		}
 	});
 
@@ -773,7 +803,9 @@ describe("unified-exec e2e", () => {
 		const r1 = await h.call("exec_command", { cmd: "sleep 0.3", yield_time_ms: 250 });
 		const sid = r1.details.session_id;
 		assert.ok(typeof sid === "number", JSON.stringify(r1.details));
-		await new Promise((r) => setTimeout(r, 600));
+		// Wait for the observed exit (the running-sessions status clears), not a
+		// fixed delay: on Windows node-pty reports exits ~1 s late.
+		assert.ok(await waitFor(() => h.uiEvents.statuses.get("unified-exec.sessions") === undefined), "exit was not observed");
 
 		const l1 = await h.call("list_sessions", {});
 		assert.equal(l1.details.active_count, 0, JSON.stringify(l1.details));

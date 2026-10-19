@@ -637,18 +637,9 @@ describe("exec_command on_exit", () => {
 		};
 		const r1 = await h.call("exec_command", { cmd: "sleep 0.3", yield_time_ms: 250, on_exit: "wake" });
 		assert.ok(typeof r1.details.session_id === "number");
-		// Wait past natural exit + failed debounce flush (no message yet).
-		assert.ok(
-			await waitFor(async () => {
-				// Process has exited if write_stdin can get terminal or list reaps —
-				// here we just ensure the first send attempt had time to fail.
-				await sleep(50);
-				return h.sentMessages.length === 0;
-			}, 2000),
-		);
-		// Give debounce a moment after exit without busy-spinning 900ms blindly:
-		// poll until either a (failed) exit path settled or timeout.
-		await sleep(350);
+		// Wait until the exit's first send attempt has actually failed, not a
+		// fixed delay: on Windows node-pty reports exits ~1 s late.
+		assert.ok(await waitFor(() => failures === 0), "first send attempt never happened");
 		assert.equal(h.sentMessages.length, 0);
 		await h.emit("agent_settled", { type: "agent_settled" });
 		assert.ok(await waitFor(() => h.sentMessages.length === 1), "retry at agent_settled");

@@ -244,6 +244,8 @@ write_stdin chars_b64="G3s6wgo="  → exact 5 decoded bytes
 显式取消、替换、reset 与关闭都静默结束，即使模型 kill 失败也是如此。
 已排队交给宿主的后续消息无法撤回。未知/已结束会话、非法正则及非法上限
 返回类型化错误。
+Windows 上 node-pty 在进程结束后再等 1000 ms 尾部输出，输出关闭与退出约晚 1 s
+才报告；因此退出前刚打印的匹配会先作为匹配消息发出，不并入 End。
 
 ### `kill_session`
 

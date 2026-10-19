@@ -6,6 +6,7 @@ import type { MonitorMessage } from "../fork-features/monitor-subscription.ts";
 import { CompletionCoordinator } from "../src/completion.ts";
 import { ExecSession } from "../src/session.ts";
 import { TerminalScreen, type TerminalLineSubscription } from "../src/terminal-screen.ts";
+import { IS_WINDOWS } from "../src/shell.ts";
 
 const encoder = new TextEncoder();
 
@@ -112,7 +113,9 @@ describe("monitor source and delivery", () => {
 		if (output.kind === "screen" && output.observation.kind === "rendered") assert.match(output.observation.text, /MATCH one/);
 	});
 
-	it("merges final partial terminal output with End and consumes exactly the matching ordinary wake", async (t) => {
+	// Windows: node-pty closes output 1000 ms after exit, past the 250 ms
+	// coalescing window, so final output arrives as a match before End.
+	it("merges final partial terminal output with End and consumes exactly the matching ordinary wake", { skip: IS_WINDOWS }, async (t) => {
 		const session = await terminalSession(9102);
 		const delivered = Promise.withResolvers<MonitorMessage>();
 		let ordinary = 0;
