@@ -4,14 +4,15 @@ on:
     branches: [main]
 jobs:
   crash:
-    name: Crash (${{ matrix.variant }} / ${{ matrix.shard }})
+    name: Crash (${{ matrix.variant }} / ${{ matrix.target }} / ${{ matrix.shard }})
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
         variant: [dispose, no-dispose]
-        shard: [1, 2, 3, 4]
+        target: [wake, npm-test]
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -26,19 +27,23 @@ jobs:
           New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\node.exe" -Name DumpFolder -Value "$env:RUNNER_TEMP\dumps" -PropertyType ExpandString -Force | Out-Null
           New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\node.exe" -Name DumpType -Value 2 -PropertyType DWord -Force | Out-Null
           New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\dumps" | Out-Null
-      - name: Loop wake-e2e
+      - name: Loop
         shell: bash
         env:
           EXPECT_PTY: "1"
           PI_DIAG_NO_DISPOSE: ${{ matrix.variant == 'no-dispose' && '1' || '0' }}
         run: |
-          crashes=0
-          for i in $(seq 1 12); do
-            npx tsx --test --test-reporter=tap tests/wake-e2e.test.ts > "run-$i.log" 2>&1
-            rc=$?
-            if grep -q "3221225477" "run-$i.log"; then crashes=$((crashes+1)); echo "DIAGRUN $i CRASH"; grep -n "# Subtest\|^ *ok \|not ok" "run-$i.log" | tail -6; else echo "DIAGRUN $i rc=$rc"; fi
+          crashes=0; hangs=0
+          for i in $(seq 1 ${{ matrix.target == 'npm-test' && 4 || 10 }}); do
+            if [ "${{ matrix.target }}" = "npm-test" ]; then cmd="npm test"; else cmd="npx tsx --test --test-reporter=tap tests/wake-e2e.test.ts"; fi
+            t0=$SECONDS
+            timeout 420 $cmd > "run-$i.log" 2>&1; rc=$?
+            dt=$((SECONDS-t0))
+            if grep -q "3221225477" "run-$i.log"; then crashes=$((crashes+1)); echo "DIAGRUN $i CRASH ${dt}s"; grep -n "3221225477" -B60 "run-$i.log" | grep -E "Subtest|location" | tail -8
+            elif [ $rc -eq 124 ]; then hangs=$((hangs+1)); echo "DIAGRUN $i HANG ${dt}s"; grep -nE "# Subtest|^ *(not )?ok " "run-$i.log" | tail -8
+            else echo "DIAGRUN $i rc=$rc ${dt}s"; grep -E "^(# |ℹ )(fail) " "run-$i.log" | head -2; fi
           done
-          echo "DIAGSUMMARY variant=${{ matrix.variant }} crashes=$crashes/12"
+          echo "DIAGSUMMARY variant=${{ matrix.variant }} target=${{ matrix.target }} crashes=$crashes hangs=$hangs"
       - name: Analyze dumps
         if: always()
         shell: pwsh
@@ -54,6 +59,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: dumps-${{ matrix.variant }}-${{ matrix.shard }}
+          name: dumps-${{ matrix.variant }}-${{ matrix.target }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/dumps
           if-no-files-found: ignore
