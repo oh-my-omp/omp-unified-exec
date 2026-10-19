@@ -4,12 +4,13 @@ on:
     branches: [main]
 jobs:
   attach:
-    name: Attach (${{ matrix.shard }})
+    name: Attach (${{ matrix.build }} / ${{ matrix.shard }})
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
+        build: [stock, patched]
         shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v6
@@ -18,6 +19,18 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci
+      - name: Build node-pty 0.14.1 conpty.node with the upstream ptyHandles mutex (microsoft/node-pty fa83ecf)
+        if: matrix.build == 'patched'
+        shell: bash
+        run: |
+          git clone -q --depth 1 --branch v0.14.1 https://github.com/homebridge/node-pty-prebuilt-multiarch.git "$RUNNER_TEMP/hb"
+          cp diagpatch/conpty.cc "$RUNNER_TEMP/hb/src/win/conpty.cc"
+          cd "$RUNNER_TEMP/hb" && npm install --ignore-scripts --no-audit --no-fund >/dev/null && npx --yes node-gyp rebuild 2>&1 | tail -3
+          dest="$GITHUB_WORKSPACE/node_modules/@homebridge/node-pty-prebuilt-multiarch/build/Release"
+          ls -la "$dest"/conpty.node build/Release/conpty.node
+          cp build/Release/conpty.node "$dest/conpty.node"
+          grep -c g_ptyHandlesMutex "$GITHUB_WORKSPACE/diagpatch/conpty.cc"
+          echo "DIAG patched conpty.node installed"
       - name: Get procdump
         shell: pwsh
         run: |
@@ -53,6 +66,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: attach-${{ matrix.shard }}
+          name: attach-${{ matrix.build }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/dumps
           if-no-files-found: ignore
