@@ -109,8 +109,8 @@ describe("monitor source and delivery", () => {
 		assert.match(message.content, /limit reached/);
 		assert.equal(coordinator.monitorStatus(session.id), undefined);
 		const output = await session.collect({ deadlineMs: Date.now() });
-		assert.equal(output.kind, "screen");
-		if (output.kind === "screen" && output.observation.kind === "rendered") assert.match(output.observation.text, /MATCH one/);
+		assert.ok(output.kind === "screen" && output.observation.kind === "rendered", `ordinary observation was consumed: ${JSON.stringify(output)}`);
+		assert.match(output.observation.text, /MATCH one/);
 	});
 
 	// Windows: node-pty closes output 1000 ms after exit, past the 250 ms

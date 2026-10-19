@@ -9,7 +9,7 @@
  *
  * Authority: the PTY byte stream (also mirrored raw to the session log). This
  * emulator is a derived projection owned by the session; it never feeds back
- * into the log or the pipe path.
+ * into the log.
  *
  * Observation contract (consuming, serialized per session):
  *   - normal screen: rows that scrolled into history since the previous

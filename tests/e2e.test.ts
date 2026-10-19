@@ -593,27 +593,32 @@ describe("unified-exec e2e", () => {
 		}
 	});
 
-	it("session_shutdown that releases the terminal before the child dies does not break the in-flight exec_command", { skip: IS_WINDOWS }, async () => {
-		// Shutdown discards the live terminal without waiting for the process.
-		// A child that ignores SIGTERM outlives the yield window, so the
-		// in-flight call must not observe the released screen.
+	it("an in-flight write_stdin whose terminal shutdown released before the child died returns empty output", { skip: IS_WINDOWS }, async () => {
+		// Shutdown releases the live terminal at once, but a child that ignores
+		// SIGTERM dies only at the SIGKILL escalation 1 s later. A 500 ms
+		// attachment window therefore ends while the child is alive, after the
+		// release, and must not observe the released screen.
 		const unhandled: unknown[] = [];
 		const onUnhandled = (reason: unknown) => unhandled.push(reason);
 		process.on("unhandledRejection", onUnhandled);
 		try {
 			const h = makeHarness();
 			await h.emit("session_start");
-			const inflight = h.call("exec_command", { cmd: "trap '' TERM HUP; sleep 30", yield_time_ms: 500 });
-			// Real delay: the race needs shutdown to land inside the real 150 ms grace window.
-			const { promise: inGrace, resolve: enterGrace } = Promise.withResolvers<void>();
-			setTimeout(enterGrace, 40);
-			await inGrace;
-			await h.emit("session_shutdown"); // returns after the SIGKILL escalation
+			const r1 = await h.call("exec_command", { cmd: "trap '' TERM HUP; echo trap-ready; sleep 30", yield_time_ms: 250 });
+			const sid = r1.details.session_id;
+			assert.ok(typeof sid === "number", JSON.stringify(r1.details));
+			const logPath: string = r1.details.log_path;
+			assert.ok(await waitFor(() => readFileSync(logPath, "utf8").includes("trap-ready")), "SIGTERM trap was not installed");
+			const listed: Array<{ session_id: number; pid: number }> = (await h.call("list_sessions", {})).details.sessions;
+			const pid = listed.find((s) => s.session_id === sid)?.pid;
+			assert.ok(typeof pid === "number");
+
+			const inflight = h.call("write_stdin", { session_id: sid, chars: "x", yield_time_ms: 500 });
+			await h.emit("session_shutdown"); // releases the terminal now; returns after the SIGKILL escalation
 			const r = await inflight;
-			assert.equal(r.details.failure_message, undefined, JSON.stringify(r.details));
-			const l = await h.call("list_sessions", {});
-			const sessions: Array<{ running: boolean }> = l.details.sessions;
-			assert.ok(!sessions.some((s) => s.running), `orphaned live session: ${JSON.stringify(l.details)}`);
+			assert.equal(r.details.running, true, JSON.stringify(r.details));
+			assert.equal(r.details.output, "");
+			assert.throws(() => process.kill(pid, 0), /ESRCH/, `pid ${pid} should be dead after shutdown`);
 			assert.deepEqual(unhandled.map(String), []);
 		} finally {
 			process.off("unhandledRejection", onUnhandled);

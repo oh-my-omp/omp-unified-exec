@@ -124,9 +124,10 @@ The initiative establishes a durable output contract across these layers:
   and `terminal.history_may_be_truncated` is an explicit boolean. Final metadata
   omits incremental `screen_changed` and `history_lines`. Output remains subject
   to the independent 50 KiB / 2000-line cap; `/screen` retains the complete view.
-  When shutdown discards the unfinished live terminal of an `exec_command`
-  still inside its early-exit window, that call returns an exit result with
-  empty output instead of an error.
+  Shutdown releases a live terminal without waiting for the process to die;
+  an in-flight call that finds its terminal released returns empty output
+  instead of an error and reports the process as it is (exited, or still
+  running until the SIGKILL escalation lands).
 - Represent operation and state explicitly (`operation`, `status`, `running`),
   rather than inferring liveness from the presence of `session_id`.
 - Preserve failed-kill ownership: an unconfirmed kill remains registered and is
