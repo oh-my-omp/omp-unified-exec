@@ -43,13 +43,12 @@ jobs:
           EXPECT_PTY: "1"
         run: |
           $load = Start-Process -FilePath "cmd.exe" -ArgumentList "/c","for /L %i in (1,1,20) do npm test > NUL 2>&1" -PassThru -WindowStyle Hidden
-          for ($i = 1; $i -le 7; $i++) {
+          for ($i = 1; $i -le 6; $i++) {
             $out = & "$env:RUNNER_TEMP\pd\procdump64.exe" -accepteula -ma -e -x "$env:RUNNER_TEMP\dumps" node.exe "--import" "tsx" "--test" "--experimental-test-isolation=none" "--test-reporter=tap" "tests\tern-terminal-hud.test.ts" "tests\wake-e2e.test.ts" 2>&1
             $dumps = @(Get-ChildItem "$env:RUNNER_TEMP\dumps" -Filter *.dmp -ErrorAction SilentlyContinue).Count
             $summary = ($out | Select-String -Pattern "^# (tests|pass|fail) " | ForEach-Object { $_.Line }) -join " "
             "DIAGITER $i dumps=$dumps $summary"
             $out | Select-String -Pattern "Exception|Dump [0-9]|C0000005|terminated" | Select-Object -Last 6 | ForEach-Object { "  $_" }
-            if ($dumps -gt 0) { break }
           }
           Stop-Process -Id $load.Id -Force -ErrorAction SilentlyContinue
       - name: Analyze dumps
@@ -63,9 +62,3 @@ jobs:
             "===== DIAGDUMP $($d.Name)"
             & $cdb -z $d.FullName -c ".symfix; .reload; .lastevent; .ecxr; r; kn 60; lmv m conpty*; lmv m pty*; ~* kn 15; q" 2>&1 | ForEach-Object { "DIAGCDB $_" } | Select-Object -First 700
           }
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: attach-${{ matrix.build }}-${{ matrix.shard }}
-          path: ${{ runner.temp }}/dumps
-          if-no-files-found: ignore
