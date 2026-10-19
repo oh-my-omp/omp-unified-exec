@@ -6,11 +6,11 @@ jobs:
   crash:
     name: Crash (${{ matrix.shard }})
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -18,16 +18,15 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci
-      - name: Enable crash dumps
+      - name: Install procdump as postmortem debugger
         shell: pwsh
         run: |
-          $k = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps"
-          New-Item -Path $k -Force | Out-Null
-          New-ItemProperty -Path $k -Name DumpFolder -Value "$env:RUNNER_TEMP\dumps" -PropertyType ExpandString -Force | Out-Null
-          New-ItemProperty -Path $k -Name DumpType -Value 2 -PropertyType DWord -Force | Out-Null
-          New-ItemProperty -Path $k -Name DumpCount -Value 20 -PropertyType DWord -Force | Out-Null
           New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\dumps" | Out-Null
-          if ("${{ matrix.shard }}" -eq "1") { node -e "process.abort()"; "DIAG sanity abort exit $LASTEXITCODE" }
+          Invoke-WebRequest https://download.sysinternals.com/files/Procdump.zip -OutFile pd.zip
+          Expand-Archive pd.zip -DestinationPath "$env:RUNNER_TEMP\pd"
+          & "$env:RUNNER_TEMP\pd\procdump64.exe" -accepteula -ma -i "$env:RUNNER_TEMP\dumps"
+          "DIAG procdump installed $LASTEXITCODE"
+          if ("${{ matrix.shard }}" -eq "1") { node -e "process.dlopen({exports:{}}, process.execPath)" 2>&1 | Out-Null; "DIAG sanity exit $LASTEXITCODE"; Get-ChildItem "$env:RUNNER_TEMP\dumps" | ForEach-Object { "DIAG sanity dump $($_.Name)" } }
       - name: Loop npm test
         shell: bash
         env:
@@ -36,7 +35,7 @@ jobs:
           set +e
           mkdir -p keep
           crashes=0; hangs=0
-          for i in 1 2 3 4 5; do
+          for i in 1 2 3 4 5 6; do
             t0=$SECONDS
             timeout 420 npm test > "run-$i.log" 2>&1; rc=$?
             dt=$((SECONDS-t0))
@@ -57,7 +56,7 @@ jobs:
           if (-not (Test-Path $cdb)) { "DIAG no cdb"; exit 0 }
           foreach ($d in $dumps) {
             "===== DIAGDUMP $($d.Name)"
-            & $cdb -z $d.FullName -c ".symfix; .reload; .ecxr; .lastevent; kn 50; ~* kn 8; q" 2>&1 | ForEach-Object { "DIAGCDB $_" } | Select-Object -First 400
+            & $cdb -z $d.FullName -c ".symfix; .reload; .lastevent; .ecxr; r; kn 60; lmv m conpty*; lm; ~* kn 12; q" 2>&1 | ForEach-Object { "DIAGCDB $_" } | Select-Object -First 400
           }
       - uses: actions/upload-artifact@v4
         if: always()
