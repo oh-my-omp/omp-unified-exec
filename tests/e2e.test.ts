@@ -152,7 +152,8 @@ describe("unified-exec e2e", () => {
 		}
 	});
 
-	it("Windows: shell=powershell and shell=cmd get shell-appropriate flags", { skip: !IS_WINDOWS }, async () => {
+	// PowerShell's cold start on hosted Windows runners can exceed Bun's default 5 s test timeout; the call itself yields up to 20 s.
+	it("Windows: shell=powershell and shell=cmd get shell-appropriate flags", { skip: !IS_WINDOWS, timeout: 45_000 }, async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		const r1 = await h.call("exec_command", { cmd: "Write-Output ps-ok", shell: "powershell", yield_time_ms: 20000 });
@@ -326,7 +327,7 @@ describe("unified-exec e2e", () => {
 		}
 	});
 
-	it("Windows: cmd.exe quoting survives operators, quotes, %VAR%, parens", { skip: !IS_WINDOWS }, async () => {
+	it("Windows: cmd.exe quoting survives operators, quotes, %VAR%, parens", { skip: !IS_WINDOWS, timeout: 45_000 }, async () => {
 		// These are exactly the inputs the /d /s /c "<cmd>" + verbatim-args
 		// mechanism exists for; `echo simple` would pass even if it broke.
 		const h = makeHarness();
