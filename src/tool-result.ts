@@ -12,8 +12,6 @@ import type { OnExitPolicy } from "./completion.ts";
 import { sanitizeOutputText } from "./output-safety.ts";
 import type { TerminalObservation, TerminalScreenKind, TerminalView } from "./terminal-screen.ts";
 
-const textDecoder = new TextDecoder("utf-8", { fatal: false });
-
 export type ProcessOperation = "exec_command" | "write_stdin";
 export type ProcessStatus = "running" | "exited";
 export type KillStatus = "killed" | "kill_failed";
@@ -32,20 +30,17 @@ export interface OutputResultDetails {
 	exit_code?: number;
 	signal?: string;
 	failure_message?: string;
-	tty?: boolean;
 	log_path?: string;
-	/** Non-consuming retained terminal projection; tty sessions only. */
+	/** Non-consuming retained terminal projection. */
 	terminal_url?: string;
 	cwd?: string;
 	command?: string;
 	truncation?: TruncationResult;
-	/** Middle bytes dropped by the in-memory retention cap before result truncation. */
-	omitted_bytes?: number;
 	/** Cumulative bytes this session has produced since spawn. */
 	output_bytes_total?: number;
-	/** Optional explanation of an unusual session state (e.g. shell exited but pipe held open). */
+	/** Optional explanation of an unusual session state (e.g. shell exited but the terminal is still held open). */
 	note?: string;
-	/** Tty sessions: how `output` relates to the session's terminal screen. */
+	/** How `output` relates to the session's terminal screen. */
 	terminal?: TerminalDetails;
 }
 
@@ -102,7 +97,7 @@ export interface KillResultDetails extends OutputResultDetails {
 
 interface OutputEnvelopeInput {
 	wallTimeSec: number;
-	/** Pipe bytes drained this call, or the tty session's terminal observation. */
+	/** The session's terminal observation this call, or nothing. */
 	collected: CollectResult;
 	logPath?: string;
 	/** Cumulative bytes the session has produced since spawn. */
@@ -115,7 +110,6 @@ export interface FinalizeProcessInput extends OutputEnvelopeInput {
 	exitCode: number | null | undefined;
 	signal: NodeJS.Signals | null;
 	failure: string | null;
-	tty: boolean;
 	cwd?: string;
 	command?: string;
 	yieldTimeMs?: number;
@@ -130,7 +124,6 @@ export interface FinalizeKillInput extends OutputEnvelopeInput {
 	exitCode: number | null | undefined;
 	signal: NodeJS.Signals | null;
 	failure: string | null;
-	tty: boolean;
 	cwd?: string;
 	command?: string;
 	escalated: boolean;
@@ -167,7 +160,6 @@ type OutputEnvelope = Pick<
 	| "original_token_count"
 	| "log_path"
 	| "truncation"
-	| "omitted_bytes"
 	| "output_bytes_total"
 	| "terminal"
 	| "terminal_url"
@@ -178,9 +170,9 @@ function createOutputEnvelope(input: OutputEnvelopeInput): OutputEnvelope {
 	let text: string;
 	let byteLength: number;
 	switch (collected.kind) {
-		case "stream":
-			text = sanitizeOutputText(textDecoder.decode(collected.bytes));
-			byteLength = collected.bytes.length;
+		case "none":
+			text = "";
+			byteLength = 0;
 			break;
 		case "screen": {
 			const observation = collected.observation;
@@ -201,7 +193,6 @@ function createOutputEnvelope(input: OutputEnvelopeInput): OutputEnvelope {
 		original_token_count: approxTokenCount(byteLength),
 	};
 	if (input.logPath) envelope.log_path = input.logPath;
-	if (collected.kind === "stream" && collected.omittedBytes) envelope.omitted_bytes = collected.omittedBytes;
 	if (collected.kind === "screen") envelope.terminal = terminalDetails(collected.observation);
 	if (collected.kind === "final-screen") {
 		const { projection } = collected;
@@ -215,7 +206,7 @@ function createOutputEnvelope(input: OutputEnvelopeInput): OutputEnvelope {
 			history_may_be_truncated: projection.historyMayBeTruncated,
 		};
 	}
-	if (collected.kind !== "stream" && collected.terminalUrl) envelope.terminal_url = collected.terminalUrl;
+	if (collected.kind !== "none" && collected.terminalUrl) envelope.terminal_url = collected.terminalUrl;
 	if (input.totalBytes !== undefined) envelope.output_bytes_total = input.totalBytes;
 	if (truncation.truncated) envelope.truncation = truncation;
 	return envelope;
@@ -242,7 +233,7 @@ function terminalDetails(observation: TerminalObservation): IncrementalTerminalD
 	return details;
 }
 
-/** Header lines describing tty output, shared by process and kill results. */
+/** Header lines describing the terminal output, shared by process and kill results. */
 function terminalLines(terminal: TerminalDetails | undefined): string[] {
 	if (!terminal) return [];
 	const lines = [
@@ -267,7 +258,6 @@ export function finalizeProcessResult(input: FinalizeProcessInput): ProcessResul
 		operation: input.operation,
 		status: running ? "running" : "exited",
 		running,
-		tty: input.tty,
 	};
 	if (input.sessionId !== undefined) shape.session_id = input.sessionId;
 	if (input.exitCode !== undefined && input.exitCode !== null) shape.exit_code = input.exitCode;
@@ -296,7 +286,6 @@ export function finalizeKillResult(input: FinalizeKillInput): KillResultDetails 
 		requested_signal: input.requestedSignal,
 		killed: input.killed,
 		escalated: input.escalated,
-		tty: input.tty,
 	};
 	if (input.pid !== undefined) shape.pid = input.pid;
 	if (input.exitCode !== undefined && input.exitCode !== null) shape.exit_code = input.exitCode;
@@ -353,8 +342,6 @@ export function renderProcessResultText(shape: ProcessResultDetails): string {
 	lines.push(`chunk_id: ${shape.chunk_id}`);
 	if (shape.original_token_count !== undefined) lines.push(`original_token_count: ${shape.original_token_count}`);
 	if (shape.output_bytes_total !== undefined) lines.push(`output_bytes_total: ${shape.output_bytes_total}`);
-	if (shape.omitted_bytes) lines.push(`omitted_bytes: ${shape.omitted_bytes}`);
-	if (shape.tty !== undefined) lines.push(`tty: ${shape.tty}`);
 	lines.push(...terminalLines(shape.terminal));
 	return appendOutputSection(lines, shape);
 }
@@ -377,8 +364,6 @@ export function renderKillResultText(shape: KillResultDetails): string {
 	lines.push(`chunk_id: ${shape.chunk_id}`);
 	if (shape.original_token_count !== undefined) lines.push(`original_token_count: ${shape.original_token_count}`);
 	if (shape.output_bytes_total !== undefined) lines.push(`output_bytes_total: ${shape.output_bytes_total}`);
-	if (shape.omitted_bytes) lines.push(`omitted_bytes: ${shape.omitted_bytes}`);
-	if (shape.tty !== undefined) lines.push(`tty: ${shape.tty}`);
 	lines.push(...terminalLines(shape.terminal));
 	return appendOutputSection(lines, shape);
 }

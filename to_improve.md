@@ -47,7 +47,8 @@ Code references:
 
 - `src/index.ts`: `OUTPUT_POLL_INTERVAL_MS`, `startStreaming()`,
   `runExecCommand()`, `runWriteStdin()`.
-- `src/session.ts`: rolling output buffer used by streaming snapshots.
+- `src/session.ts`: terminal-screen snapshots used by streaming updates
+  (`liveSnapshot()`).
 - `src/render.ts`: `renderResult()` consumes `details.output` during partial
   renders.
 - `tests/e2e.test.ts`: harness currently passes `undefined` for `onUpdate`;

@@ -1,3 +1,6 @@
+import type { FinalScreenOutput } from "../src/collect.ts";
+
+
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { DEFAULT_MAX_LINES, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -25,7 +28,19 @@ import {
 	type ProcessResultDetails,
 } from "../src/tool-result.ts";
 
-const encoder = new TextEncoder();
+
+function finalScreen(text: string): FinalScreenOutput {
+	const lines = text.split("\n");
+	return {
+		kind: "final-screen",
+		terminalUrl: "term://test",
+		projection: {
+			view: { screen: "normal", cols: 120, rows: lines.length, cursor: { row: 1, col: 1 } },
+			retainedLines: lines, screenLines: lines, cells: [], appearance: "dark", historyMayBeTruncated: false,
+		},
+	};
+}
+
 
 // Persisted shapes from the real tool-result survey, with stable fixture paths.
 const exitedDetails: ProcessResultDetails = {
@@ -38,7 +53,6 @@ const exitedDetails: ProcessResultDetails = {
 	operation: "exec_command",
 	status: "exited",
 	running: false,
-	tty: false,
 	exit_code: 0,
 	cwd: "/repo",
 	command: "echo ok",
@@ -48,18 +62,17 @@ const exitedDetails: ProcessResultDetails = {
 const processInput: FinalizeProcessInput = {
 	operation: "exec_command",
 	wallTimeSec: 0.25,
-	collected: { kind: "stream", bytes: encoder.encode("last output\n"), omittedBytes: 0 },
+	collected: finalScreen("last output\n"),
 	sessionId: undefined,
 	exitCode: 0,
 	signal: null,
 	failure: null,
-	tty: false,
 	logPath: "/tmp/omp-presentation-process.log",
 };
 
 const killInput: FinalizeKillInput = {
 	wallTimeSec: 0.003,
-	collected: { kind: "stream", bytes: encoder.encode("last output\n"), omittedBytes: 0 },
+	collected: finalScreen("last output\n"),
 	totalBytes: 12,
 	sessionId: 1,
 	pid: 45828,
@@ -67,7 +80,6 @@ const killInput: FinalizeKillInput = {
 	exitCode: undefined,
 	signal: "SIGTERM",
 	failure: null,
-	tty: true,
 	logPath: "/tmp/omp-presentation-kill.log",
 	cwd: "/repo",
 	command: "cat",
@@ -119,7 +131,6 @@ describe("omp shell result presentation", () => {
 				operation,
 				status: "running",
 				running: true,
-				tty: false,
 				session_id: 1,
 				cwd: "/repo",
 				command: "sleep 3; echo done",
@@ -141,7 +152,7 @@ describe("omp shell result presentation", () => {
 			pid: 45842,
 			running: true,
 			total_bytes: 18,
-			tty: false,
+
 			command: "printf 'update-1\\n'; sleep 0.35; printf 'update-2\\n'",
 			cwd: "/repo",
 			log_path: "/tmp/omp-presentation-stream.log",
@@ -159,7 +170,7 @@ describe("omp shell result presentation", () => {
 	it("appends the exact recovery marker after a blank line and keeps it last", () => {
 		const details = finalizeProcessResult({
 			...processInput,
-			collected: { kind: "stream", bytes: encoder.encode(noisyOutput), omittedBytes: 0 },
+			collected: finalScreen(noisyOutput),
 		});
 		const marker = truncationMarker(details.truncation, details.log_path);
 		assert.equal(details.truncation?.truncated, true);
@@ -280,7 +291,7 @@ describe("omp shell result presentation", () => {
 
 	for (const scenario of ["signal", "failure", "escalated kill", "failed kill"] as const) {
 		it(`keeps recovery marker last when truncated output also has a ${scenario} notice`, () => {
-			const collected = { kind: "stream" as const, bytes: encoder.encode(noisyOutput), omittedBytes: 0 };
+			const collected = finalScreen(noisyOutput);
 			const details = scenario === "signal" || scenario === "failure"
 				? finalizeProcessResult({
 					...processInput,

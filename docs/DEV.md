@@ -42,8 +42,8 @@ pi install -l ./path/to/pi-unified-exec
 
 `npm install` fetches `@homebridge/node-pty-prebuilt-multiarch` for the Node
 runtime tests. Bun 1.4+ does not load that optional package; its PTY path uses
-`Bun.Terminal`. If the Node package has no usable prebuild, pipe mode still
-works and only Node-hosted `tty: true` reports the load error.
+`Bun.Terminal`. Every session needs a PTY: if the Node package has no usable
+prebuild, Node-hosted `exec_command` reports the load error at call time.
 
 Verify the install:
 
@@ -58,25 +58,24 @@ the Store stub doesn't count).
 
 ## Repo layout
 
-See [Architecture](../README.md#architecture) for the `src/` layout. A
+See [Layout](../README.md#layout) for the `src/` layout. A
 sibling view, indexed by concern:
 
 | Concern | File(s) |
 |---|---|
-| Tool schemas and orchestration | `src/index.ts` (`exec_command`, `write_stdin`, `set_on_exit`, `kill_session`, `list_sessions`) |
+| Tool schemas and orchestration | `src/index.ts` (`exec_command`, `write_stdin`, `set_on_exit`, `monitor`, `kill_session`, `list_sessions`) |
 | Session lifecycle (spawn, write, kill, log-stream) | `src/session.ts` |
 | Session registry, LRU eviction, shutdown | `src/session-store.ts` |
-| Short exec/input collection and final drains | `src/collect.ts` + `src/notify.ts` |
-| Relative and absolute empty polls, event-driven and monotonic | `src/long-wait.ts` + `src/time.ts`, `runAttachedWait` in `src/index.ts` |
+| Per-call observation (`CollectResult`: screen, final screen or none) | `src/collect.ts`; produced by `ExecSession.collect` in `src/session.ts` |
+| Event-driven, monotonic waits: relative and absolute empty polls, collection, kill confirmation | `src/long-wait.ts` + `src/time.ts`, `runAttachedWait` in `src/index.ts` |
 | Human duration / remaining labels | `src/format-time.ts` (re-exported remaining helper from `time.ts`) |
 | `on_exit: "wake"` completion scheduling (exactly-once) | `src/completion.ts` (`setOnExit`, tombstones, flush) |
-| In-memory drain buffer (pipe sessions) | `src/head-tail-buffer.ts` |
-| Rendered tty screen: emulator, history + screen observations, snapshots | `src/terminal-screen.ts` (owned by `ExecSession`) |
+| Rendered terminal screen: emulator, history + screen observations, snapshots | `src/terminal-screen.ts` (owned by `ExecSession`) |
 | On-disk raw log file mirroring | `src/session.ts` (`logStream`) |
 | Terminal-inert result/partial text | `src/output-safety.ts` |
 | Bounded process/kill details + LLM-visible text | `src/tool-result.ts` (`truncateTail` from Pi) |
 | C-style escape decoding for `chars` | `src/unescape.ts` |
-| PTY backends (Bun.Terminal / Node node-pty), pipes, Windows tree-kill | `src/pty.ts` |
+| PTY backends (Bun.Terminal / Node node-pty), spawn preflight, Windows tree-kill | `src/pty.ts` |
 | Shell selection & argv construction | `src/shell.ts` |
 | Explicit call/result renderers for all five tools | `src/render.ts` |
 | Default-on native codemode preview wrapper | `src/codemode-render.ts` |
@@ -130,13 +129,12 @@ pi -p --mode json --provider anthropic --model claude-sonnet-4 \
 
 ```bash
 # Pure units (fast, no subprocesses)
-npx tsx --test tests/head-tail-buffer.test.ts \
-                tests/notify.test.ts \
+npx tsx --test tests/notify.test.ts \
                 tests/truncate.test.ts \
                 tests/unescape.test.ts \
                 tests/session-store.test.ts
 
-# End-to-end against real bash / cat (seconds)
+# End-to-end against real bash / cat in a PTY (seconds)
 npx tsx --test tests/e2e.test.ts
 npx tsx --test tests/chars-encoding.test.ts
 
@@ -155,9 +153,6 @@ npx tsx --test tests/time.test.ts tests/long-wait.test.ts tests/wake-e2e.test.ts
 npx tsx --test tests/cli-wait.test.ts
 # Optionally set PI_UNIFIED_EXEC_TEST_CLI to another published dist/cli.js.
 npm run test:tui  # isolated tmux: waits/Esc plus codemode A/B/C, widths/themes/expansion
-
-# Short exec/input collection
-npx tsx --test tests/collect.test.ts
 
 # Native codemode display-only factory, renderer, opt-out and actual-CLI parity
 npx tsx --test tests/codemode-render.test.ts tests/codemode-cli.test.ts
@@ -224,11 +219,10 @@ stating whether they mirror codex or diverge. When you touch one:
 
 Never put an unbounded value in `content` or details and expect
 `renderResult` to hide it: Pi falls back to raw content if a renderer throws.
-Pass child text through `sanitizeOutputText()` before model/session/TUI use;
-tty bytes go through the session's `TerminalScreen` first, and only its
-rendered text is sanitized and used. Only the on-disk log owns the exact raw
-stream. Keep renderer-side sanitization as defense for legacy results and
-fallback content.
+Child bytes go through the session's `TerminalScreen` first; pass its rendered
+text through `sanitizeOutputText()` before model/session/TUI use. Only the
+on-disk log owns the exact raw stream. Keep renderer-side sanitization as
+defense for legacy results and fallback content.
 
 ### Tune TUI rendering
 
@@ -315,17 +309,18 @@ Confirm what we actually consume:
 grep -rh 'from "@earendil-works/pi-coding-agent' src/ | sort -u
 ```
 
-As of 2026-08-04 the surface is:
+As of 2026-10-17 the surface is:
 
 - **Types**: `ExtensionAPI`, `ExtensionContext`, `AgentToolResult`,
-  `ToolRenderResultOptions`, `Theme`, `TruncationResult`
+  `AgentToolUpdateCallback`, `ToolDefinition`, `ToolRenderResultOptions`,
+  `Theme`, `TruncationResult`
 - **Helpers**: `formatSize`, `keyHint`, `truncateTail`, `truncateToVisualLines`
 - **Constants**: `DEFAULT_MAX_BYTES`, `DEFAULT_MAX_LINES`
-- **`ExtensionAPI` methods**: `on("session_start" | "session_shutdown")`,
-  `registerFlag`, `getFlag`, `registerTool`, `getActiveTools`,
-  `setActiveTools`
+- **`ExtensionAPI` methods**: `on("session_start" | "session_tree" |
+  "tool_execution_end" | "agent_settled" | "session_shutdown")`,
+  `registerTool`, `registerCommand`, `sendMessage`
 - **`ExtensionContext` fields** (via the `ctx` / `eventCtx` argument):
-  `ui.notify`, `cwd`, `hasUI`
+  `ui.notify`, `ui.select`, `ui.setStatus`, `ui.setWidget`, `cwd`, `hasUI`
 
 The codemode wrapper additionally consumes `createCodemodeExtension`,
 `CodemodeToolDetails`, `ToolDefinition`, `Component`, `truncateToWidth`,

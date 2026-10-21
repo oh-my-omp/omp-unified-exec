@@ -1,13 +1,10 @@
 /**
- * Event-driven wait for both relative and absolute empty `write_stdin` polls.
- *
- * Unlike collectOutputUntilDeadline, this wait never accumulates drained
- * output in a per-call array. A long noisy process retains bounded output:
+ * Event-driven wait for empty `write_stdin` polls, session collection and
+ * kill confirmation.
  *
  *   - listens ONLY on process exit, external cancellation, and one timer;
- *   - never drains process output (the session's HeadTailBuffer keeps its
- *     bounded head/tail retention, the rolling UI tail keeps rolling, and the
- *     log file keeps receiving every byte);
+ *   - never consumes process output (the session's terminal screen keeps
+ *     rendering and the log file keeps receiving every byte);
  *   - runs on a MONOTONIC clock: the wall-clock deadline is converted once
  *     into a duration by the caller, then anchored to `performance.now()`
  *     here, so a later NTP adjustment or manual system-clock change cannot

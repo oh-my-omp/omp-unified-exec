@@ -63,8 +63,8 @@ describe("buildShellCommand", () => {
 		assert.deepEqual(r.command, ["C:\\Program Files\\Git\\bin\\BASH.EXE", "-c", "echo hi"]);
 	});
 
-	it("powershell and pwsh get -NoProfile -NonInteractive -NoLogo -Command", () => {
-		const flags = ["-NoProfile", "-NonInteractive", "-NoLogo", "-Command", "Get-Date"];
+	it("powershell and pwsh allow PTY interaction with -NoProfile -NoLogo -Command", () => {
+		const flags = ["-NoProfile", "-NoLogo", "-Command", "Get-Date"];
 		assert.deepEqual(buildShellCommand("powershell", "Get-Date").command, ["powershell", ...flags]);
 		assert.deepEqual(buildShellCommand("pwsh", "Get-Date").command, ["pwsh", ...flags]);
 		assert.deepEqual(buildShellCommand("powershell.exe", "Get-Date").command, ["powershell.exe", ...flags]);

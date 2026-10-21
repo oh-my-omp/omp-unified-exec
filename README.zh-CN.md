@@ -2,10 +2,10 @@
 
 [English](README.md) | 简体中文
 
-为 [oh-my-pi](https://github.com/can1357/oh-my-pi)（omp）提供长时间运行的 shell
-会话，并在 Tern 里带一个终端 HUD。模型执行的每条命令都会成为一个会话，由模型通过写入和轮询来驱动，而不是一次阻塞到底的调用：开发服务器、REPL、`ssh`、`sudo`、全屏程序和长时间任务在多轮对话之间持续运行，人也可以在 Tern 里查看它们、向它们输入。
+为 [oh-my-pi](https://github.com/can1357/oh-my-pi)（omp）提供长时间运行的终端
+会话，并在 Tern 里带一个终端 HUD。宿主的 `bash` 负责短的一次性命令；长命令、交互程序（REPL、TUI、`ssh`、`sudo`）、并发计算和开发期 daemon 交给 `exec_command`，它把每条命令放进一个 PTY 会话，由模型通过写入和轮询来驱动，而不是一次阻塞到底的调用。会话在多轮对话之间持续运行，没有命令截止时间，人也可以在 Tern 里查看它们、向它们输入。
 
-本仓库 fork 自 [iamwrm/pi-unified-exec](https://github.com/iamwrm/pi-unified-exec)，后者是 codex `unified_exec` 的 Pi 移植。原有工具（`exec_command`、`write_stdin`、`set_on_exit`、`kill_session`、`list_sessions`）保留其会话模型；fork 为 omp 增加终端读取/截图和 `monitor`。fork 的全部改动、每项改动的原因，以及 omp/Tern 升级后如何重新验证，见 [fork-features/README.zh-CN.md](fork-features/README.zh-CN.md)。
+本仓库 fork 自 [iamwrm/pi-unified-exec](https://github.com/iamwrm/pi-unified-exec)，后者是 codex `unified_exec` 的 Pi 移植。原有工具（`exec_command`、`write_stdin`、`set_on_exit`、`kill_session`、`list_sessions`）保留其会话模型；fork 让每个会话都在 PTY 中运行，把短命令留给宿主的 `bash`，并为 omp 增加终端读取/截图和 `monitor`。fork 的全部改动、每项改动的原因，以及 omp/Tern 升级后如何重新验证，见 [fork-features/README.zh-CN.md](fork-features/README.zh-CN.md)。
 
 ## 安装
 
@@ -23,26 +23,26 @@ omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
 
 Tern 更新会在这条命令成功返回前完成，无需单独执行 Tern 命令，也不使用开发链接。
 
-本包在 Pi 上照常加载（使用 Pi 的渲染器，没有 HUD）。PTY 模式在 Bun 1.4+ 下使用 Bun 原生的 `Bun.Terminal`（omp 是编译后的 Bun 可执行文件），在 Node 下使用可选依赖 `@homebridge/node-pty-prebuilt-multiarch`。两者都没有时，管道模式（`tty: false`）仍可用，`tty: true` 会报告缺少该能力。
+本包在 Pi 上照常加载（使用 Pi 的渲染器，没有 HUD）。每个会话都在 PTY 中运行：Bun 1.4+ 下使用 Bun 原生的 `Bun.Terminal`（omp 是编译后的 Bun 可执行文件），Node 下使用可选依赖 `@homebridge/node-pty-prebuilt-multiarch`。两者都没有时，`exec_command` 在调用时报错并给出加载原因，会话开始时显示一条警告；宿主的 `bash` 照常可用。
 
 ## 功能
 
-- **会话，而不是调用。** `exec_command` 启动进程，在等待窗口内返回已有输出和一个 `session_id`；之后的轮次里，`write_stdin` 可以向它写入、轮询它，或发送控制字节（`\x03` Ctrl-C、方向键）。取消调用永远不会杀掉进程。
-- **PTY 输出就是终端上看到的内容。** `tty: true` 的会话经过无头终端模拟器。运行中的结果返回当前屏幕、自上次调用以来滚出的未见历史与光标位置，而不是叠加每次重绘；退出结果只返回最终活动屏，其余保留行通过 `terminal_url` 读取。模拟器会像真实终端一样回应光标位置、设备属性与默认颜色查询，因此等待回应或选择配色的程序表现与真实终端一致。
+- **会话，而不是调用。** `exec_command` 在 PTY 中启动进程，在等待窗口内返回已有输出和一个 `session_id`；之后的轮次里，`write_stdin` 把字节原样写给它（文本、`\x03` Ctrl-C、方向键），或轮询它。取消调用永远不会杀掉进程。没有命令截止时间，退出的进程也不会被重启。
+- **输出就是终端上看到的内容。** 每个会话都经过无头终端模拟器。运行中的结果返回当前屏幕、自上次调用以来滚出的未见历史与光标位置，而不是叠加每次重绘；退出结果只返回最终活动屏，其余保留行通过 `terminal_url` 读取。模拟器会像真实终端一样回应光标位置、设备属性与默认颜色查询，因此等待回应或选择配色的程序表现与真实终端一致。
 - **输出有上限，完整内容可找回。** 模型看到的每个结果都从尾部截取，最多 50 KiB / 2000 行，并去掉终端控制序列；每个会话的完整原始输出都写入 `log_path`。
 - **可选的完成唤醒。** `on_exit: "wake"` 让后台进程在无人观察时退出后唤醒一次 agent；`set_on_exit` 可以取消。
 - **等待匹配输出。** `monitor` 不消费输出地观察已有会话，在匹配批次或结束时唤醒模型；默认最多成功返回十次匹配消息。
 - **omp 原生呈现。** `exec_command`、`write_stdin` 和 `kill_session` 用 omp 自己的 bash 卡片渲染（命令行、输出、退出码标签、错误配色），在 ANSI TUI 和 Tern 里都是如此。
-- **Tern 里的终端 HUD。** 不用调用工具，就能查看、回滚、输入并结束模型的 tty 会话。
+- **Tern 里的终端 HUD。** 不用调用工具，就能查看、回滚、输入并结束模型的会话。
 
 <a id="tern-hud"></a>
 
 ## Tern 终端 HUD
 
-当 omp 在 Tern 里原生渲染、并且存在 tty 会话时：
+当 omp 在 Tern 里原生渲染、并且存在会话时：
 
-- **计数按钮。** 一个终端图标加存储中的 tty 会话数，单独一行放在 omp 计数器正上方。整行、药丸和分段使用 Tern 原生 HUD 样式，跟随 Reader、Spine、Console 和配色主题。没有外层隐藏按钮；最后一个 tty 被移除后，计数按钮自动卸载。
-- **Terminals 面板。** 点击计数按钮打开一个仿照 omp Agents 面板的面板：每个 tty 会话一行，带状态点、尺寸、PID 和运行时长；选中会话的命令、状态、目录、PID、尺寸、启动时间、可点击的日志路径和最新几行输出作为预览。↑/↓ 或点击选择会话，`x` / Kill 按 `kill_session` 的方式结束它，Esc / Close 关闭面板。
+- **计数按钮。** 一个终端图标加存储中的会话数，单独一行放在 omp 计数器正上方。整行、药丸和分段使用 Tern 原生 HUD 样式，跟随 Reader、Spine、Console 和配色主题。没有外层隐藏按钮；最后一个会话被移除后，计数按钮自动卸载。
+- **Terminals 面板。** 点击计数按钮打开一个仿照 omp Agents 面板的面板：每个会话一行，带状态点、尺寸、PID 和运行时长；选中会话的命令、状态、目录、PID、尺寸、启动时间、可点击的日志路径和最新几行输出作为预览。↑/↓ 或点击选择会话，`x` / Kill 按 `kill_session` 的方式结束它，Esc / Close 关闭面板。
 - **终端页。** Enter / Open 把会话打开成一个仿照 omp Console 的全屏页：显示保留的历史和当前屏幕，带颜色、按会话自身宽度显示，跟随新输出，并可向上回滚。键入的按键会发给会话（与 `write_stdin` 的写法相同，模型能看到效果）；Esc / Back 返回面板；Kill 结束会话。
 
 HUD 直接读取会话，不保存任何副本。它只在 omp 原生渲染时存在，因此 omp 的 ANSI TUI 不会多出一行。工具结果仍是纯文本；显式 `read term://…/screen.png` 请求返回图像。
@@ -60,20 +60,19 @@ CLI 继承 omp 的环境，由 Tern 决定目标目录并负责重新加载。da
 
 ### `exec_command`
 
-在一个持久会话里运行命令。
+在一个持久的 PTY 会话里运行命令。用于长命令、交互程序（REPL、TUI、`ssh`、`sudo`）、并发计算和开发期 daemon；短的一次性命令用宿主的 `bash`。没有命令截止时间，退出的进程也不会被重启。用 `write_stdin` 轮询、`monitor` 和 `read term://…` 观察会话；输出是渲染后的终端屏幕（见[终端输出](#terminal-output)）。
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `cmd` | string | — | Shell 命令。必填。 |
 | `workdir` | string | 当前轮次的 cwd | 工作目录。 |
 | `shell` | string | `bash` | Shell 程序。Windows 上找得到 `bash` 就用它，否则用 `powershell`。`cmd` / `powershell` / `pwsh` 会带上各自对应的参数。 |
-| `tty` | boolean | `false` | 分配 PTY。此时输出是渲染后的终端屏幕；见 [PTY 会话](#pty-sessions)。 |
-| `cols` | number | `120` | PTY 宽度（仅 `tty: true`）。限制在 [20, 500]。 |
-| `rows` | number | `80` | PTY 高度（仅 `tty: true`）。限制在 [5, 300]。 |
+| `cols` | number | `120` | PTY 宽度。限制在 [20, 500]。 |
+| `rows` | number | `80` | PTY 高度。限制在 [5, 300]。 |
 | `yield_time_ms` | number | `10_000` | 本次调用保持连接、等待输出的时长（不是命令的生命期），限制在 [250, 30_000]。 |
 | `on_exit` | `"none"` \| `"wake"` | `"none"` | 无人观察时进程退出的处理策略。`"wake"`：发一条后续提示唤醒 agent——仅在人明确希望自动恢复时使用。之后可用 `set_on_exit` 修改。 |
 
-响应体（输出较短、未截断时）：
+响应体（运行中、输出较短、未截断时）：
 
 ```
 [still running]                     (or [exited])
@@ -81,21 +80,17 @@ session_id: 1                       (mutually exclusive with exit_code)
 exit_code: 0                        (mutually exclusive with session_id)
 signal: SIGTERM                     (optional, if killed)
 log_path: /tmp/pi-unified-exec-1-5cc5e104.log
+terminal_url: term://1-9f2c1a7e-…
 cwd: /home/you/project
 wall_time_seconds: 0.502
 chunk_id: a4f2c1
 original_token_count: 37
 output_bytes_total: 148            (cumulative bytes since spawn — compare across polls to detect stalls)
-omitted_bytes: 0                   (only present when the 1 MiB in-memory retention dropped middle bytes)
-tty: false
+terminal: normal screen 120x80, cursor row 4 col 5
+history_lines: 2                   (running, optional: lines scrolled off above the screen since the last call)
 ---
-<captured stdout+stderr>
-```
-
-管道会话在两次轮询之间输出超过 1 MiB 内存保留量时，中间部分会被丢弃，并在丢弃处插入标记（完整输出始终在 `log_path` 里）：
-
-```
-[... 3145728 bytes omitted here (output exceeded the 1048576-byte in-memory retention between polls; the full stream is in the session log file) ...]
+<history lines not yet reported>
+<the full current screen, trailing blank rows removed>
 ```
 
 输出超过上限（50 KiB / 2000 行）时，末尾会附上一行说明：
@@ -106,27 +101,15 @@ tty: false
 [Showing lines 3900-4120 of 4500 (50.0KB limit). Full output: /tmp/pi-unified-exec-1-5cc5e104.log]
 ```
 
-<a id="pty-sessions"></a>
+<a id="terminal-output"></a>
 
-#### PTY 会话（`tty: true`）
+#### 终端输出
 
-tty 会话把子进程写出的每个字节按顺序送进一个尺寸为会话 `cols`×`rows` 的无头终端模拟器（[`@xterm/headless`](https://www.npmjs.com/package/@xterm/headless)），每次结果报告的是这个终端显示的内容，而不是原始输出流：
-
-```
-[still running]
-session_id: 3
-…
-tty: true
-terminal: normal screen 120x80, cursor row 4 col 5
-history_lines: 2                   (optional: lines scrolled off above the screen since the last call)
----
-<history lines not yet reported>
-<the full current screen, trailing blank rows removed>
-```
+每个会话把子进程写出的每个字节按顺序送进一个尺寸为会话 `cols`×`rows` 的无头终端模拟器（[`@xterm/headless`](https://www.npmjs.com/package/@xterm/headless)），每次结果报告的是这个终端显示的内容，而不是原始输出流。因此每次读取都受屏幕尺寸约束；原始输出流只写入 `log_path`。
 
 - **运行中历史加屏幕。** 先给出自上次调用以来从顶部滚出、且尚未报告过的行，再给出完整的当前屏幕。回车刷新的进度条和重绘只显示最终状态。
 - **运行中屏幕未变。** 屏幕、光标和历史都没变化时，结果带 `screen_changed: false` 和 `(no output)`。
-- **退出只返回一屏。** 每一种 tty 退出结果（包括短命令和确认终止）都返回冻结的最终活动屏，即使屏幕没有变化。`terminal_url` 保留在结果根层；`terminal.retained_rows`、`terminal.rows` 与 `terminal.history_may_be_truncated` 描述正常屏的保留投影，最终元数据不含 `screen_changed` 或 `history_lines`。结果仍受 50 KiB / 2000 行上限约束；通过 URL 的 `/screen` 读取完整屏幕，通过 `/page/N` 读取更早的保留行。
+- **退出只返回一屏。** 每一种退出结果（包括短命令和确认终止）都返回冻结的最终活动屏，即使屏幕没有变化。`terminal_url` 保留在结果根层；`terminal.retained_rows`、`terminal.rows` 与 `terminal.history_may_be_truncated` 描述正常屏的保留投影，最终元数据不含 `screen_changed` 或 `history_lines`。结果仍受 50 KiB / 2000 行上限约束；通过 URL 的 `/screen` 读取完整屏幕，通过 `/page/N` 读取更早的保留行。
 - **全屏程序**（备用屏幕，比如 `top`、编辑器）报告为 `terminal: alternate screen …`；退出后恢复普通屏幕。
 - **工具结果只有纯文本和光标。** exec/write/kill 文本里没有颜色；Tern 的终端页和显式 `read term://…/screen.png` 会显示颜色。
 - **终端查询会被回应**，回应写到子进程的输入上：光标位置、设备属性，以及默认前景色/背景色（OSC 10/11）。在 omp 上颜色跟随 omp 的主题（浅色或深色，在 Tern 里跟随 Tern 的外观）；在 Pi 上为深色。
@@ -134,7 +117,7 @@ history_lines: 2                   (optional: lines scrolled off above the scree
 
 #### 在 omp 中读取保留终端
 
-TTY 结果与 `list_sessions` 带有进程内唯一的 `terminal_url`，例如
+结果与 `list_sessions` 带有进程内唯一的 `terminal_url`，例如
 `term://3-9f2c1a7e-…`。正常屏的保留历史与屏幕可以独立于结果消费来读取：
 
 | 读取路径 | 内容 |
@@ -147,7 +130,7 @@ TTY 结果与 `list_sessions` 带有进程内唯一的 `terminal_url`，例如
 | `term://<key>:raw:1-2` / `term://<key>:raw:-3` | 使用 `read` 现有的 head/tail 选择器，raw 模式不附上下文行。 |
 
 读取不会消费输出、推进观察标记或移除会话。页码越界时报告总页数；
-未知键返回 `unknown_terminal`。管道会话没有终端资源。
+未知键返回 `unknown_terminal`。启动失败的会话没有终端资源。
 
 输出关闭且全部已接收字节解析完毕后，会话冻结物理行、活动屏的样式单元格、
 尺寸、光标与当时的外观。同一 URL 在短命令结束、自然退出、确认终止或 LRU
@@ -170,19 +153,19 @@ Live 读取使用宿主当前外观并画出描边光标；Frozen 读取保留�
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `session_id` | number | — | 必填。 |
-| `chars` | string | `""` | 为空表示纯轮询；非空时先写入（经转义解码）再轮询。与 `chars_b64` 互斥。 |
+| `chars` | string | `""` | 为空表示纯轮询；非空时先把字节（经转义解码）原样写入、不追加任何内容，再轮询。与 `chars_b64` 互斥。 |
 | `chars_b64` | string | `""` | 要写入的 Base64 编码字节，二进制安全。与 `chars` 互斥。 |
 | `yield_time_ms` | number | 有输入时 `250`；空轮询 `5_000` | 连接等待窗口，不是进程超时。带输入的调用限制在 [250, 30_000]。空轮询最少 5_000，没有内置上限；毫秒小数部分向下取整。运维显式设置的上限会拒绝更长的相对轮询。与 `yield_until` 互斥。 |
 | `yield_until` | string | — | **仅用于空轮询**的绝对 UTC 截止时间，严格的 RFC 3339 UTC 格式（`2026-07-21T18:30:00Z` 或带 `.mmm`；大写 `Z`；必须是真实存在的日期）。**仅在人明确要求**长时间等待时使用。进程退出、调用取消或到达截止时间时返回；已过去的截止时间等同于立即轮询。与 `yield_time_ms` 及输入字节互斥。 |
 
 #### 等待长时间运行的命令
 
-1. 根据预期的任务时长使用有限的 `yield_time_ms`。空轮询默认五秒，没有内置上限。等待到期永远不会杀掉进程。
+1. 根据预期的任务时长使用有限的 `yield_time_ms`，或使用 `monitor`（不带条件时在输出关闭后唤醒模型）。空轮询默认五秒，没有内置上限。等待到期永远不会杀掉进程。
 2. **仅在人明确要求**对**有限、非交互**的命令长时间等待或设定挂钟截止时间时，才用 `yield_until`，并根据 `tool_time_utc` 计算。**绝不要**用于 REPL、`sudo`、`ssh`、密码提示、开发服务器、文件监听或调试器。
 3. `on_exit` 默认 `"none"`。只有人明确希望自动恢复时才用 `"wake"`；`set_on_exit(session_id, on_exit: "none")` 可在不杀进程的情况下取消。
 4. 被工具结果直接观察到的退出会消耗掉唤醒；到期或取消则保留唤醒。
 
-两种空轮询使用同一套基于单调时钟的事件驱动等待。管道会话把输出保存在有上限的首尾缓冲区里，tty 会话保存在终端屏幕里；日志始终收到原始输出。流式更新由输出驱动（短轮询每秒最多四次，长等待和绝对等待每 30 秒最多一次），安静时没有心跳。等待期间的缓存预热由宿主负责，与本包无关。原始日志在磁盘上不设上限；归档配额是[后续工作](docs/IV-0002-output-lifecycle-and-rendering.md#output-archive-safety)。
+两种空轮询使用同一套基于单调时钟的事件驱动等待。输出保存在会话的终端屏幕里，因此等待不会累积输出；日志始终收到原始输出。流式更新由输出驱动（短轮询每秒最多四次，长等待和绝对等待每 30 秒最多一次），安静时没有心跳。等待期间的缓存预热由宿主负责，与本包无关。原始日志在磁盘上不设上限；归档配额是[后续工作](docs/IV-0002-output-lifecycle-and-rendering.md#output-archive-safety)。
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
@@ -214,7 +197,7 @@ write_stdin chars="C:\\\\temp"    → "C:\\temp"           (must escape \)
 write_stdin chars_b64="G3s6wgo="  → exact 5 decoded bytes
 ```
 
-同时传 `chars` 和 `chars_b64`，或 base64 格式错误，都会拒绝调用。向 tty 提交输入请用 `\r`：它在所有平台都有效，而 `\n` 在旧版 Windows 控制台里不会执行这一行。
+同时传 `chars` 和 `chars_b64`，或 base64 格式错误，都会拒绝调用。字节原样到达 PTY：不追加任何内容（没有 `\r` 或 `\n`），所以 ESC 和方向键单独发送。终端的行规程把 `\x03`（Ctrl-C）变成发给前台进程组的 SIGINT，把行首的 `\x04`（Ctrl-D）变成规范模式读取程序的文件结束；raw 模式的程序把两者都当作按键读取。提交一行请用 `\r`（回车）：它在所有平台都有效，而 `\n` 在旧版 Windows 控制台里不会执行这一行。
 
 ### `set_on_exit`
 
@@ -247,14 +230,13 @@ write_stdin chars_b64="G3s6wgo="  → exact 5 decoded bytes
 | `condition` | string | 不传 | JavaScript 正则源码（不带 `/` 分隔符）；不传则只在输出关闭时返回。 |
 | `max_returns` | number | `10` | 正安全整数，计成功的匹配消息数，不是行数，也不含 End。 |
 
-Pipe 条件接收清洗后的完整后续行与最后一个不完整行。控制状态跨 chunk；
-未终止的 OSC/DCS 到终止符或 EOF 前一直隐藏。上限取前 1024 个清洗后的 UTF-16
-code unit。TTY 条件接收新增或改变的渲染逻辑行，包括没有换行的提示符；wrapped 物理行会合并。
-纯光标/样式变化不触发，也不会重放建立前的输出。
+条件接收新增或改变的渲染逻辑行，包括没有换行的提示符；wrapped 物理行会合并。
+每行经过清洗，并截取前 1024 个 UTF-16 code unit。纯光标/样式变化不触发，
+也不会重放建立前的输出。
 
 约 250 ms 内的匹配合并成一条 `unified-exec-monitor` 后续消息并唤醒模型。
 每条最多展示 16 行、每行最多 1024 字符，带省略数、成功次数/上限及
-`terminal_url` 或 `log_path`。60 秒内匹配超过 20 个时提示收窄条件，
+会话的 `terminal_url` 与 `log_path`。60 秒内匹配超过 20 个时提示收窄条件，
 但继续观察；最后一次允许的匹配注明上限，只结束 monitor，不结束进程。
 
 实际输出关闭时发送 End，附尚未返回的匹配和退出码/信号；人工 HUD/slash
@@ -262,6 +244,8 @@ code unit。TTY 条件接收新增或改变的渲染逻辑行，包括没有换�
 显式取消、替换、reset 与关闭都静默结束，即使模型 kill 失败也是如此。
 已排队交给宿主的后续消息无法撤回。未知/已结束会话、非法正则及非法上限
 返回类型化错误。
+Windows 上 node-pty 在进程结束后再等 1000 ms 尾部输出，输出关闭与退出约晚 1 s
+才报告；因此退出前刚打印的匹配会先作为匹配消息发出，不并入 End。
 
 ### `kill_session`
 
@@ -276,10 +260,9 @@ code unit。TTY 条件接收新增或改变的渲染逻辑行，包括没有换�
 
 列出存活的会话，并把每个已退出的会话最后报告一次（带 `running: false`、`exit_code`/`signal` 和 `log_path`）后再移除。每条记录带 `wake_armed` 及活动 monitor 的条件/成功次数/上限；响应带 `tool_time_utc`，用于计算 `yield_until` 截止时间。
 
-## 命令和参数
+## 命令
 
 - `/unified-exec-sessions`——在选择器里列出存活会话（已启用唤醒的显示 `[wake]`），不经过模型就能结束选中的会话或全部会话，同样是 SIGTERM → 2 秒 → SIGKILL。
-- `--keep-builtin-bash`——在 Pi 上，内置的 `bash` 工具默认会被移出活动工具集，让模型使用 `exec_command` / `write_stdin`；这个参数会保留它。
 
 ## 呈现
 
@@ -311,8 +294,7 @@ MIN_EMPTY_YIELD_TIME_MS      = 5_000
 DEFAULT_EXEC_YIELD_MS        = 10_000
 DEFAULT_WRITE_STDIN_YIELD_MS = 250
 EARLY_EXIT_GRACE_PERIOD_MS   = 150
-HEAD_TAIL_MAX_BYTES          = 1 MiB   (in-memory drain buffer, pipe sessions)
-TERMINAL_HISTORY_CELLS       = 240_000 (tty history between calls: cells / cols rows, at least one screen)
+TERMINAL_HISTORY_CELLS       = 240_000 (history between calls: cells / cols rows, at least one screen)
 MAX_SESSIONS                 = 64
 LRU_PROTECTED_COUNT          = 8
 DEFAULT_MAX_BYTES            = 50 KiB  (model-visible per-call cap)
@@ -323,13 +305,15 @@ DEFAULT_MAX_LINES            = 2000
 
 - **提前退出：**150 毫秒内结束的命令不会进入会话存储；结果带 `exit_code`，没有 `session_id`。
 - **在两次调用之间退出**的会话会留在存储里，直到下一次 `write_stdin` 或 `list_sessions` 报告它。
-- **启动失败**（shell 或 `workdir` 不存在）以 `failure_message` 报告。
-- **shell 退出与管道关闭：**会话一直运行到其输出管道关闭。继承了 stdout 的后台子进程会让管道保持打开；这类结果会带一条 `note`，说明如何把它们分离出去。
-- **关闭了 stdin** 不会让宿主崩溃；写入时报告 `failure_message`。
+- **启动失败**（shell 或 `workdir` 不存在）在 PTY 启动前检查，以 `failure_message` 报告（`spawn <file> ENOENT: …`）。
+- **没有 PTY 后端：**`exec_command` 在调用时报错并给出加载原因。
+- **没有截止时间，也不重启：**本包从不因运行太久而结束命令，也从不重启已退出的进程。
+- **shell 退出与终端关闭：**会话一直运行到其终端关闭。在 shell 退出后仍存活并持有 PTY 的后代进程（例如 `nohup` 或忽略 SIGHUP 的任务）会让终端保持打开；这类结果会带一条 `note`，说明如何把它分离出去（`setsid cmd >log 2>&1 </dev/null &`），运行中会话小部件会把该会话标为 `terminal held`。
+- **终端已关闭**不会让宿主崩溃；写入时报告 `failure_message`。
 - **Esc** 中断当前等待，但会话继续运行。
-- **关闭**时向每个会话发送 SIGTERM，1 秒后对仍存活的发送 SIGKILL。
+- **关闭**时向每个会话发送 SIGTERM，1 秒后对仍存活的发送 SIGKILL。终端已被关闭释放的进行中调用返回空输出，进程状态按实际报告：已退出，或在 SIGKILL 生效前仍在运行。
 - **LRU 淘汰**在达到 64 个会话时进行，淘汰最旧的非保护会话，优先选已退出的；最近使用的 8 个永不淘汰。
-- **tty 观察**按会话串行执行；流式更新、`read term://`、monitor 与 Tern HUD 不消费普通观察。冻结终端资源的生命周期不受会话存储成员关系限制。
+- **观察**按会话串行执行；流式更新、`read term://`、monitor 与 Tern HUD 不消费普通观察。冻结终端资源的生命周期不受会话存储成员关系限制。
 - **日志**放在临时目录（`/tmp` 或 `%TEMP%`），本包从不删除。请用不会执行控制序列的查看器查看原始 PTY 日志，不要用 `cat`。
 
 ## 示例
@@ -354,7 +338,7 @@ session_id: 1
 ### 交互式 Python REPL
 
 ```
-> exec_command(cmd="python3 -q", tty=true, yield_time_ms=1500)
+> exec_command(cmd="python3 -q", yield_time_ms=1500)
 [still running]
 session_id: 1
 terminal: normal screen 120x80, cursor row 1 col 5
@@ -384,9 +368,10 @@ completion_notification: armed
 
 ## Windows
 
-管道和 PTY 都可用；`tty: true` 通过 `Bun.Terminal`（Bun）或 node-pty（Node）使用 ConPTY。
+每个会话都在 ConPTY 中运行，经由 `Bun.Terminal`（Bun）或 node-pty（Node）。
 
 - **默认 shell：**`bash`，依次查找 `PI_UNIFIED_EXEC_BASH`、PATH 上的 `bash`（排除 System32 里的 WSL 存根）、由 `git.exe` 推导或常见安装位置下的 Git for Windows，最后退回 `powershell` 并提示一次。启动前会把 shell 名解析成绝对路径。
+- **PowerShell**（`powershell`，或任何平台上的 `pwsh`）以 `-NoProfile -NoLogo -Command <cmd>` 运行，所以它的交互式提示可以用 `write_stdin` 回答。
 - **没有 POSIX 信号：**每次 kill 都是结束整个进程树（`taskkill /T /F`）；被结束的进程报告 `exit_code: 1`，kill 失败会如实报告。
 - **Node PTY 预编译包**在安装时下载，不受 npm 摘要校验覆盖；Bun 内置的后端不需要这一下载。
 
@@ -394,17 +379,16 @@ completion_notification: armed
 
 ```
 src/
-├── index.ts              # tool registration, event handlers, flag
+├── index.ts              # tool registration, event handlers
 ├── session.ts            # ExecSession: spawn, read, write, kill, log stream, state
 ├── session-store.ts      # SessionStore + LRU eviction
-├── head-tail-buffer.ts   # port of codex's HeadTailBuffer
-├── collect.ts            # collectOutputUntilDeadline
-├── long-wait.ts          # event-driven empty-poll wait + rate-limited streaming
+├── collect.ts            # CollectResult: screen, final screen or none
+├── long-wait.ts          # event-driven waits (polls, collection, kill) + rate-limited streaming
 ├── time.ts               # durations, operator limit, strict UTC deadlines
 ├── format-time.ts        # elapsed / remaining labels
 ├── completion.ts         # on_exit "wake" coordination (exactly-once)
 ├── notify.ts             # Notify / Gate / sleep primitives
-├── pty.ts                # Bun.Terminal + node-pty backends, pipes, Windows tree-kill
+├── pty.ts                # Bun.Terminal + node-pty backends, spawn preflight, Windows tree-kill
 ├── shell.ts              # shell selection and argv (Windows-aware)
 ├── output-safety.ts      # terminal-control stripping
 ├── terminal-screen.ts    # headless terminal: observations, styled screens, query answers
@@ -417,6 +401,10 @@ fork-features/
 ├── omp-presentation.ts   # omp host detection, bash-renderer delegation, theme appearance
 ├── omp-tools.d.ts        # types of the omp modules loaded at runtime
 ├── tern-terminal-hud.ts  # counter pill, Terminals sheet, terminal page
+├── terminal-resource.ts  # process-global terminal keys, live/frozen projections
+├── terminal-url.ts       # omp `term://` read handler
+├── terminal-image.ts     # terminal screenshots (SVG → PNG)
+├── monitor-subscription.ts # monitor conditions, batching and follow-ups
 ├── tern-plugin-install.ts# keeps the Tern plugin installed
 ├── tern-plugin/          # CSS-only Tern plugin
 └── README.md             # fork customizations and requalification

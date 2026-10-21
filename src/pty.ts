@@ -1,16 +1,18 @@
 /**
- * Unified spawn: Bun's native terminal, node-pty, or plain pipes.
+ * PTY spawn: Bun's native terminal under Bun, node-pty under Node.
  *
  * Presents a single `SpawnedChild` abstraction used by `session.ts` regardless
- * of underlying mode. Mirrors codex's `codex_utils_pty::pty` (tty=true) and
- * `codex_utils_pty::pipe` (tty=false).
+ * of backend. Mirrors codex's `codex_utils_pty::pty`; every session runs in a
+ * PTY, so there is no pipe backend.
  */
 
-import { spawn as cpSpawn, type ChildProcess } from "node:child_process";
+import { spawn as cpSpawn } from "node:child_process";
+import { statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { constants as osConstants } from "node:os";
+import { resolve as resolvePath } from "node:path";
 
-import { IS_WINDOWS, resolveBinary } from "./shell.ts";
+import { findOnPath, IS_WINDOWS, isFile, resolveBinary } from "./shell.ts";
 
 /** PTY geometry used when the caller does not choose one. */
 export const DEFAULT_PTY_COLS = 120;
@@ -20,7 +22,6 @@ export interface SpawnOptions {
 	command: string[];
 	cwd: string;
 	env: NodeJS.ProcessEnv;
-	tty: boolean;
 	cols?: number;
 	rows?: number;
 	/** Windows-only: pass args verbatim (needed for cmd.exe quoting). */
@@ -42,16 +43,16 @@ export type ExitCallback = (
 
 export interface SpawnedChild {
 	readonly pid: number | undefined;
-	readonly tty: boolean;
 	/**
 	 * The direct child process (the shell) has exited. Distinct from the
-	 * session's close-based exit: descendants that inherited the stdout/stderr
-	 * pipe keep it open, so pipe EOF (and thus `close`) can lag the process
-	 * exit indefinitely. Exposed so callers can explain a session that stays
-	 * "running" after its shell is gone.
+	 * session's exit, which waits for the terminal to close: descendants that
+	 * still hold the PTY (e.g. a SIGHUP-immune background job) keep it open,
+	 * so the terminal close can lag the process exit indefinitely. Exposed so
+	 * callers can explain a session that stays "running" after its shell is
+	 * gone.
 	 */
 	readonly processExited: boolean;
-	/** Write raw bytes to the child's stdin (or PTY input side). */
+	/** Write raw bytes to the PTY input side. */
 	write(data: Uint8Array): boolean;
 	/** Subscribe to data chunks (combined stdout+stderr). Returns unsubscribe. */
 	onData(handler: (chunk: Uint8Array) => void): () => void;
@@ -199,7 +200,7 @@ function loadNodePty(): void {
 
 // Numeric signal → name, built from the platform's full signal table so our
 // ExitCallback always reports SIG* strings (SIGSEGV, SIGPIPE, SIGUSR1, …
-// included — a hand-picked subset previously made tty-mode crashes look like
+// included — a hand-picked subset previously made crashes look like
 // exit_code=0). First name wins for aliased numbers (e.g. SIGABRT/SIGIOT).
 const SIGNAL_NAMES: Record<number, NodeJS.Signals> = {};
 for (const [name, num] of Object.entries(osConstants.signals)) {
@@ -215,10 +216,10 @@ export function signalNameFromNumber(num: number): NodeJS.Signals | null {
  * Windows: force-kill the whole process tree rooted at `pid`.
  *
  * There are no POSIX signals or process groups on Windows. Killing only the
- * direct child (the shell) leaves grandchildren alive holding the stdio
- * pipes open, which delays our `close` event indefinitely and orphans the
+ * direct child (the shell) leaves grandchildren alive holding the console
+ * open, which delays the terminal's exit indefinitely and orphans the
  * subtree. `taskkill /T /F` terminates the tree rooted at `pid`. Fire-and-
- * forget: the child's `close` event is the source of truth for exit.
+ * forget: the backend's exit event is the source of truth for exit.
  *
  * Limitation: /T enumerates children of a LIVE root — if the direct child
  * already exited while a backgrounded grandchild lives on, taskkill finds
@@ -277,21 +278,42 @@ export function disposeWindowsConpty(child: unknown): void {
 	}
 }
 
-/** Spawn a child with PTY or pipes. Throws if PTY requested but unavailable. */
-export function spawnChild(opts: SpawnOptions): SpawnedChild {
-	if (!opts.tty) return spawnPipes(opts);
+/**
+ * PTY backends exec the child after the terminal exists, so a missing shell
+ * binary or workdir surfaces only as a bare non-zero exit with no output.
+ * Check both first so the caller gets a diagnosable failure.
+ */
+function assertSpawnable(opts: SpawnOptions): void {
+	const file = opts.command[0];
+	if (!file) throw new Error("spawnChild: empty command");
+	let cwdIsDirectory = false;
+	try {
+		cwdIsDirectory = statSync(opts.cwd).isDirectory();
+	} catch {
+		// missing or unreadable: reported below
+	}
+	if (!cwdIsDirectory) throw new Error(`spawn ${file} ENOENT: workdir is not an existing directory: ${opts.cwd}`);
+	const found = /[\\/]/.test(file) ? isFile(resolvePath(opts.cwd, file)) : findOnPath(file, opts.env) !== undefined;
+	if (!found) throw new Error(`spawn ${file} ENOENT: shell binary not found (check shell binary and workdir: ${opts.cwd})`);
+}
 
+/**
+ * Spawn a child in a PTY. Throws with the load reason when neither Bun.Terminal
+ * nor node-pty is available.
+ */
+export function spawnChild(opts: SpawnOptions): SpawnedChild {
+	assertSpawnable(opts);
 	const bun = detectBunRuntime();
 	if (bun.kind === "available") return spawnBunPty(bun.runtime, opts);
 	if (bun.kind === "unsupported") {
-		throw new Error(`tty: true is unavailable: ${bun.error}. Upgrade Bun or call with tty: false.`);
+		throw new Error(`exec_command needs a PTY, but ${bun.error}. Upgrade Bun to a version with Bun.Terminal.`);
 	}
 
 	loadNodePty();
 	if (!ptyModule) {
 		throw new Error(
-			`tty: true requires @homebridge/node-pty-prebuilt-multiarch under Node, but it failed to load: ${ptyLoadError ?? "unknown error"}.\n` +
-				`Install this package's optional dependencies or call with tty: false.`,
+			`exec_command needs a PTY: ${PTY_PACKAGE} failed to load under Node: ${ptyLoadError ?? "unknown error"}.\n` +
+				`Install this package's optional dependencies.`,
 		);
 	}
 	return spawnNodePty(ptyModule, opts);
@@ -394,11 +416,10 @@ function spawnBunPty(runtime: BunRuntime, opts: SpawnOptions): SpawnedChild {
 		},
 	});
 	terminal = child.terminal;
-	if (!terminal) throw new Error("Bun.spawn did not return a terminal for tty: true");
+	if (!terminal) throw new Error("Bun.spawn did not return a terminal");
 
 	return {
 		pid: child.pid,
-		tty: true,
 		get processExited() {
 			return processExited;
 		},
@@ -510,7 +531,6 @@ function spawnNodePty(mod: PtyModule, opts: SpawnOptions): SpawnedChild {
 
 	return {
 		pid: child.pid,
-		tty: true,
 		get processExited() {
 			return processExited;
 		},
@@ -546,116 +566,6 @@ function spawnNodePty(mod: PtyModule, opts: SpawnOptions): SpawnedChild {
 			} catch {
 				// already gone
 			}
-		},
-	};
-}
-
-// ---------------- Pipes impl ----------------
-
-function spawnPipes(opts: SpawnOptions): SpawnedChild {
-	const [file, ...args] = opts.command;
-	if (!file) throw new Error("spawnChild: empty command");
-	const child: ChildProcess = cpSpawn(file, args, {
-		cwd: opts.cwd,
-		env: opts.env,
-		// POSIX: own process group so we can `kill -pid` the whole tree.
-		// Windows has no process groups; we tree-kill via taskkill instead.
-		detached: !IS_WINDOWS,
-		stdio: ["pipe", "pipe", "pipe"],
-		windowsHide: true,
-		windowsVerbatimArguments: opts.windowsVerbatimArguments,
-	});
-
-	const dataHandlers = new Set<(chunk: Uint8Array) => void>();
-	const exitHandlers = new Set<ExitCallback>();
-	let exited = false;
-	let processExited = false;
-	// The process `exit` event fires when the shell itself ends, before its
-	// stdio streams are closed. Background jobs that inherited the output
-	// pipe delay the `close` event indefinitely; this flag keeps the two
-	// distinct so a held-open session is diagnosable instead of looking like
-	// a still-working command.
-	child.once("exit", () => {
-		processExited = true;
-	});
-
-	const onChunk = (chunk: Buffer) => {
-		const view = new Uint8Array(chunk);
-		for (const h of dataHandlers) {
-			try {
-				h(view);
-			} catch {
-				// ignore
-			}
-		}
-	};
-	child.stdout?.on("data", onChunk);
-	child.stderr?.on("data", onChunk);
-	// Swallow async stdin errors (EPIPE when the child closes its stdin while
-	// we still hold the write end). Without this handler a single EPIPE is an
-	// unhandled 'error' event that crashes the entire host process.
-	child.stdin?.on("error", () => {});
-
-	const finalize = (code: number | null, signal: NodeJS.Signals | null, failureMessage?: string) => {
-		if (exited) return;
-		exited = true;
-		for (const h of exitHandlers) {
-			try {
-				h(code, signal, failureMessage);
-			} catch {
-				// ignore
-			}
-		}
-		exitHandlers.clear();
-		dataHandlers.clear();
-	};
-	// Use `close`, not `exit`: on macOS, very short-lived commands can emit the
-	// process `exit` event before stdout/stderr have delivered their final data.
-	// Treating `close` as our completion signal preserves trailing output before
-	// ExecSession drains and finalizes the response.
-	child.once("close", (code, signal) => finalize(code, signal));
-	child.once("error", (err) => {
-		// Async spawn/runtime failure (ENOENT shell binary, nonexistent cwd, …).
-		// Force an "exit" notification so callers don't hang, and carry the
-		// error message so the LLM sees a diagnosable failure.
-		const base = err?.message ?? String(err);
-		const msg = /ENOENT/.test(base) ? `${base} (check shell binary and workdir: ${opts.cwd})` : base;
-		finalize(null, null, `process error: ${msg}`);
-	});
-
-	return {
-		pid: child.pid,
-		tty: false,
-		get processExited() {
-			return processExited;
-		},
-		write(data) {
-			const stdin = child.stdin;
-			if (exited || !stdin || stdin.destroyed || stdin.writableEnded) return false;
-			// Ignore the backpressure return value of stream.write(): `false`
-			// there means "queued, buffer full", not "dropped". Our contract is
-			// `false` = bytes were NOT accepted.
-			stdin.write(Buffer.from(data));
-			return true;
-		},
-		onData(handler) {
-			dataHandlers.add(handler);
-			return () => dataHandlers.delete(handler);
-		},
-		onExit(handler) {
-			if (exited) return;
-			exitHandlers.add(handler);
-		},
-		kill(signal = "SIGTERM") {
-			if (exited || !child.pid) return;
-			if (IS_WINDOWS) {
-				// Windows has no graceful console signal we can deliver from
-				// here (taskkill without /F sends WM_CLOSE, which console apps
-				// ignore). Every signal maps to a force tree-kill.
-				killWindowsTree(child.pid);
-				return;
-			}
-			killPosixProcessGroup(child.pid, signal);
 		},
 	};
 }

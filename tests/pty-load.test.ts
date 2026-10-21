@@ -4,7 +4,7 @@
  * 1. When EXPECT_PTY=1 (set in CI for all matrix platforms), assert the
  *    @homebridge/node-pty-prebuilt-multiarch module actually loads. Without
  *    this, a prebuild/load failure silently skips the whole PTY e2e suite
- *    and CI stays green while tty:true is broken.
+ *    and CI stays green while PTY spawning is broken.
  *
  * 2. disposeWindowsConpty pokes undocumented node-pty internals
  *    (_agent._conoutSocketWorker etc.); a mock-agent test locks the calls
@@ -70,12 +70,11 @@ describe("PTY module loading", () => {
 			assert.throws(
 				() =>
 					spawnChild({
-						command: ["unused"],
+						command: [process.execPath],
 						cwd: process.cwd(),
 						env: process.env,
-						tty: true,
 					}),
-				/Upgrade Bun or call with tty: false/,
+				/exec_command needs a PTY.*Upgrade Bun.*Bun\.Terminal/,
 			);
 		} finally {
 			if (original) Object.defineProperty(globalThis, "Bun", original);
@@ -110,10 +109,9 @@ describe("PTY module loading", () => {
 		});
 		try {
 			const child = spawnChild({
-				command: ["unused"],
+				command: [process.execPath],
 				cwd: process.cwd(),
 				env: process.env,
-				tty: true,
 			});
 			let output = "";
 			child.onData((chunk) => {
@@ -168,10 +166,9 @@ describe("PTY module loading", () => {
 		});
 		try {
 			const child = spawnChild({
-				command: ["unused"],
+				command: [process.execPath],
 				cwd: process.cwd(),
 				env: process.env,
-				tty: true,
 			});
 			let output = "";
 			const unsubscribe = child.onData((chunk) => {

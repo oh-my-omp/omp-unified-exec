@@ -1,10 +1,10 @@
 /**
- * Tern terminal HUD (fork): live view of every tty session for omp's native
- * (Tern Surface Protocol) frontend.
+ * Tern terminal HUD (fork): live view of every exec_command session for omp's
+ * native (Tern Surface Protocol) frontend.
  *
  * A counter pill on omp's native `omp.hud` row (`omp.hud.pill` with one
  * `omp.hud.seg`: a tinted icon and the bare count, the words in the hover
- * label) counts the stored tty sessions. Clicking it opens the Terminals
+ * label) counts the stored sessions. Clicking it opens the Terminals
  * sheet, built like omp's Agents sheet: a `picker` listing the sessions with
  * a status dot, and the selected session's facts and newest output rows as
  * its preview. Open shows its retained history and current screen in a
@@ -148,7 +148,7 @@ function parseItemId(item: unknown): number | undefined {
 }
 
 /**
- * Pure: the dock row for `count` stored tty sessions (at least one: the
+ * Pure: the dock row for `count` stored sessions (at least one: the
  * widget is unmounted otherwise). omp's running-work counter, copied: a row
  * with role `omp.hud`, holding an `omp.hud.pill` with one `omp.hud.seg`
  * segment, a tinted icon and the bare count; the words live in the hover
@@ -312,7 +312,7 @@ export function describeTerminalsSheet(
 			})),
 			selected: selected ? itemId(selected.id) : null,
 			state: "ready",
-			empty: "No tty sessions. Start one with exec_command tty: true.",
+			empty: "No sessions. Start one with exec_command.",
 			actions: [
 				{
 					id: KILL_ACTION,
@@ -395,11 +395,8 @@ export function describeTerminalPage(entry: TerminalEntry | undefined): HudNode 
 
 // ---------------- components ----------------
 
-function ttySessions(store: SessionStore): ExecSession[] {
-	return store
-		.values()
-		.filter((session) => session.tty)
-		.sort((a, b) => a.id - b.id);
+function sortedSessions(store: SessionStore): ExecSession[] {
+	return store.values().sort((a, b) => a.id - b.id);
 }
 
 function entryOf(session: ExecSession | undefined): TerminalEntry | undefined {
@@ -449,7 +446,7 @@ class TerminalPill implements Component {
 	}
 
 	describe(): HudNode {
-		const count = ttySessions(this.store).length;
+		const count = this.store.size;
 		if (this.described?.count !== count) this.described = { count, node: describeTerminalPill(count) };
 		return this.described.node;
 	}
@@ -486,9 +483,9 @@ class SessionWatch {
 		this.sync();
 	}
 
-	/** Watch every stored tty session's exit and only the shown one's screen. */
+	/** Watch every stored session's exit and only the shown one's screen. */
 	sync(): void {
-		const sessions = ttySessions(this.store);
+		const sessions = sortedSessions(this.store);
 		const shownId = this.shown() ?? sessions[0]?.id;
 		const live = new Set<number>();
 		for (const session of sessions) {
@@ -548,7 +545,7 @@ class TerminalsSheet implements Component {
 	};
 
 	private selected(): ExecSession | undefined {
-		const sessions = ttySessions(this.store);
+		const sessions = sortedSessions(this.store);
 		return sessions.find((session) => session.id === this.selectedId) ?? sessions[0];
 	}
 
@@ -560,7 +557,7 @@ class TerminalsSheet implements Component {
 	}
 
 	private move(delta: number): void {
-		const sessions = ttySessions(this.store);
+		const sessions = sortedSessions(this.store);
 		if (sessions.length === 0) return;
 		const index = Math.max(0, sessions.findIndex((session) => session.id === this.selectedId));
 		this.select(sessions[Math.min(sessions.length - 1, Math.max(0, index + delta))]!.id);
@@ -583,7 +580,7 @@ class TerminalsSheet implements Component {
 
 	describe(): HudNode {
 		if (!this.described) {
-			const entries = ttySessions(this.store).flatMap((session) => entryOf(session) ?? []);
+			const entries = sortedSessions(this.store).flatMap((session) => entryOf(session) ?? []);
 			this.described = describeTerminalsSheet(entries, this.selectedId);
 		}
 		return this.described;
@@ -650,8 +647,7 @@ class TerminalPage implements Component {
 	};
 
 	private session(): ExecSession | undefined {
-		const session = this.store.get(this.id);
-		return session?.tty ? session : undefined;
+		return this.store.get(this.id);
 	}
 
 	get nativeOverlay(): Readonly<Record<string, unknown>> {
@@ -702,7 +698,7 @@ export async function loadNativeRenderingState(): Promise<NativeRenderingState> 
 
 /**
  * Keep the pill mounted in omp's dock exactly while omp renders natively and
- * the store holds a tty session; the ANSI TUI never gets a widget (and so no
+ * the store holds a session; the ANSI TUI never gets a widget (and so no
  * spacer row). A pill click opens the Terminals sheet; Open replaces it with
  * the session's terminal page, whose Back reopens the sheet on the same
  * session. At most
@@ -746,7 +742,7 @@ export function mountTerminalHud(pi: ExtensionAPI, store: SessionStore, native: 
 	};
 
 	const sync = (): void => {
-		const wanted = ui !== undefined && native.isNativeRendering() && ttySessions(store).length > 0;
+		const wanted = ui !== undefined && native.isNativeRendering() && store.size > 0;
 		if (!wanted) {
 			unmount();
 			return;

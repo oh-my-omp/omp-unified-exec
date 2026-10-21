@@ -6,6 +6,7 @@ import type { MonitorMessage } from "../fork-features/monitor-subscription.ts";
 import { CompletionCoordinator } from "../src/completion.ts";
 import { ExecSession } from "../src/session.ts";
 import { TerminalScreen, type TerminalLineSubscription } from "../src/terminal-screen.ts";
+import { IS_WINDOWS } from "../src/shell.ts";
 
 const encoder = new TextEncoder();
 
@@ -26,11 +27,15 @@ async function renderedDelta(cols: number, rows: number, before: string, after: 
 	}
 }
 
-function pipeSession(id: number): ExecSession {
-	return ExecSession.spawn(id, {
-		command: [process.execPath, "-e", "process.stdin.on('data', b => { if (b.toString().includes('EXIT')) process.stdout.write('LAST MATCH', () => process.exit(4)); else process.stdout.write(b); });"],
-		cwd: process.cwd(), env: { ...process.env }, tty: false,
+async function terminalSession(id: number): Promise<ExecSession> {
+	const session = ExecSession.spawn(id, {
+		command: [process.execPath, "-e", "process.stdin.setRawMode(true); process.stdout.write('READY\\r\\n'); process.stdin.on('data', b => { if (b.toString().includes('EXIT')) process.stdout.write('LAST MATCH', () => process.exit(4)); else process.stdout.write(b.toString().replace(/\\n/g, '\\r\\n')); });"],
+		cwd: process.cwd(), env: { ...process.env },
 	});
+	const ready = await session.collect({ deadlineMs: Date.now() + 3000 });
+	assert.equal(ready.kind, "screen");
+	if (ready.kind === "screen" && ready.observation.kind === "rendered") assert.match(ready.observation.text, /READY/);
+	return session;
 }
 
 async function close(session: ExecSession): Promise<void> {
@@ -78,7 +83,7 @@ describe("monitor source and delivery", () => {
 	});
 
 	it("counts successful returns only and retries a failed batch without losing process output", async (t) => {
-		const session = pipeSession(9101);
+		const session = await terminalSession(9101);
 		const failed = Promise.withResolvers<void>();
 		const delivered = Promise.withResolvers<MonitorMessage>();
 		let attempts = 0;
@@ -104,12 +109,14 @@ describe("monitor source and delivery", () => {
 		assert.match(message.content, /limit reached/);
 		assert.equal(coordinator.monitorStatus(session.id), undefined);
 		const output = await session.collect({ deadlineMs: Date.now() });
-		assert.equal(output.kind, "stream");
-		if (output.kind === "stream") assert.match(new TextDecoder().decode(output.bytes), /MATCH one/);
+		assert.ok(output.kind === "screen" && output.observation.kind === "rendered", `ordinary observation was consumed: ${JSON.stringify(output)}`);
+		assert.match(output.observation.text, /MATCH one/);
 	});
 
-	it("merges final partial pipe output with End and consumes exactly the matching ordinary wake", async (t) => {
-		const session = pipeSession(9102);
+	// Windows: node-pty closes output 1000 ms after exit, past the 250 ms
+	// coalescing window, so final output arrives as a match before End.
+	it("merges final partial terminal output with End and consumes exactly the matching ordinary wake", { skip: IS_WINDOWS }, async (t) => {
+		const session = await terminalSession(9102);
 		const delivered = Promise.withResolvers<MonitorMessage>();
 		let ordinary = 0;
 		let monitors = 0;
@@ -132,54 +139,3 @@ describe("monitor source and delivery", () => {
 	});
 });
 
-describe("pipe monitor sanitized bounds", () => {
-	it("counts only cleaned characters and preserves keywords across control spans", async (t) => {
-		const session = pipeSession(9201);
-		const delivered = Promise.withResolvers<MonitorMessage>();
-		const coordinator = new CompletionCoordinator({ send: () => {}, sendMonitor: (message) => { delivered.resolve(message); } });
-		t.after(async () => { coordinator.shutdown(); await close(session); });
-		await coordinator.startMonitor(session, "KEYWORD", 10);
-		const input = "\x1b[31m".repeat(220) + "KEYWORD colored\n" +
-			"KEYWORD" + "x".repeat(2000) + "\n" +
-			"x".repeat(2000) + "KEYWORD beyond-visible-bound\n" +
-			"中KEY\x1b[0mWORD🎉\n";
-		session.write(encoder.encode(input));
-		const message = await delivered.promise;
-		assert.deepEqual(message.details.lines, ["KEYWORD colored", "KEYWORD" + "x".repeat(1017), "中KEYWORD🎉"]);
-		assert.equal(message.details.recent_matches, 3);
-		assert.equal(message.details.returns, 1);
-		assert.equal(message.details.omitted_lines, 0);
-		const ordinary = await session.collect({ deadlineMs: Date.now() });
-		if (ordinary.kind !== "stream") throw new Error("pipe returned a terminal projection");
-		assert.match(new TextDecoder().decode(ordinary.bytes), /KEYWORD colored/);
-	});
-
-	it("does not expose control-string newlines or payload across pipe chunks", async (t) => {
-		const session = pipeSession(9202);
-		const delivered = Promise.withResolvers<MonitorMessage>();
-		const coordinator = new CompletionCoordinator({ send: () => {}, sendMonitor: (message) => { delivered.resolve(message); } });
-		t.after(async () => { coordinator.shutdown(); await close(session); });
-		await coordinator.startMonitor(session, "KEYWORD", 10);
-		session.write(encoder.encode("\x1b]0;hidden\nPAYLOAD KEYWORD\n\x1b"));
-		session.write(encoder.encode("\\KEY\x1b[31mWORD visible\n"));
-		const message = await delivered.promise;
-		assert.deepEqual(message.details.lines, ["KEYWORD visible"]);
-		assert.equal(message.details.recent_matches, 1);
-	});
-
-	it("flushes the visible final partial while discarding an unterminated control suffix", async (t) => {
-		const session = pipeSession(9203);
-		const delivered = Promise.withResolvers<MonitorMessage>();
-		const coordinator = new CompletionCoordinator({ send: () => {}, sendMonitor: (message) => { delivered.resolve(message); } });
-		t.after(async () => { coordinator.shutdown(); await close(session); });
-		await coordinator.startMonitor(session, "KEYWORD", 10);
-		const received = session.outputNotify.notified();
-		session.write(encoder.encode("KEYWORD before\x1bPpayload\nHIDDEN KEYWORD"));
-		await received;
-		session.kill("SIGKILL");
-		const message = await delivered.promise;
-		assert.equal(message.details.event, "end");
-		assert.deepEqual(message.details.lines, ["KEYWORD before"]);
-		assert.equal(message.details.returns, 0);
-	});
-});

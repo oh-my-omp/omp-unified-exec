@@ -68,7 +68,6 @@ interface SessionListItem {
 	session_id: number;
 	command: string;
 	cwd: string;
-	tty: boolean;
 	pid?: number;
 	elapsed_ms: number;
 	running: boolean;
@@ -126,7 +125,7 @@ function safeOneLine(value: string, max = 120): string {
 // ---------------- renderCall ----------------
 
 export function renderExecCommandCall(
-	args: { cmd?: string; workdir?: string; tty?: boolean; yield_time_ms?: number; on_exit?: unknown },
+	args: { cmd?: string; workdir?: string; yield_time_ms?: number; on_exit?: unknown },
 	theme: Theme,
 	context: ToolRenderContext<RenderState, typeof args>,
 ): Component {
@@ -139,7 +138,6 @@ export function renderExecCommandCall(
 	if (args?.yield_time_ms) parts.push(`yield ${(args.yield_time_ms / 1000).toFixed(1)}s`);
 	const effectiveCwd = args?.workdir || context.cwd;
 	if (effectiveCwd) parts.push(`cwd: ${safeOneLine(tildify(effectiveCwd))}`);
-	if (args?.tty) parts.push("tty");
 	const suffix = parts.length ? theme.fg("muted", ` (${parts.join(" · ")})`) : "";
 	const wake = args?.on_exit === "wake" ? theme.fg("warning", " [wake]") : "";
 	const banner = theme.fg("toolTitle", theme.bold(`$ ${cmd}`)) + suffix + wake;
@@ -474,7 +472,7 @@ export function renderListSessionsResult(
 							);
 					const wake = session.wake_armed ? theme.fg("warning", " [wake]") : "";
 					const command = safeOneLine(session.command, 100);
-					const line = `#${session.session_id} pid=${session.pid ?? "?"} ${session.tty ? "tty" : "pipe"} ${(session.elapsed_ms / 1000).toFixed(1)}s ${state}${wake} ${command}`;
+					const line = `#${session.session_id} pid=${session.pid ?? "?"} ${(session.elapsed_ms / 1000).toFixed(1)}s ${state}${wake} ${command}`;
 					lines.push(truncateToWidth(line, width, "..."));
 					if (options.expanded) {
 						lines.push(

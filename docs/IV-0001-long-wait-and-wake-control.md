@@ -14,8 +14,8 @@ exceed 290 seconds. Invalid explicit configuration fails the call. Durations
 must be non-negative, finite and within the safe JavaScript millisecond range.
 
 Both empty-poll forms use `runAttachedWait` in `src/index.ts` and the monotonic,
-chunked timer engine in `src/long-wait.ts`. Neither drains output while waiting.
-Cancellation preserves buffered output and the live process. Terminal delivery
+chunked timer engine in `src/long-wait.ts`. Neither consumes output while
+waiting. Cancellation leaves the unobserved screen and the live process intact. Terminal delivery
 still commits at `tool_execution_end`; failed/cancelled delivery leaves an
 armed wake eligible. Long polls use output-driven, rate-limited updates.
 
@@ -55,20 +55,16 @@ old one; `action: "cancel"` silently removes it. Unknown/ended sessions,
 invalid regexes and invalid limits return typed errors without replacing an
 existing subscription.
 
-The process/terminal source establishes the future-only boundary before the
-coordinator publishes the actual subscription. Pipe sessions stream-decode
-only subsequent bytes, sanitize before splitting visible lines, and then bound
-each clean line. Control state spans chunks: newlines inside OSC/DCS payloads
-never create output lines. An unterminated control string stays suppressed
-until its terminator or EOF; no length reset exposes its payload. The final
-visible partial line is flushed at closure. TTY sessions compare rendered text/row identities:
-wrapped physical rows form logical lines, including nonempty incomplete
-prompts. Cursor-only movement over existing blank rows and style-only changes
-do not trigger. New blank row identities and nonempty-to-empty erases can
-match an empty-line condition; untouched padding is not output. These are
-rendered-state deltas, not byte/LF replay.
+The terminal source establishes the future-only boundary before the
+coordinator publishes the actual subscription. Conditional monitors compare
+rendered text/row identities: wrapped physical rows form logical lines,
+including nonempty incomplete prompts. Cursor-only movement over existing
+blank rows and style-only changes do not trigger. New blank row identities and
+nonempty-to-empty erases can match an empty-line condition; untouched padding
+is not output. These are rendered-state deltas, not byte/LF replay.
+Unconditional monitors install no row cursor and only await output closure.
 
-TTY evaluation waits 50 ms for quiet, with a 250 ms maximum delay during
+Evaluation waits 50 ms for quiet, with a 250 ms maximum delay during
 continuous output. A source-owned history frontier and reusable per-current-row
 markers distinguish moved/trimmed rows from new rows without consuming the
 ordinary observation cursor. Erase/redraw compares the same viewport position
@@ -76,10 +72,9 @@ only after its old marker is disposed. RIS invalidates this monitor cursor at
 the emulator's native reset boundary. There is no second terminal parser,
 global output copy or coordinator cursor mirror.
 
-Matched lines use their first 1024 sanitized UTF-16 code units for regex
-evaluation and display; later characters are ignored until the next clean
-newline. The builder never retains an unbounded raw or clean line. Each
-message shows at most 16 lines and counts omitted matches.
+Each rendered logical line is sanitized, and its first 1024 UTF-16 code units
+are used for regex evaluation and display; the rest of that line is ignored.
+Each message shows at most 16 lines and counts omitted matches.
 Matches arriving within about 250 ms coalesce. Successful messages alone
 advance `returns`; the last allowed match message announces the limit and
 ends the subscription, not the process. More than 20 matching lines in the
@@ -92,7 +87,7 @@ lines, and `terminal_url` or `log_path`, and labels command output as
 untrusted rather than user instructions. The monitor tool itself uses omp's
 default card; no new UI styling is introduced.
 
-Output closure (and final parser completion for tty) produces one End with
+Output closure and final parser completion produce one End with
 the pending matches, natural/human/LRU reason and exit code/signal. End does
 not count against the match limit. Model `kill_session` cancels before
 signaling, even on failed kill; explicit cancel, replacement, reset and
@@ -100,6 +95,11 @@ shutdown are also silent. Human HUD/slash termination and LRU termination
 retain the monitor until actual closure. Direct write/listing observations
 do not cancel it. A source acceptance before model kill is cancelled; a new
 parallel acceptance after the kill request may still observe a running source.
+On Windows, node-pty closes the output about 1 s after the process ends (it
+waits 1000 ms for trailing output, `FLUSH_DATA_INTERVAL` in its
+`windowsPtyAgent`), and reports the exit only then. Matches printed just
+before exit fall outside the 250 ms coalescing window and arrive as a match
+message ahead of End.
 
 The completion coordinator owns both distinct objects: optional wake intent
 and actual monitor subscription. An active/closing monitor blocks ordinary
@@ -110,13 +110,13 @@ explicit cancellation removes the monitor without consuming a future ordinary
 wake. All replacement/reset callbacks check exact subscription and map
 identity. No already-enqueued follow-up can be recalled.
 
-Source handles physically remove both byte and close listeners on cancellation,
+Source handles physically remove both rendered-row and close listeners on cancellation,
 not merely disable their callbacks. `Gate.subscribe` queues closure callbacks
 in the same microtask order as `closed().then`, preserving freeze, final drain,
 then release while allowing cancelled subscriptions to detach before closure.
 
 `list_sessions` exposes each active monitor's condition, returns and limit.
-Neither monitor nor `read` drains session buffers or removes sessions. This
+Neither monitor nor `read` consumes ordinary observations or removes sessions. This
 change does not remove empty polling, add Brush/HostJob integration, or change
 `on_exit` defaults and its human-explicit guidance.
 
@@ -161,7 +161,7 @@ attached waits should work (with safe `setTimeout` chunking).
 | Chunk timers at `MAX_TIMER_ARM_MS` (`2^31-1`) | Prevents `setTimeout` overflow on multi-day waits. |
 | Mid-flight flush re-checks suppression | Disarm racing a reserved wake must not still send. |
 | Source-first monitor acceptance | The source checks liveness after its parser baseline and publishes only the real installed tap; reset/abort cannot leave speculative coordinator entries. |
-| Rendered row identities for tty monitors | Reusable current-row markers plus a history frontier prevent pre-subscription replay across trim, erase and scrolling; regex sees joined rendered logical text, not raw child bytes. |
+| Rendered row identities for monitors | Reusable current-row markers plus a history frontier prevent pre-subscription replay across trim, erase and scrolling; regex sees joined rendered logical text, not raw child bytes. |
 | One coordinator routes End and ordinary wake | Successful monitor End consumes the same session's wake before releasing ownership; separate claim flags or temporary disarm/rearm would create a second authority. |
 | Serialized bounded match delivery | A successful host enqueue, not model-turn completion, counts toward the limit; failed batches remain pending, and End includes unreturned final matches. |
 
@@ -176,7 +176,7 @@ attached waits should work (with safe `setTimeout` chunking).
 | Policy change | `src/completion.ts` → `setOnExit(id, policy, session?)` | By-id disarm (tombstones); status tokens; flushPending deliver filter. |
 | Wake audit | `list_sessions` / widget / slash picker | `wake_armed` / `[wake]`. |
 | Tool surface | `src/index.ts` | `set_on_exit` tool + renderer; rewritten `promptGuidelines`. |
-| Monitor source and bounded delivery | `fork-features/monitor-subscription.ts`, `OutputTextSanitizer`, `ExecSession.subscribeMonitor`, `TerminalScreen.subscribeLines`, `Gate.subscribe` | Source-owned future boundary; shared control grammar before bounded line matching; physically cancellable source listeners. |
+| Monitor source and bounded delivery | `fork-features/monitor-subscription.ts`, `sanitizeOutputText`, `ExecSession.subscribeMonitor`, `TerminalScreen.subscribeLines`, `Gate.subscribe` | Source-owned future boundary; sanitized, bounded rendered lines before matching; physically cancellable source listeners. |
 | Monitor lifecycle and tools | `CompletionCoordinator.startMonitor` / `cancelMonitor`, `src/index.ts`, `src/script-result.ts` | One actual subscription map, End/wake routing, typed errors and list state. |
 | Docs | `README.md`, `Changelog.md`, this IV, `DC-0001` | Rules + API tables + workspace doctrine. |
 | Tests | `tests/time.test.ts`, `long-wait.test.ts`, `completion.test.ts`, `wake-e2e.test.ts`, `e2e.test.ts` | Unit + pipeline; wake-e2e `afterEach` shutdown. |
@@ -184,6 +184,8 @@ attached waits should work (with safe `setTimeout` chunking).
 ## Current agent / human guidance
 
 ```text
+short one-shot command   → host bash
+long / interactive job   → exec_command (PTY, no command deadline, never restarted)
 finite yield_time_ms     → choose by job duration/responsiveness, no built-in cap
 operator relative cap    → respect PI_UNIFIED_EXEC_MAX_EMPTY_POLL_MS when set
 yield_until              → ONLY if human explicitly asks for long attach / UTC deadline

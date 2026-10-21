@@ -26,7 +26,7 @@ function run({ fixed = true, pattern = "parity", mode = "on", budget = 3000, act
 		const capture = join(root, "requests.jsonl");
 		const child = spawnSync(process.execPath, [
 			cli, "--mode", "json", "--no-session", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files",
-			"-e", provider, ...(packageEnabled ? ["-e", extension, "--keep-builtin-bash"] : []),
+			"-e", provider, ...(packageEnabled ? ["-e", extension] : []),
 			"--provider", "exec-codemode-offline", "--model", "codemode-model", "--thinking", "off", "run fixture",
 		], {
 			cwd: root, env: { ...process.env, HOME: root, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1",

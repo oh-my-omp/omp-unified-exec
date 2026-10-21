@@ -30,7 +30,7 @@ function system32(...parts: string[]): string {
 }
 
 /** statSync().isFile() that never throws. */
-function isFile(p: string): boolean {
+export function isFile(p: string): boolean {
 	try {
 		return statSync(p).isFile();
 	} catch {
@@ -76,10 +76,9 @@ export function buildShellCommand(shellBin: string, cmd: string, isWindows: bool
 	}
 	// powershell/pwsh take -Command on every platform (pwsh is cross-platform).
 	if (base === "powershell" || base === "pwsh") {
-		// -NonInteractive/-NoLogo: with stdin kept open as a pipe (for write_stdin),
-		// bare -Command can hang waiting for interactive input on some hosts
-		// (observed: Node 24 windows-latest CI). -NoProfile alone is not enough.
-		return { command: [shellBin, "-NoProfile", "-NonInteractive", "-NoLogo", "-Command", cmd] };
+		// -NoLogo: no banner on the PTY screen. No -NonInteractive: in a PTY it
+		// would block interactive prompts the session is meant to answer.
+		return { command: [shellBin, "-NoProfile", "-NoLogo", "-Command", cmd] };
 	}
 	// bash, sh, zsh, fish, … all take -c.
 	return { command: [shellBin, "-c", cmd] };

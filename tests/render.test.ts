@@ -1,3 +1,6 @@
+import type { FinalScreenOutput } from "../src/collect.ts";
+
+
 import { strict as assert } from "node:assert";
 import { before, describe, it } from "node:test";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
@@ -15,7 +18,19 @@ import {
 	renderProcessResultText,
 } from "../src/tool-result.ts";
 
-const encoder = new TextEncoder();
+function finalScreen(text: string): FinalScreenOutput {
+	const lines = text.split("\n");
+	return {
+		kind: "final-screen",
+		terminalUrl: "term://test",
+		projection: {
+			view: { screen: "normal", cols: 120, rows: lines.length, cursor: { row: 1, col: 1 } },
+			retainedLines: lines, screenLines: lines, cells: [], appearance: "dark", historyMayBeTruncated: false,
+		},
+	};
+}
+
+
 const plainTheme = {
 	fg: (_color: string, text: string) => text,
 	bold: (text: string) => text,
@@ -54,7 +69,7 @@ describe("unified-exec renderers", () => {
 		const output = Array.from({ length: 20 }, (_, index) => `line-${index + 1}`).join("\n");
 		const details = finalizeKillResult({
 			wallTimeSec: 0.1,
-			collected: { kind: "stream", bytes: encoder.encode(output), omittedBytes: 0 },
+			collected: finalScreen(output),
 			totalBytes: Buffer.byteLength(output),
 			sessionId: 73,
 			pid: 777,
@@ -62,7 +77,6 @@ describe("unified-exec renderers", () => {
 			exitCode: undefined,
 			signal: "SIGTERM",
 			failure: null,
-			tty: false,
 			logPath: "/tmp/kill.log",
 			cwd: "/repo",
 			command: "noisy job",
@@ -140,16 +154,11 @@ describe("unified-exec renderers", () => {
 		const firstDetails = finalizeProcessResult({
 			operation: "write_stdin",
 			wallTimeSec: 0.1,
-			collected: {
-				kind: "stream",
-				bytes: encoder.encode(Array.from({ length: 8 }, (_, index) => `old-${index + 1}`).join("\n")),
-				omittedBytes: 0,
-			},
+			collected: finalScreen(Array.from({ length: 8 }, (_, index) => `old-${index + 1}`).join("\n")),
 			sessionId: 3,
 			exitCode: undefined,
 			signal: null,
 			failure: null,
-			tty: false,
 		});
 		const firstResult = {
 			content: [{ type: "text", text: renderProcessResultText(firstDetails) }],
@@ -161,16 +170,11 @@ describe("unified-exec renderers", () => {
 		const nextDetails = finalizeProcessResult({
 			operation: "write_stdin",
 			wallTimeSec: 0.2,
-			collected: {
-				kind: "stream",
-				bytes: encoder.encode(Array.from({ length: 8 }, (_, index) => `new-${index + 1}`).join("\n")),
-				omittedBytes: 0,
-			},
+			collected: finalScreen(Array.from({ length: 8 }, (_, index) => `new-${index + 1}`).join("\n")),
 			sessionId: 3,
 			exitCode: undefined,
 			signal: null,
 			failure: null,
-			tty: false,
 		});
 		const nextResult = {
 			content: [{ type: "text", text: renderProcessResultText(nextDetails) }],
@@ -205,7 +209,7 @@ describe("unified-exec renderers", () => {
 			session_id: index + 1,
 			command: `sleep ${index + 1}`,
 			cwd: "/repo",
-			tty: false,
+
 			pid: 1000 + index,
 			elapsed_ms: 1000 * (index + 1),
 			running: true,

@@ -1,15 +1,15 @@
 /**
- * TerminalScreen — the rendered view of one tty session.
+ * TerminalScreen — the rendered view of one exec_command session.
  *
  * A PTY child draws with cursor movement, erases, carriage returns and the
  * alternate screen. Stripping those controls from the raw stream leaves every
  * redraw appended to the previous one, so neither the model nor a human can
- * read the result. Each tty session therefore feeds its output, in order, into
+ * read the result. Each session therefore feeds its output, in order, into
  * a headless terminal emulator and reports what that terminal shows.
  *
  * Authority: the PTY byte stream (also mirrored raw to the session log). This
  * emulator is a derived projection owned by the session; it never feeds back
- * into the log or the pipe path.
+ * into the log.
  *
  * Observation contract (consuming, serialized per session):
  *   - normal screen: rows that scrolled into history since the previous

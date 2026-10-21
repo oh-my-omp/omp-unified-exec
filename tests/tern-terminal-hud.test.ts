@@ -204,7 +204,7 @@ describe("terminal HUD sheet description", () => {
 		assert.deepEqual(view.p?.items, []);
 		assert.equal(view.p?.selected, null);
 		assert.equal(view.p?.total, undefined);
-		assert.equal(view.p?.empty, "No tty sessions. Start one with exec_command tty: true.");
+		assert.equal(view.p?.empty, "No sessions. Start one with exec_command.");
 		assert.deepEqual(view.c, []);
 		assert.deepEqual(view.p?.actions, [
 			{ id: KILL_ACTION, label: "Kill", keys: ["x"], danger: true, disabled: true },
@@ -531,9 +531,9 @@ function makeHarness(t: TestContext, initiallyNative = false) {
 			nativeOn = on;
 			for (const listener of nativeListeners) listener(on);
 		},
-		spawn(tty: boolean, command = [process.execPath, "-e", "process.stdin.resume()"], cols = 80, insert = true) {
+		spawn(command = [process.execPath, "-e", "process.stdin.resume()"], cols = 80, insert = true) {
 			const session = ExecSession.spawn(store.allocateId(), {
-				command, cwd: process.cwd(), env: process.env, tty, cols, rows: 24,
+				command, cwd: process.cwd(), env: process.env, cols, rows: 24,
 			});
 			sessions.push(session);
 			assert.equal(session.failureMessage, null, "child spawn succeeds");
@@ -548,29 +548,25 @@ it("requires a PTY provider when EXPECT_PTY=1", { skip: process.env.EXPECT_PTY !
 });
 
 describe("terminal HUD lifecycle with real sessions", { skip: !isPtyAvailable() }, () => {
-	it("mounts only after UI, native rendering, and a tty session are all present", async (t) => {
+	it("mounts only after UI, native rendering, and a session are all present", async (t) => {
 		const h = makeHarness(t);
-		h.spawn(false);
+		h.spawn();
 		assert.equal(h.calls.length, 0);
 		await h.emit("session_start");
-		h.setNative(true);
-		assert.equal(h.calls.length, 0, "pipe-only store does not mount");
-		h.setNative(false);
-		h.spawn(true);
-		assert.equal(h.calls.length, 0, "TTY alone does not mount without native rendering");
+		assert.equal(h.calls.length, 0, "sessions alone do not mount without native rendering");
 		h.setNative(true);
 		assert.equal(h.calls.length, 1);
 		assert.equal(h.calls[0]?.key, "unified-exec-terminals");
 		assert.equal(typeof h.calls[0]?.content, "function");
 		assert.deepEqual(h.calls[0]?.options, { placement: "belowEditor" });
 		const view = h.component.describe();
-		assert.equal(terminalCount(view), 1, "pipe sessions are excluded from the pill");
+		assert.equal(terminalCount(view), 1);
 		assert.deepEqual(segmentOf(view).p?.actions, { click: OPEN_ACTION });
 	});
 
-	it("waits for an interactive session_start even when native rendering and a tty already exist", async (t) => {
+	it("waits for an interactive session_start even when native rendering and a session already exist", async (t) => {
 		const h = makeHarness(t, true);
-		h.spawn(true);
+		h.spawn();
 		assert.equal(h.calls.length, 0);
 		await h.emit("session_start", false);
 		assert.equal(h.calls.length, 0, "headless session has no widget");
@@ -578,14 +574,17 @@ describe("terminal HUD lifecycle with real sessions", { skip: !isPtyAvailable() 
 		assert.equal(h.mounted, true);
 	});
 
-	it("unmounts when the last tty is removed even if a pipe session remains", async (t) => {
+	it("keeps mounting until the last stored session is removed", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
-		h.spawn(false);
-		const tty = h.spawn(true);
+		const first = h.spawn();
+		const second = h.spawn();
 		assert.equal(h.mounted, true);
-		h.store.remove(tty.id);
+		h.store.remove(second.id);
 		assert.equal(h.store.size, 1);
+		assert.equal(h.mounted, true);
+		assert.equal(terminalCount(h.component.describe()), 1);
+		h.store.remove(first.id);
 		assert.equal(h.mounted, false);
 		assert.equal(h.calls.at(-1)?.content, undefined);
 		assert.equal(h.calls.at(-1)?.key, "unified-exec-terminals");
@@ -594,7 +593,7 @@ describe("terminal HUD lifecycle with real sessions", { skip: !isPtyAvailable() 
 	it("unmounts when native rendering stops and remounts when it resumes", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
-		h.spawn(true);
+		h.spawn();
 		const first = h.component;
 		h.setNative(false);
 		assert.equal(h.mounted, false);
@@ -607,42 +606,42 @@ describe("terminal HUD lifecycle with real sessions", { skip: !isPtyAvailable() 
 	it("unmounts on session_shutdown and stays unmounted until another session starts", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
-		h.spawn(true);
+		h.spawn();
 		await h.emit("session_shutdown");
 		assert.equal(h.mounted, false);
 		assert.equal(h.calls.at(-1)?.content, undefined);
 		const callCount = h.calls.length;
 		h.setNative(false);
 		h.setNative(true);
-		h.spawn(true);
+		h.spawn();
 		assert.equal(h.calls.length, callCount);
 		await h.emit("session_start");
 		assert.equal(h.mounted, true);
 	});
 
-	it("refreshes the pill count when tty membership changes and ignores newer pipe sessions", async (t) => {
+	it("refreshes the pill count for every stored session", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
-		const first = h.spawn(true);
+		const first = h.spawn();
 		const component = h.component;
 		const initial = component.describe();
 		assert.equal(terminalCount(initial), 1);
 		assert.strictEqual(component.describe(), initial);
-		h.spawn(true);
+		h.spawn();
 		assert.strictEqual(h.component, component);
 		assert.equal(terminalCount(component.describe()), 2);
-		h.spawn(false);
-		assert.equal(terminalCount(component.describe()), 2);
+		h.spawn();
+		assert.equal(terminalCount(component.describe()), 3);
 		h.store.remove(first.id);
 		assert.strictEqual(h.component, component);
-		assert.equal(terminalCount(component.describe()), 1);
-		assert.equal(segmentOf(component.describe()).p?.title, "1 terminal");
+		assert.equal(terminalCount(component.describe()), 2);
+		assert.equal(segmentOf(component.describe()).p?.title, "2 terminals");
 	});
 
 	it("opens exactly one native sheet from the pill and closes, disposes, and reopens it on Close or esc", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
-		h.spawn(true);
+		h.spawn();
 		const component = h.component;
 		for (const event of [null, {}, { type: "action", act: "unrelated" }, { type: "other", act: OPEN_ACTION }]) {
 			component.handleNativeEvent(event);
@@ -675,14 +674,14 @@ describe("terminal HUD lifecycle with real sessions", { skip: !isPtyAvailable() 
 		assert.equal(h.calls.length, 1, "sheet interactions reuse the mounted widget");
 	});
 
-	it("lists tty sessions in id order and changes the plain recent-output preview through select and arrow keys", async (t) => {
+	it("lists sessions in id order and changes the plain recent-output preview through select and arrow keys", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
-		const first = h.spawn(true, [process.execPath, "-e", "process.stdout.write('\u001b[31mfirst-screen\u001b[0m\\n'); process.stdin.resume()"], 80, false);
-		const second = h.spawn(true, [process.execPath, "-e", "process.stdout.write('\u001b[34msecond-screen\u001b[0m\\n'); process.stdin.resume()"], 100, false);
+		const first = h.spawn([process.execPath, "-e", "process.stdout.write('\u001b[31mfirst-screen\u001b[0m\\n'); process.stdin.resume()"], 80, false);
+		const second = h.spawn([process.execPath, "-e", "process.stdout.write('\u001b[34msecond-screen\u001b[0m\\n'); process.stdin.resume()"], 100, false);
 		h.store.insert(second);
 		h.store.insert(first);
-		h.spawn(false);
+		const third = h.spawn();
 		for (const [session, marker] of [[first, "first-screen"], [second, "second-screen"]] as const) {
 			await waitFor(() => session.styledScreen()?.text.includes(marker) === true,
 				(listener) => session.onScreenChange(listener), "real PTY output reaches the terminal screen");
@@ -690,7 +689,7 @@ describe("terminal HUD lifecycle with real sessions", { skip: !isPtyAvailable() 
 		h.component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		const sheet = h.sheet;
 		const initial = sheet.describe();
-		assert.deepEqual(pickerItems(initial).map((item) => item.id), [`s${first.id}`, `s${second.id}`]);
+		assert.deepEqual(pickerItems(initial).map((item) => item.id), [`s${first.id}`, `s${second.id}`, `s${third.id}`]);
 		assert.equal(initial.p?.selected, `s${first.id}`);
 		assert.equal(recentOutputText(initial), "first-screen");
 		assert.equal(onlyNode(initial, "section").key, `output-s${first.id}`);
@@ -733,7 +732,7 @@ describe("terminal HUD lifecycle with real sessions", { skip: !isPtyAvailable() 
 	it("re-describes a stored terminal's status dot when its real child exits", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
-		const session = h.spawn(true, [process.execPath, "-e", "process.stdout.write('ready\\n'); process.stdin.once('data', () => process.exit(0))"]);
+		const session = h.spawn([process.execPath, "-e", "process.stdout.write('ready\\n'); process.stdin.once('data', () => process.exit(0))"]);
 		await waitFor(() => session.styledScreen()?.text.includes("ready") === true,
 			(listener) => session.onScreenChange(listener), "real child is ready for stdin");
 		h.component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
@@ -749,14 +748,14 @@ describe("terminal HUD lifecycle with real sessions", { skip: !isPtyAvailable() 
 		assert.deepEqual(pickerItems(exitedView), [{ id: `s${session.id}`, dot: "success" }]);
 		assert.equal(exitedView.p?.subtitle, "0 running · 1 stored");
 		assert.equal(h.mounted, true);
-		assert.equal(terminalCount(h.component.describe()), 1, "exited tty sessions remain in the pill count");
+		assert.equal(terminalCount(h.component.describe()), 1, "exited sessions remain in the pill count");
 	});
 
 	it("never reads a released removed session when describing the remaining pill or sheet", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
-		const removed = h.spawn(true);
-		const remaining = h.spawn(true);
+		const removed = h.spawn();
+		const remaining = h.spawn();
 		h.component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		assert.equal(h.sheet.describe().p?.selected, `s${removed.id}`);
 		removed.terminate();
@@ -776,8 +775,8 @@ describe("terminal HUD lifecycle with real sessions", { skip: !isPtyAvailable() 
 		it(`opens a terminal page with ${openWith} and returns with ${backWith} to the same selected session`, async (t) => {
 			const h = makeHarness(t, true);
 			await h.emit("session_start");
-			h.spawn(true);
-			const selected = h.spawn(true);
+			h.spawn();
+			const selected = h.spawn();
 			h.component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 			h.sheet.handleNativeEvent({ type: "select", item: `s${selected.id}` });
 			const sheetCall = h.customCalls[0]!;
@@ -823,14 +822,14 @@ describe("terminal HUD lifecycle with real sessions", { skip: !isPtyAvailable() 
 	it("kills only running selected sessions through the sheet Kill action and x key", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
-		const finished = h.spawn(true, [process.execPath, "-e", "process.exit(0)"]);
+		const finished = h.spawn([process.execPath, "-e", "process.exit(0)"]);
 		await waitFor(() => finished.hasExited, (listener) => finished.onExit(listener), "finished session exits");
 		h.component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		h.sheet.handleNativeEvent({ type: "action", act: KILL_ACTION });
 		h.sheet.handleInput("x");
 		assert.deepEqual(h.killCalls, [], "an exited selection cannot be killed");
 		for (const via of ["action", "key"]) {
-			const running = h.spawn(true);
+			const running = h.spawn();
 			h.sheet.handleNativeEvent({ type: "select", item: `s${running.id}` });
 			if (via === "action") h.sheet.handleNativeEvent({ type: "action", act: KILL_ACTION });
 			else h.sheet.handleInput("x");
@@ -846,7 +845,7 @@ describe("terminal HUD lifecycle with real sessions", { skip: !isPtyAvailable() 
 	it("writes printable page input to a real cat terminal while Esc returns without being written", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
-		const session = h.spawn(true, ["/bin/sh", "-c", "stty -echo; printf 'cat-ready\\n'; exec cat"]);
+		const session = h.spawn(["/bin/sh", "-c", "stty -echo; printf 'cat-ready\\n'; exec cat"]);
 		await waitFor(() => session.styledScreen()?.text.includes("cat-ready") === true,
 			(listener) => session.onScreenChange(listener), "cat terminal is ready with echo disabled");
 		h.component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
@@ -873,7 +872,7 @@ describe("terminal HUD lifecycle with real sessions", { skip: !isPtyAvailable() 
 	it("stops forwarding page input after its real child exits and removes the Kill button", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
-		const session = h.spawn(true, [process.execPath, "-e", "process.stdout.write('ready\\n'); process.stdin.once('data', () => process.exit(0))"]);
+		const session = h.spawn([process.execPath, "-e", "process.stdout.write('ready\\n'); process.stdin.once('data', () => process.exit(0))"]);
 		await waitFor(() => session.styledScreen()?.text.includes("ready") === true,
 			(listener) => session.onScreenChange(listener), "page child is ready");
 		h.component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
@@ -896,7 +895,7 @@ describe("terminal HUD lifecycle with real sessions", { skip: !isPtyAvailable() 
 	it("kills the running terminal through the page Kill button and returns to an empty sheet", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
-		const session = h.spawn(true);
+		const session = h.spawn();
 		const pill = h.component;
 		pill.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		h.sheet.handleInput("\r");

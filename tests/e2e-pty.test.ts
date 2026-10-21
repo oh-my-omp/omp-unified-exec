@@ -62,13 +62,13 @@ describe("unified-exec PTY mode", { skip: !isPtyAvailable() }, () => {
 	// until the session exits, so a leaked session hangs the test process
 	// forever (observed on windows-latest CI).
 
-	it("tty: true runs a command with a PTY", async () => {
+	it("runs a command with a PTY", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		try {
 			const r = await h.call("exec_command", {
 				cmd: "tty && echo seen=$TERM",
-				tty: true,
+
 				yield_time_ms: 1500,
 			});
 			// If short-lived: exit_code is set; long-running: session_id. Either way output should
@@ -88,7 +88,7 @@ describe("unified-exec PTY mode", { skip: !isPtyAvailable() }, () => {
 		try {
 			const r1 = await h.call("exec_command", {
 				cmd: "python3 -q",
-				tty: true,
+
 				yield_time_ms: 800,
 			});
 			const sid = r1.details.session_id;
@@ -140,7 +140,7 @@ describe("unified-exec PTY mode", { skip: !isPtyAvailable() }, () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		try {
-			const r1 = await h.call("exec_command", { cmd: fixture, tty: true, yield_time_ms: 1500 });
+			const r1 = await h.call("exec_command", { cmd: fixture, yield_time_ms: 1500 });
 			const sid = r1.details.session_id;
 			assert.equal(typeof sid, "number", `fixture did not stay alive: ${JSON.stringify(r1.details)}`);
 
@@ -165,7 +165,7 @@ describe("unified-exec PTY mode", { skip: !isPtyAvailable() }, () => {
 		}
 	});
 
-	it("Windows: shell=cmd with tty:true works (verbatim /c payload)", { skip: !IS_WINDOWS }, async () => {
+	it("Windows: shell=cmd with a PTY works (verbatim /c payload)", { skip: !IS_WINDOWS }, async () => {
 		// Regression: node-pty's argsToCommandLine re-escapes embedded quotes,
 		// so array-args mangled the pre-quoted /s /c payload into
 		// `\"echo ...\"` — guaranteed "not recognized" failure. The PTY path
@@ -176,7 +176,7 @@ describe("unified-exec PTY mode", { skip: !isPtyAvailable() }, () => {
 			const r = await h.call("exec_command", {
 				cmd: "echo tty-one& echo tty-two",
 				shell: "cmd",
-				tty: true,
+
 				yield_time_ms: 20000,
 			});
 			assert.equal(r.details.exit_code, 0, JSON.stringify(r.details));
@@ -193,7 +193,7 @@ describe("unified-exec PTY mode", { skip: !isPtyAvailable() }, () => {
 		try {
 			const r1 = await h.call("exec_command", {
 				cmd: "while true; do echo alive; sleep 0.2; done",
-				tty: true,
+
 				yield_time_ms: 400,
 			});
 			const sid = r1.details.session_id;

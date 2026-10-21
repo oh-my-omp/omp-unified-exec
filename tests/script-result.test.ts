@@ -1,3 +1,6 @@
+import type { FinalScreenOutput } from "../src/collect.ts";
+
+
 /**
  * Codemode script-facing results: every tool declares an `outputSchema` and
  * returns a matching `structuredContent`, so codemode scripts receive
@@ -27,7 +30,19 @@ import {
 import { IS_WINDOWS } from "../src/shell.ts";
 import { finalizeKillResult, finalizeProcessResult, renderProcessResultText } from "../src/tool-result.ts";
 
-const encoder = new TextEncoder();
+
+function finalScreen(text: string): FinalScreenOutput {
+	const lines = text.split("\n");
+	return {
+		kind: "final-screen",
+		terminalUrl: "term://test",
+		projection: {
+			view: { screen: "normal", cols: 120, rows: lines.length, cursor: { row: 1, col: 1 } },
+			retainedLines: lines, screenLines: lines, cells: [], appearance: "dark", historyMayBeTruncated: false,
+		},
+	};
+}
+
 
 function assertPlainJson(value: unknown): void {
 	assert.deepEqual(JSON.parse(JSON.stringify(value)), value, "structuredContent must be plain JSON");
@@ -37,12 +52,11 @@ function processInput(overrides: Partial<Parameters<typeof finalizeProcessResult
 	return {
 		operation: "exec_command" as const,
 		wallTimeSec: 0.25,
-		collected: { kind: "stream" as const, bytes: encoder.encode("hello\nworld\n"), omittedBytes: 0 },
+		collected: finalScreen("hello\nworld\n"),
 		sessionId: undefined,
 		exitCode: 0,
 		signal: null,
 		failure: null,
-		tty: false,
 		logPath: "/tmp/session.log",
 		...overrides,
 	};
@@ -105,7 +119,7 @@ describe("script result projections", () => {
 	it("truncated output stays within Pi's byte cap and is flagged", () => {
 		const big = "x".repeat(DEFAULT_MAX_BYTES * 2);
 		const value = processScriptResult(
-			finalizeProcessResult(processInput({ collected: { kind: "stream", bytes: encoder.encode(big), omittedBytes: 0 } })),
+			finalizeProcessResult(processInput({ collected: finalScreen(big) })),
 		);
 		assert.ok(Value.Check(processScriptResultSchema, value));
 		assert.equal(value.truncated, true);
@@ -116,7 +130,7 @@ describe("script result projections", () => {
 		const value = processScriptResult(
 			finalizeProcessResult(
 				processInput({
-					collected: { kind: "stream", bytes: encoder.encode("\u001b[31mred\u001b[0m\u0007 ok\n"), omittedBytes: 0 },
+					collected: finalScreen("\u001b[31mred\u001b[0m\u0007 ok\n"),
 				}),
 			),
 		);
@@ -128,14 +142,13 @@ describe("script result projections", () => {
 	it("kill results, including failed and unknown sessions, match the kill schema", () => {
 		const killInput = {
 			wallTimeSec: 0.1,
-			collected: { kind: "stream" as const, bytes: encoder.encode("bye\n"), omittedBytes: 0 },
+			collected: finalScreen("bye\n"),
 			sessionId: 4,
 			pid: 1234,
 			requestedSignal: "SIGTERM" as NodeJS.Signals,
 			exitCode: undefined,
 			signal: "SIGTERM" as NodeJS.Signals,
 			failure: null,
-			tty: false,
 			escalated: false,
 			killed: true,
 		};
@@ -170,7 +183,7 @@ describe("registered tools return structuredContent", { skip: IS_WINDOWS }, () =
 		assert.ok(Value.Check(processScriptResultSchema, result.structuredContent));
 		assertPlainJson(result.structuredContent);
 		assert.equal(result.structuredContent.output, result.details.output);
-		assert.equal(result.structuredContent.output, "a\nb\n");
+		assert.equal(result.structuredContent.output, "a\nb");
 		assert.equal(result.structuredContent.exit_code, 3);
 	});
 

@@ -40,7 +40,6 @@ async function runInteractiveCase() {
 		command: ["node", "-e", script, argument],
 		cwd: process.cwd(),
 		env: process.env,
-		tty: true,
 		cols: 100,
 		rows: 40,
 	});
@@ -71,7 +70,6 @@ async function runShellCase() {
 		...shellCommand,
 		cwd: process.cwd(),
 		env: process.env,
-		tty: true,
 		cols: 90,
 		rows: 30,
 	});
@@ -88,7 +86,6 @@ async function runRapidExitCase() {
 		command: ["node", "-e", ""],
 		cwd: process.cwd(),
 		env: process.env,
-		tty: true,
 		cols: 80,
 		rows: 24,
 	});
@@ -106,7 +103,6 @@ async function runKillCase() {
 		command: ["node", "-e", script],
 		cwd: process.cwd(),
 		env: process.env,
-		tty: true,
 		cols: 80,
 		rows: 24,
 	});
@@ -128,7 +124,6 @@ async function runProcessGroupKillCase() {
 		command: ["/bin/sh", "-c", "trap '' HUP; sleep 60 & pid=$!; echo GROUP_READY=$pid; wait"],
 		cwd: process.cwd(),
 		env: process.env,
-		tty: true,
 		cols: 80,
 		rows: 24,
 	});

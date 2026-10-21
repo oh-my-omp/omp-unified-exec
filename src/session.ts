@@ -1,11 +1,10 @@
 /**
- * ExecSession — wraps a SpawnedChild with:
- *   - pipe sessions: a head+tail output buffer (drained by polls) and a
- *     rolling tail window (for TUI streaming via onUpdate)
- *   - tty sessions: a TerminalScreen that renders the child's output as a
- *     terminal shows it (observed by polls, snapshotted for TUI streaming)
+ * ExecSession — wraps a PTY SpawnedChild with:
+ *   - a TerminalScreen that renders the child's output as a terminal shows
+ *     it (observed by polls, snapshotted for TUI streaming)
+ *   - a log file mirroring every raw byte
  *   - state transitions (has_exited / exit_code / signal / failure)
- *   - lifecycle callbacks (onData taps, onExit fan-out)
+ *   - lifecycle callbacks (onExit fan-out, monitor subscriptions)
  *
  * Mirrors codex's `UnifiedExecProcess` in `unified_exec/process.rs`, simplified
  * to the subset we need for the pi extension.
@@ -18,31 +17,22 @@ import { join } from "node:path";
 
 import { discardLiveTerminal, freezeTerminal, readTerminal, registerTerminal } from "../fork-features/terminal-resource.ts";
 import type { MonitorListener, MonitorSourceHandle, MonitorStart } from "../fork-features/monitor-subscription.ts";
-import { type CollectResult, collectOutputUntilDeadline, type FinalScreenOutput } from "./collect.ts";
-import { HeadTailBuffer } from "./head-tail-buffer.ts";
+import { type CollectResult, type FinalScreenOutput, NO_OUTPUT, type NoOutput } from "./collect.ts";
+import { waitForExitOrDeadline } from "./long-wait.ts";
 import { Gate, Notify } from "./notify.ts";
 import { DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS, type SpawnedChild, spawnChild } from "./pty.ts";
 import { type StyledScreen, type TerminalAppearance, TerminalScreen, type TerminalSnapshot } from "./terminal-screen.ts";
-
-/** Default per-session output retention. */
-export const DEFAULT_HEAD_TAIL_MAX_BYTES = 1024 * 1024; // 1 MiB
-
-/** Default rolling tail window used for TUI streaming (independent of the head+tail buffer). */
-export const DEFAULT_STREAM_TAIL_BYTES = 32 * 1024; // 32 KiB
 
 export interface SessionSpawnOptions {
 	command: string[];
 	cwd: string;
 	env: NodeJS.ProcessEnv;
-	tty: boolean;
 	cols?: number;
 	rows?: number;
-	headTailMaxBytes?: number;
-	streamTailBytes?: number;
 	displayCommand?: string; // human-readable command for list_sessions/UI
 	shell?: string; // raw `shell` arg recorded for introspection
 	windowsVerbatimArguments?: boolean; // Windows cmd.exe quoting (see shell.ts)
-	/** tty only: the background the session's screen is shown on (default dark), answered to OSC 10/11. */
+	/** The background the session's screen is shown on (default dark), answered to OSC 10/11. */
 	appearance?: () => TerminalAppearance;
 }
 
@@ -53,14 +43,8 @@ export interface SessionState {
 	failureMessage: string | null;
 }
 
-/** What a live (non-consuming) streaming update can show right now. */
-export type LiveOutput =
-	| { readonly kind: "stream"; readonly bytes: Uint8Array }
-	| { readonly kind: "screen"; readonly snapshot: TerminalSnapshot };
-
 export class ExecSession {
 	readonly id: number;
-	readonly tty: boolean;
 	readonly command: string[];
 	readonly displayCommand: string;
 	readonly cwd: string;
@@ -70,13 +54,11 @@ export class ExecSession {
 	readonly logPath: string;
 	private logStream: WriteStream | undefined;
 
-	/** Head+tail buffer drained by each collectOutputUntilDeadline() call (pipe sessions). */
-	readonly outputBuffer: HeadTailBuffer;
-	/** Rendered terminal for tty sessions; created once the PTY child exists. */
+	/** Rendered terminal; created once the PTY child exists (absent after a spawn failure). */
 	private screen: TerminalScreen | undefined;
 	private terminalKey: string | undefined;
 	private terminalFinalized: Promise<void> | undefined;
-	/** Fired whenever new data arrives in outputBuffer. */
+	/** Fired whenever the child produces output. */
 	readonly outputNotify = new Notify();
 	/** Closed when the stream is done (all data flushed after exit). */
 	readonly outputClosed = new Gate();
@@ -86,10 +68,6 @@ export class ExecSession {
 		return this.exitedAc.signal;
 	}
 
-	/** Running tail window for TUI streaming; independent of outputBuffer. */
-	private streamTail: Uint8Array[] = [];
-	private streamTailBytes = 0;
-	private readonly streamTailCap: number;
 	private totalOutputBytes = 0;
 
 	private state: SessionState = {
@@ -99,7 +77,6 @@ export class ExecSession {
 		failureMessage: null,
 	};
 	private readonly exitListeners = new Set<(session: ExecSession) => void>();
-	private readonly pipeListeners = new Set<(bytes: Uint8Array) => void>();
 	private lastUsedAt: number;
 	private child!: SpawnedChild;
 
@@ -108,11 +85,8 @@ export class ExecSession {
 		this.command = opts.command;
 		this.displayCommand = opts.displayCommand ?? opts.command.join(" ");
 		this.cwd = opts.cwd;
-		this.tty = opts.tty;
 		this.startedAt = Date.now();
 		this.lastUsedAt = this.startedAt;
-		this.outputBuffer = new HeadTailBuffer(opts.headTailMaxBytes ?? DEFAULT_HEAD_TAIL_MAX_BYTES);
-		this.streamTailCap = opts.streamTailBytes ?? DEFAULT_STREAM_TAIL_BYTES;
 		this.pid = undefined; // set in `start`
 		this.logPath = join(tmpdir(), `pi-unified-exec-${id}-${randomBytes(4).toString("hex")}.log`);
 	}
@@ -149,7 +123,6 @@ export class ExecSession {
 				command: opts.command,
 				cwd: opts.cwd,
 				env: opts.env,
-				tty: opts.tty,
 				cols,
 				rows,
 				windowsVerbatimArguments: opts.windowsVerbatimArguments,
@@ -168,24 +141,17 @@ export class ExecSession {
 
 		// A real terminal answers queries (cursor position, device attributes);
 		// a child that waits for the answer would otherwise stall.
-		if (opts.tty) {
-			self.screen = new TerminalScreen(cols, rows, (reply) => void self.write(reply), opts.appearance);
-			const key = registerTerminal(id, self.screen);
-			self.terminalKey = key;
-			// The output gate closes after the final child bytes and log flush.
-			// freezeTerminal then waits for parsing without consuming observation.
-			self.terminalFinalized = self.outputClosed.closed().then(() => freezeTerminal(key));
-		}
+		const screen = new TerminalScreen(cols, rows, (reply) => void self.write(reply), opts.appearance);
+		self.screen = screen;
+		const key = registerTerminal(id, screen);
+		self.terminalKey = key;
+		// The output gate closes after the final child bytes and log flush.
+		// freezeTerminal then waits for parsing without consuming observation.
+		self.terminalFinalized = self.outputClosed.closed().then(() => freezeTerminal(key));
 
 		self.child.onData((chunk) => {
 			self.totalOutputBytes += chunk.length;
-			if (self.screen) {
-				self.screen.write(chunk);
-			} else {
-				self.outputBuffer.pushChunk(chunk);
-				self.appendStreamTail(chunk);
-				for (const listener of self.pipeListeners) listener(chunk);
-			}
+			screen.write(chunk);
 			// Mirror every byte to the log file. Errors are handled by the
 			// 'error' listener on the stream, which nulls `logStream` out.
 			self.logStream?.write(Buffer.from(chunk));
@@ -205,7 +171,7 @@ export class ExecSession {
 			self.outputNotify.notifyAll();
 			// A short tick later, flush the log stream to disk, then close the
 			// output gate. The tick lets any pending data-handler chunks land
-			// in the buffer+log before we declare the session fully done.
+			// in the screen+log before we declare the session fully done.
 			setImmediate(() => {
 				self.outputNotify.notifyAll();
 				const stream = self.logStream;
@@ -228,32 +194,6 @@ export class ExecSession {
 		});
 
 		return self;
-	}
-
-	private appendStreamTail(chunk: Uint8Array): void {
-		// A single chunk larger than the whole window replaces it outright —
-		// the trim loop below never shrinks a lone chunk, and shipping a
-		// multi-megabyte "tail" to the TUI every tick defeats the cap.
-		if (chunk.length >= this.streamTailCap) {
-			this.streamTail = [chunk.subarray(chunk.length - this.streamTailCap)];
-			this.streamTailBytes = this.streamTailCap;
-			return;
-		}
-		this.streamTail.push(chunk);
-		this.streamTailBytes += chunk.length;
-		while (this.streamTailBytes > this.streamTailCap && this.streamTail.length > 1) {
-			const front = this.streamTail[0]!;
-			if (this.streamTailBytes - front.length >= this.streamTailCap) {
-				this.streamTail.shift();
-				this.streamTailBytes -= front.length;
-			} else {
-				// Trim the front of the leading chunk just enough.
-				const drop = this.streamTailBytes - this.streamTailCap;
-				this.streamTail[0] = front.subarray(drop);
-				this.streamTailBytes -= drop;
-				break;
-			}
-		}
 	}
 
 	/**
@@ -299,26 +239,17 @@ export class ExecSession {
 		return () => this.exitListeners.delete(listener);
 	}
 
-	/** What a streaming update shows now, without consuming anything. */
-	liveOutput(): LiveOutput {
-		if (this.screen) return { kind: "screen", snapshot: this.screen.snapshot() };
-		let total = 0;
-		for (const c of this.streamTail) total += c.length;
-		const out = new Uint8Array(total);
-		let offset = 0;
-		for (const c of this.streamTail) {
-			out.set(c, offset);
-			offset += c.length;
-		}
-		return { kind: "stream", bytes: out };
+	/** What a streaming update shows now, without consuming anything (undefined after a spawn failure). */
+	liveSnapshot(): TerminalSnapshot | undefined {
+		return this.screen?.snapshot();
 	}
 
-	/** The tty screen with styling for live display (undefined for pipe sessions); consumes nothing. */
+	/** The screen with styling for live display (undefined after a spawn failure); consumes nothing. */
 	styledScreen(): StyledScreen | undefined {
 		return this.screen?.styledScreen();
 	}
 
-	/** Call `listener` whenever new tty output has been parsed into the screen; returns the unsubscribe. */
+	/** Call `listener` whenever new output has been parsed into the screen; returns the unsubscribe. */
 	onScreenChange(listener: () => void): () => void {
 		return this.screen?.onChange(listener) ?? (() => {});
 	}
@@ -330,9 +261,10 @@ export class ExecSession {
 		signal?: AbortSignal,
 	): Promise<MonitorStart> {
 		if (signal?.aborted) return "cancelled";
-		if (this.hasExited) return "not_running";
-		if (listener.conditional && this.screen) {
-			return this.screen.subscribeLines(() => !this.hasExited, (lines) => listener.lines(lines), (handle) => {
+		const screen = this.screen;
+		if (this.hasExited || !screen) return "not_running";
+		if (listener.conditional) {
+			return screen.subscribeLines(() => !this.hasExited, (lines) => listener.lines(lines), (handle) => {
 				// Register final draining before publishing the subscription. The
 				// gate's freeze callback already queued its projection; this queues
 				// the monitor drain before any release awaiting that freeze.
@@ -352,17 +284,14 @@ export class ExecSession {
 			}, signal);
 		}
 		let active = true;
-		const tap = (bytes: Uint8Array) => listener.bytes(bytes);
-		if (listener.conditional) this.pipeListeners.add(tap);
 		const handle: MonitorSourceHandle = {
 			cancel: () => {
 				active = false;
-				this.pipeListeners.delete(tap);
 				unsubscribeClose();
 			},
 		};
 		const unsubscribeClose = this.outputClosed.subscribe(async () => {
-			if (this.terminalFinalized) await this.terminalFinalized;
+			await this.terminalFinalized;
 			if (!active) return;
 			handle.cancel();
 			listener.end();
@@ -377,32 +306,31 @@ export class ExecSession {
 	}
 
 	/**
-	 * Wait until `deadlineMs` (or exit/abort). Pipe sessions drain retained
-	 * bytes; running tty sessions consume an observation, and completed tty
-	 * sessions return their immutable final active screen.
+	 * Wait until `deadlineMs` (or exit/abort). A running session then consumes
+	 * an observation of its screen; a completed session returns its immutable
+	 * final active screen. A session whose live terminal was already released
+	 * (shutdown does not wait for the process to die) has nothing to observe.
 	 */
-	async collect(opts: { deadlineMs: number; externalAbort?: AbortSignal; postExitCloseWaitMs?: number }): Promise<CollectResult> {
-		const drained = await collectOutputUntilDeadline({
-			buffer: this.outputBuffer,
-			outputNotify: this.outputNotify,
-			outputClosed: this.outputClosed,
+	async collect(opts: { deadlineMs: number; externalAbort?: AbortSignal }): Promise<CollectResult> {
+		await waitForExitOrDeadline({
 			exited: this.exited,
-			deadlineMs: opts.deadlineMs,
 			externalAbort: opts.externalAbort,
-			postExitCloseWaitMs: opts.postExitCloseWaitMs,
+			durationMs: opts.deadlineMs - Date.now(),
 		});
-		if (!this.screen) return drained;
 		if (this.hasExited) return this.finalScreenOutput();
-		const observation = await this.screen.observe();
+		const screen = this.screen;
+		if (!screen) return NO_OUTPUT;
+		const observation = await screen.observe();
 		// Exit may land while the observation's parser barrier is pending.
 		if (this.hasExited) return this.finalScreenOutput();
 		return { kind: "screen", observation, terminalUrl: this.terminalUrl };
 	}
 
-	private async finalScreenOutput(): Promise<FinalScreenOutput> {
-		const key = this.terminalKey;
-		if (key === undefined) throw new Error("tty session has no terminal resource");
+	/** The frozen final screen, or nothing when shutdown discarded the unfinished terminal. */
+	private async finalScreenOutput(): Promise<FinalScreenOutput | NoOutput> {
 		await this.terminalFinalized;
+		const key = this.terminalKey;
+		if (key === undefined) return NO_OUTPUT;
 		return { kind: "final-screen", projection: await readTerminal(key), terminalUrl: `term://${key}` };
 	}
 
@@ -413,16 +341,26 @@ export class ExecSession {
 	/** Normal removal waits for output closure and the one session-owned freeze. */
 	async release(): Promise<void> {
 		await this.terminalFinalized;
-		await this.screen?.release();
+		await this.detachScreen()?.release();
 	}
 
 	/** Shutdown need not retain an unfinished projection; completed resources survive. */
 	async releaseForShutdown(): Promise<void> {
-		if (this.terminalKey !== undefined) discardLiveTerminal(this.terminalKey);
-		await this.screen?.release();
+		if (this.terminalKey !== undefined && discardLiveTerminal(this.terminalKey)) this.terminalKey = undefined;
+		await this.detachScreen()?.release();
 	}
 
-	/** Write bytes to stdin. Returns true on success, false if closed/dead. */
+	/**
+	 * End the session's ownership of its screen. Observations already queued
+	 * on the screen still run before its release; later callers see no screen.
+	 */
+	private detachScreen(): TerminalScreen | undefined {
+		const screen = this.screen;
+		this.screen = undefined;
+		return screen;
+	}
+
+	/** Write bytes to the PTY input. Returns true on success, false if closed/dead. */
 	write(data: Uint8Array): boolean {
 		if (this.state.hasExited) return false;
 		return this.child.write(data);
@@ -439,11 +377,11 @@ export class ExecSession {
 	}
 
 	/**
-	 * The shell process itself has exited. In pipes mode this can be true
-	 * while `hasExited` is still false: background jobs that inherited the
-	 * output pipe keep it open, so the close-based session exit lags (or
-	 * never arrives). Lets callers explain a session that reports "running"
-	 * although its shell is gone.
+	 * The shell process itself has exited. This can be true while
+	 * `hasExited` is still false: a descendant that survives the shell's exit
+	 * (e.g. a SIGHUP-immune background job) still holds the PTY, so the
+	 * terminal-close-based session exit lags (or never arrives). Lets callers
+	 * explain a session that reports "running" although its shell is gone.
 	 */
 	get shellExited(): boolean {
 		return this.child.processExited;

@@ -1,3 +1,5 @@
+import type { FinalScreenOutput } from "../src/collect.ts";
+
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
@@ -11,6 +13,19 @@ import {
 import type { TerminalObservation } from "../src/terminal-screen.ts";
 import { TerminalScreen } from "../src/terminal-screen.ts";
 
+function finalScreen(text: string): FinalScreenOutput {
+	const lines = text.split("\n");
+	return {
+		kind: "final-screen",
+		terminalUrl: "term://test",
+		projection: {
+			view: { screen: "normal", cols: 120, rows: lines.length, cursor: { row: 1, col: 1 } },
+			retainedLines: lines, screenLines: lines, cells: [], appearance: "dark", historyMayBeTruncated: false,
+		},
+	};
+}
+
+
 const encoder = new TextEncoder();
 
 function screenResult(observation: TerminalObservation) {
@@ -22,7 +37,6 @@ function screenResult(observation: TerminalObservation) {
 		exitCode: undefined,
 		signal: null,
 		failure: null,
-		tty: true,
 	});
 }
 
@@ -31,13 +45,12 @@ describe("bounded tool results", () => {
 		const details = finalizeProcessResult({
 			operation: "exec_command",
 			wallTimeSec: 0.25,
-			collected: { kind: "stream", bytes: encoder.encode("hello\nworld\n"), omittedBytes: 0 },
+			collected: finalScreen("hello\nworld\n"),
 			totalBytes: 12,
 			sessionId: 7,
 			exitCode: undefined,
 			signal: null,
 			failure: null,
-			tty: false,
 			logPath: "/tmp/session.log",
 			cwd: "/tmp",
 			command: "printf hello",
@@ -56,7 +69,7 @@ describe("bounded tool results", () => {
 		const raw = Array.from({ length: DEFAULT_MAX_LINES + 1000 }, (_, index) => `line-${index + 1}`).join("\n");
 		const details = finalizeKillResult({
 			wallTimeSec: 0.5,
-			collected: { kind: "stream", bytes: encoder.encode(raw), omittedBytes: 0 },
+			collected: finalScreen(raw),
 			totalBytes: Buffer.byteLength(raw),
 			sessionId: 42,
 			pid: 1234,
@@ -64,7 +77,6 @@ describe("bounded tool results", () => {
 			exitCode: undefined,
 			signal: "SIGTERM",
 			failure: null,
-			tty: false,
 			logPath: "/tmp/full.log",
 			cwd: "/repo",
 			command: "noisy-job",
@@ -94,12 +106,12 @@ describe("bounded tool results", () => {
 		const details = finalizeProcessResult({
 			operation: "exec_command",
 			wallTimeSec: 0,
-			collected: { kind: "stream", bytes: encoder.encode("small output"), omittedBytes: 0 },
+			collected: finalScreen("small output"),
 			sessionId: undefined,
 			exitCode: -1,
 			signal: null,
 			failure: huge,
-			tty: false,
+
 			cwd: huge,
 		});
 		const text = renderProcessResultText(details);
@@ -109,26 +121,24 @@ describe("bounded tool results", () => {
 		assert.match(text, /…/);
 	});
 
-	it("sanitizes stream-kind bytes even when tty is metadata", () => {
+	it("sanitizes final-screen text before exposing it to the model", () => {
 		const dangerous = "before\x1b]52;c;YXR0YWNrZXI=\x07after\x1b[?1049h";
 		const details = finalizeProcessResult({
 			operation: "write_stdin",
 			wallTimeSec: 0.1,
-			collected: { kind: "stream", bytes: encoder.encode(dangerous), omittedBytes: 0 },
+			collected: finalScreen(dangerous),
 			sessionId: 5,
 			exitCode: undefined,
 			signal: null,
 			failure: null,
-			tty: true,
 		});
 
 		assert.equal(details.output, "beforeafter");
-		assert.equal(details.tty, true);
-		assert.equal(details.terminal, undefined);
+
 		assert.doesNotMatch(renderProcessResultText(details), /[\u001b\u009b]/);
 	});
 
-	it("projects a rendered tty screen with sanitized text and terminal header fields", () => {
+	it("projects a rendered screen with sanitized text and terminal header fields", () => {
 		const details = screenResult({
 			kind: "rendered",
 			view: { screen: "alternate", cols: 80, rows: 24, cursor: { row: 3, col: 7 } },
@@ -140,13 +150,13 @@ describe("bounded tool results", () => {
 		assert.deepEqual(details.terminal, {
 			screen: "alternate", cols: 80, rows: 24, cursor_row: 3, cursor_col: 7, screen_changed: true,
 		});
-		assert.equal(Object.hasOwn(details, "omitted_bytes"), false);
+
 		const text = renderProcessResultText(details);
 		assert.match(text, /^terminal: alternate screen 80x24, cursor row 3 col 7$/m);
-		assert.doesNotMatch(text, /screen_changed: false|history_lines:|history_may_be_truncated:|omitted_bytes:|[\u001b\u009b]/);
+		assert.doesNotMatch(text, /screen_changed: false|history_lines:|history_may_be_truncated:|[\u001b\u009b]/);
 	});
 
-	it("projects unchanged tty screens as empty output with screen_changed false", () => {
+	it("projects unchanged screens as empty output with screen_changed false", () => {
 		const details = screenResult({
 			kind: "unchanged",
 			view: { screen: "normal", cols: 40, rows: 5, cursor: { row: 2, col: 6 } },
@@ -155,11 +165,11 @@ describe("bounded tool results", () => {
 		assert.deepEqual(details.terminal, {
 			screen: "normal", cols: 40, rows: 5, cursor_row: 2, cursor_col: 6, screen_changed: false,
 		});
-		assert.equal(Object.hasOwn(details, "omitted_bytes"), false);
+
 		const text = renderProcessResultText(details);
 		assert.match(text, /^terminal: normal screen 40x5, cursor row 2 col 6$/m);
 		assert.match(text, /^screen_changed: false$/m);
-		assert.doesNotMatch(text, /history_lines:|history_may_be_truncated:|omitted_bytes:/);
+		assert.doesNotMatch(text, /history_lines:|history_may_be_truncated:/);
 	});
 
 	it("returns the final active screen even after an unchanged observation, without incremental metadata", async (t) => {
@@ -177,7 +187,6 @@ describe("bounded tool results", () => {
 			exitCode: 0,
 			signal: null,
 			failure: null,
-			tty: true,
 		});
 		assert.equal(details.output, "9\n10\n11\n12");
 		assert.deepEqual(details.terminal, {
@@ -190,14 +199,14 @@ describe("bounded tool results", () => {
 	it("represents a failed kill as a live, retained session", () => {
 		const details = finalizeKillResult({
 			wallTimeSec: 2.5,
-			collected: { kind: "stream", bytes: encoder.encode("last diagnostic\n"), omittedBytes: 0 },
+			collected: finalScreen("last diagnostic\n"),
 			sessionId: 9,
 			pid: 999,
 			requestedSignal: "SIGTERM",
 			exitCode: undefined,
 			signal: null,
 			failure: "process still running; session remains registered",
-			tty: false,
+
 			logPath: "/tmp/live.log",
 			escalated: true,
 			killed: false,

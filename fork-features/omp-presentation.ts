@@ -399,8 +399,8 @@ async function loadOmpAppearance(): Promise<() => TerminalAppearance> {
 /**
  * Wraps the extension factory per host. Pi hosts activate synchronously with
  * `pi` unchanged. omp is identified by its injected `arktype` builder and
- * activates through {@link presentOnOmp} with omp's theme appearance (tty
- * sessions answer it to OSC 10/11). The awaited factory initializes Tern's
+ * activates through {@link presentOnOmp} with omp's theme appearance
+ * (sessions answer it to OSC 10/11). The awaited factory initializes Tern's
  * normal plugin copy before registering tools/HUD; omp also awaits this
  * factory during package install/force-reinstall validation.
  */

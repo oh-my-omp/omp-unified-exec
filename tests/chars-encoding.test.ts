@@ -18,6 +18,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import extensionFactory from "../src/index.ts";
 
 // Process-tool harness: the fake API has no codemode surfaces (see codemode-render tests).
@@ -73,6 +74,31 @@ function makeHarness() {
 	};
 }
 
+type ExecCaller = {
+	call(toolName: string, params: Record<string, unknown>): Promise<{ details: { session_id?: unknown; log_path?: unknown } }>;
+};
+
+/**
+ * Start `cat > out` with the terminal in raw mode and return its session id
+ * once the mode switch is done (the marker is printed after `stty`), so no
+ * test byte reaches the line discipline in canonical mode.
+ */
+async function startRawCat(h: ExecCaller, out: string): Promise<number> {
+	const r1 = await h.call("exec_command", {
+		cmd: `stty raw -echo; printf raw-ready; exec cat > '${out}'`,
+		yield_time_ms: 300,
+	});
+	const { session_id: sid, log_path: logPath } = r1.details;
+	assert.ok(typeof sid === "number", `expected session_id; got ${JSON.stringify(r1.details)}`);
+	assert.ok(typeof logPath === "string");
+	const deadline = Date.now() + 8000;
+	while (!readFileSync(logPath, "utf8").includes("raw-ready")) {
+		assert.ok(Date.now() < deadline, "raw mode was never set");
+		await delay(25);
+	}
+	return sid;
+}
+
 /**
  * Spawn `cat > <tmpfile>` so every byte we write_stdin lands in the file
  * verbatim. Returns helpers to push chars and read back the captured bytes.
@@ -82,12 +108,7 @@ async function spawnCapture() {
 	const out = join(dir, "stdin.bin");
 	const h = makeHarness();
 	await h.emit("session_start");
-	const r1 = await h.call("exec_command", {
-		cmd: `cat > '${out}'`,
-		yield_time_ms: 300,
-	});
-	assert.ok(typeof r1.details.session_id === "number", `expected session_id; got ${JSON.stringify(r1.details)}`);
-	const sid = r1.details.session_id as number;
+	const sid = await startRawCat(h, out);
 	return {
 		sid,
 		outFile: out,
@@ -187,8 +208,7 @@ describe("write_stdin chars encoding", () => {
 		const out = join(dir, "stdin.bin");
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r1 = await h.call("exec_command", { cmd: `cat > '${out}'`, yield_time_ms: 300 });
-		const sid = r1.details.session_id as number;
+		const sid = await startRawCat(h, out);
 		const b64 = Buffer.from([0x1b, 0x03, 0x41, 0x0a, 0xc3, 0xa9]).toString("base64");
 		await h.call("write_stdin", { session_id: sid, chars_b64: b64, yield_time_ms: 250 });
 		await h.call("kill_session", { session_id: sid });

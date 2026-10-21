@@ -2,25 +2,32 @@
  * unified-exec — pi extension that ports codex's unified_exec session model,
  * with pi's built-in `bash` tool's on-disk retention layered on top.
  *
- * Tools exposed to the LLM:
- *   - exec_command(cmd, workdir?, shell?, tty?, yield_time_ms?, on_exit?)
+ * Tools exposed to the LLM (the host's `bash` stays active for short one-shot
+ * commands):
+ *   - exec_command(cmd, workdir?, shell?, cols?, rows?, yield_time_ms?, on_exit?)
  *   - write_stdin(session_id, chars?, yield_time_ms?, yield_until?)
  *   - set_on_exit(session_id, on_exit)            [disarm/re-arm wake without kill]
+ *   - monitor(session_id, condition?, …)         [future-output wakes]
  *   - kill_session(session_id, signal?)          [pi-flavor; codex has no equivalent]
  *   - list_sessions()                            [pi-flavor]
  *
  * Semantics:
- *   - Every exec_command starts a long-lived session. If the process is still
- *     alive when the call's yield deadline expires, the tool returns with
- *     `session_id` in its body and the LLM can follow up with write_stdin.
+ *   - Every exec_command starts a long-lived session in a PTY with no command
+ *     deadline. If the process is still alive when the call's yield deadline
+ *     expires, the tool returns with `session_id` in its body and the LLM can
+ *     follow up with write_stdin.
  *   - `write_stdin` with empty `chars` is a pure poll; with non-empty, it also
- *     writes the bytes (including \\x03 for Ctrl-C, \\x04 for EOF).
+ *     writes the bytes verbatim to the PTY (\\x03 is Ctrl-C to the foreground
+ *     process group; nothing such as a trailing \\r is appended).
+ *   - Results report the session's rendered terminal screen, so every read
+ *     is bounded by the screen size.
  *   - Aborting the tool call (Esc) breaks the wait but does not kill the
  *     session; the next turn can still drive it.
- *   - Sessions are terminated on session_shutdown (codex parity).
+ *   - Sessions are terminated on session_shutdown (codex parity); a process
+ *     that exits is never restarted.
  *   - Every byte the child writes goes to a per-session log file at
- *     /tmp/pi-unified-exec-<sid>-<random>.log. The LLM sees the last ~50 KiB
- *     / 2000 lines per call and the full file is available via `read`.
+ *     /tmp/pi-unified-exec-<sid>-<random>.log. The LLM sees the rendered
+ *     screen (capped at ~50 KiB / 2000 lines); the raw stream stays in the log.
  */
 
 import { constants as osConstants } from "node:os";
@@ -89,7 +96,7 @@ const MAX_SESSIONS = 64;
 const WARNING_SESSIONS = 60;
 const LRU_PROTECTED_COUNT = 8;
 const OUTPUT_POLL_INTERVAL_MS = 250; // exec/input updates and short empty-poll rate limit
-// PTY dimension clamps for exec_command's cols/rows (tty: true only).
+// PTY dimension clamps for exec_command's cols/rows.
 const MIN_PTY_COLS = 20;
 const MAX_PTY_COLS = 500;
 const MIN_PTY_ROWS = 5;
@@ -133,16 +140,11 @@ function normalizeSignal(raw: string | undefined): NodeJS.Signals {
 	return name as NodeJS.Signals;
 }
 
-const textDecoder = new TextDecoder("utf-8", { fatal: false });
 const textEncoder = new TextEncoder();
 
 type ResponseShape = ProcessResultDetails;
 type ProcessUpdateDetails = Partial<ProcessResultDetails> & { pid?: number; total_bytes?: number };
 type FinalizeInput = Omit<FinalizeProcessInput, "operation">;
-
-function decode(bytes: Uint8Array): string {
-	return textDecoder.decode(bytes);
-}
 
 function encode(str: string): Uint8Array {
 	return textEncoder.encode(str);
@@ -167,7 +169,7 @@ interface ExtensionCtx {
 	pendingSessions: Set<ExecSession>;
 	/** Set on session_shutdown; new exec_commands are rejected. */
 	shuttingDown: boolean;
-	/** The host's light/dark appearance, which tty sessions answer to OSC 10/11. */
+	/** The host's light/dark appearance, which sessions answer to OSC 10/11. */
 	appearance: () => TerminalAppearance;
 }
 
@@ -175,7 +177,6 @@ type ExecCommandArgs = {
 	cmd: string;
 	workdir?: string;
 	shell?: string;
-	tty?: boolean;
 	cols?: number;
 	rows?: number;
 	yield_time_ms?: number;
@@ -216,17 +217,16 @@ function resolveWriteInput(args: WriteStdinArgs): Uint8Array | undefined {
 }
 
 const HELD_OPEN_NOTE =
-	"shell has exited, but background process(es) still hold the output pipe " +
-	"(inherited stdout/stderr, or a backgrounded `cd … && cmd &` chain whose subshell is still waiting), " +
+	"shell has exited, but background process(es) still hold the terminal " +
+	"(e.g. a nohup'd or SIGHUP-ignoring job that kept the PTY as stdin/stdout/stderr), " +
 	"so this session stays open until they exit. To detach: redirect inside the job — " +
-	"`(cd dir && cmd >log 2>&1 </dev/null) &` or `setsid cmd >log 2>&1 </dev/null &` — " +
-	"or end the session with kill_session.";
+	"`setsid cmd >log 2>&1 </dev/null &` — or end the session with kill_session.";
 
 /**
- * Explanation for sessions whose shell has exited but whose output pipe is
+ * Explanation for sessions whose shell has exited but whose terminal is
  * still held open by background processes: they report "running" even though
  * the foreground command is long done. State-driven (never command-text
- * matching), so it covers any construct that leaves a pipe holder behind.
+ * matching), so it covers any construct that leaves a terminal holder behind.
  */
 function heldOpenNote(session: ExecSession): string | undefined {
 	return session.shellExited && !session.hasExited ? HELD_OPEN_NOTE : undefined;
@@ -244,12 +244,8 @@ async function runExecCommand(
 	if (ctx.shuttingDown) {
 		throw new Error("unified-exec: session is shutting down; not starting new commands.");
 	}
-	const tty = args.tty ?? false;
-	if (tty && !isPtyAvailable()) {
-		throw new Error(
-			`tty: true is unavailable: ${getPtyLoadError() ?? "no supported PTY backend"}.\n` +
-				`Upgrade Bun to a version with Bun.Terminal, install Node optional dependencies, or call with tty: false.`,
-		);
+	if (!isPtyAvailable()) {
+		throw new Error(`exec_command needs a PTY, but none is available: ${getPtyLoadError() ?? "no supported PTY backend"}.`);
 	}
 
 	let shellBin = args.shell;
@@ -291,7 +287,6 @@ async function runExecCommand(
 		command: shellCommand.command,
 		cwd: effectiveCwd,
 		env: process.env,
-		tty,
 		cols: args.cols !== undefined ? clamp(Math.floor(args.cols), MIN_PTY_COLS, MAX_PTY_COLS) : undefined,
 		rows: args.rows !== undefined ? clamp(Math.floor(args.rows), MIN_PTY_ROWS, MAX_PTY_ROWS) : undefined,
 		displayCommand: args.cmd,
@@ -308,7 +303,6 @@ async function runExecCommand(
 			exitCode: -1,
 			signal: null,
 			failure: session.failureMessage,
-			tty,
 			logPath: undefined, // spawn failed — no log file
 			cwd: effectiveCwd,
 			command: args.cmd,
@@ -333,9 +327,8 @@ async function runExecCommand(
 		]);
 
 		if (session.hasExited && Date.now() <= earlyDeadline + 20) {
-			// Fully short-lived: collect everything in the buffer + any trailing
-			// bytes. macOS can deliver stdout/stderr shortly after the exit event
-			// for very fast commands — give the trailing drain a bounded window.
+			// Fully short-lived: return the final screen once the output has
+			// closed (the log is flushed and the terminal frozen).
 			const collected = await session.collect({ deadlineMs: Date.now() + 500, externalAbort: signal });
 			const wallSec = (Date.now() - start) / 1000;
 			return finalizeResponse({
@@ -346,7 +339,6 @@ async function runExecCommand(
 				exitCode: session.exitCode,
 				signal: session.signal,
 				failure: session.failureMessage,
-				tty,
 				logPath: session.logPath,
 				cwd: effectiveCwd,
 				command: args.cmd,
@@ -404,7 +396,6 @@ async function runExecCommand(
 				exitCode: undefined,
 				signal: null,
 				failure: null,
-				tty,
 				logPath: session.logPath,
 				cwd: effectiveCwd,
 				command: args.cmd,
@@ -428,7 +419,6 @@ async function runExecCommand(
 			exitCode: session.exitCode,
 			signal: session.signal,
 			failure: session.failureMessage,
-			tty,
 			logPath: session.logPath,
 			cwd: effectiveCwd,
 			command: args.cmd,
@@ -498,8 +488,8 @@ async function runWriteStdin(
 		if (writeBytes) {
 			const ok = session.write(writeBytes);
 			if (!ok && !session.hasExited) {
-				// Still running but stdin is gone (child closed it / EPIPE earlier).
-				writeFailure = "stdin write failed: the child closed its stdin; bytes were not delivered";
+				// Still running but the PTY no longer accepts input (terminal closed).
+				writeFailure = "PTY write failed: the terminal no longer accepts input; bytes were not delivered";
 			}
 			if (!ok && session.hasExited) {
 				// Session already exited; return its final state.
@@ -516,7 +506,6 @@ async function runWriteStdin(
 					exitCode: session.exitCode,
 					signal: session.signal,
 					failure: session.failureMessage,
-					tty: session.tty,
 					logPath: session.logPath,
 					cwd: session.cwd,
 					command: session.displayCommand,
@@ -551,7 +540,6 @@ async function runWriteStdin(
 				exitCode: session.exitCode,
 				signal: session.signal,
 				failure: session.failureMessage ?? writeFailure,
-				tty: session.tty,
 				logPath: session.logPath,
 				cwd: session.cwd,
 				command: session.displayCommand,
@@ -571,7 +559,6 @@ async function runWriteStdin(
 			exitCode: undefined,
 			signal: null,
 			failure: writeFailure,
-			tty: session.tty,
 			logPath: session.logPath,
 			cwd: session.cwd,
 			command: session.displayCommand,
@@ -672,7 +659,6 @@ async function runAttachedWait(
 			exitCode: outcome === "exit" ? session.exitCode : undefined,
 			signal: outcome === "exit" ? session.signal : null,
 			failure: outcome === "exit" ? session.failureMessage : null,
-			tty: session.tty,
 			logPath: session.logPath,
 			cwd: session.cwd,
 			command: session.displayCommand,
@@ -775,7 +761,7 @@ function formatRunningSessionsWidget(ctx: ExtensionCtx, sessions: ExecSession[])
 		`⚠ unified-exec: ${sessions.length} ${plural(sessions.length, "session")} still running`,
 		...shown.map((s) => {
 			const wake = ctx.coordinator.isArmed(s.id) ? " [wake]" : "";
-			const held = s.shellExited ? " (shell exited, pipe held)" : "";
+			const held = s.shellExited ? " (shell exited, terminal held)" : "";
 			return `  #${s.id} ${formatElapsed(now - s.startedAt)}${wake}${held} ${oneLineCommand(s.displayCommand, 72)} (${s.cwd})`;
 		}),
 	];
@@ -845,10 +831,8 @@ function buildStreamUpdate(
 	session: ExecSession,
 	extra?: Partial<ProcessResultDetails>,
 ): AgentToolResult<ProcessUpdateDetails> {
-	const live = session.liveOutput();
-	const text = live.kind === "screen"
-		? sanitizeOutputText(live.snapshot.text)
-		: sanitizeOutputText(decode(live.bytes));
+	const snapshot = session.liveSnapshot();
+	const text = snapshot ? sanitizeOutputText(snapshot.text) : "";
 	return {
 		content: [{ type: "text", text }],
 		details: {
@@ -856,14 +840,13 @@ function buildStreamUpdate(
 			pid: session.pid,
 			running: !session.hasExited,
 			total_bytes: session.totalBytesSeen,
-			tty: session.tty,
 			command: session.displayCommand,
 			cwd: session.cwd,
 			log_path: session.logPath,
 			// Populate `output` so renderResult has a single source regardless
 			// of streaming vs final state.
 			output: text,
-			...(live.kind === "screen" ? { terminal: terminalViewDetails(live.snapshot.view, true) } : {}),
+			...(snapshot ? { terminal: terminalViewDetails(snapshot.view, true) } : {}),
 			...extra,
 		},
 	};
@@ -949,15 +932,6 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 		appearance,
 	};
 
-	// By default, unified-exec removes pi's built-in `bash` tool so the LLM
-	// is steered toward exec_command/write_stdin. Pass --keep-builtin-bash to
-	// preserve the built-in alongside the unified-exec tools.
-	pi.registerFlag("keep-builtin-bash", {
-		description: "Keep pi's built-in `bash` tool alongside exec_command/write_stdin. By default it is removed.",
-		type: "boolean",
-		default: false,
-	});
-
 	// Observation finalization: "observed" is committed at pi's finalized
 	// tool-result event, not merely when the handler returns — see completion.ts.
 	pi.on("tool_execution_end", async (event) => {
@@ -972,22 +946,10 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 		ctx.shuttingDown = false; // reload/new/resume re-arms the extension
 		ctx.coordinator.reset(); // never resurrect wakes from a previous session
 		updateRunningSessionsUi(ctx);
-		// Default behavior is to remove the built-in `bash` tool. Only keep it
-		// if --keep-builtin-bash was passed. Flag lookup uses the registered
-		// name without leading dashes.
-		const keep = pi.getFlag("keep-builtin-bash");
-		if (keep !== true) {
-			const active = pi.getActiveTools();
-			const filtered = active.filter((name) => name !== "bash");
-			if (filtered.length !== active.length) {
-				pi.setActiveTools(filtered);
-			}
-		}
 		if (!isPtyAvailable() && eventCtx.hasUI) {
-			// Non-fatal: pipes mode still works.
 			eventCtx.ui.notify(
-				`unified-exec: PTY backend unavailable (${getPtyLoadError() ?? "unknown error"}); tty: true will fail. Pipes still work.`,
-				"info",
+				`unified-exec: PTY backend unavailable (${getPtyLoadError() ?? "unknown error"}); exec_command will fail. Use bash.`,
+				"warning",
 			);
 		}
 	});
@@ -1057,7 +1019,7 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 			const now = Date.now();
 			const labels = sessions.map((s) => {
 				const wake = ctx.coordinator.isArmed(s.id) ? " [wake]" : "";
-				const held = s.shellExited ? " (shell exited, pipe held)" : "";
+				const held = s.shellExited ? " (shell exited, terminal held)" : "";
 				return `#${s.id} ${formatElapsed(now - s.startedAt)}${wake}${held} ${oneLineCommand(s.displayCommand, 60)}`;
 			});
 			const KILL_ALL = `Kill all ${sessions.length} ${plural(sessions.length, "session")}`;
@@ -1089,15 +1051,15 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 		name: "exec_command",
 		label: "exec_command",
 		description:
-			'Run a command in a persistent session. Returns `session_id` if still running (drive with write_stdin) or `exit_code` if it finished within yield_time_ms. on_exit defaults to "none". Only pass on_exit: "wake" when the human explicitly wants auto-resume on unobserved exit — stale wakes interrupt later work. Use set_on_exit to disarm or re-arm a running session.',
-		promptSnippet: "Run a shell command; long-running ones yield a session_id",
+			'Run a command in a PTY session for long-running, interactive (REPLs, TUIs, ssh, sudo), concurrent or dev-daemon work; use bash for short one-shot commands. There is no command deadline and nothing restarts a process that exits. Returns `session_id` if still running (drive with write_stdin, observe with monitor or read terminal_url) or `exit_code` if it finished within yield_time_ms. on_exit defaults to "none". Only pass on_exit: "wake" when the human explicitly wants auto-resume on unobserved exit — stale wakes interrupt later work. Use set_on_exit to disarm or re-arm a running session.',
+		promptSnippet: "Run a long-running or interactive command in a PTY session",
 		promptGuidelines: [
-			"Prefer dedicated file tools when available (read/grep/find/ls). Otherwise use exec_command with fast shell tools: rg for content search, fd if available (or find) for file names, and ls for directories.",
-			"Use a small yield_time_ms (~500ms) for quick one-shots and the 10s default for most commands; long-running or interactive processes (dev servers, REPLs, ssh, sudo) return a session_id you then drive with write_stdin.",
-			"For a long non-interactive command, start with a short yield to obtain a session_id, then use an empty write_stdin poll with a finite yield_time_ms suited to its expected duration. There is no built-in empty-poll maximum; an operator may configure one. Keep waits short for interactive or indefinite processes. Pi manages cache warming independently.",
+			"Use bash for short one-shot commands. Use exec_command for long-running commands, interactive programs (REPLs, TUIs, ssh, sudo), concurrent computation and dev-time daemons: it runs in a PTY, has no command deadline, and never restarts a process that exits.",
+			"The 10s default yield suits most starts; interactive processes return a session_id you then drive with write_stdin.",
+			"For a long non-interactive command, start with a short yield to obtain a session_id, then use a monitor (with a condition for progress lines, or without one to await completion) or an empty write_stdin poll with a finite yield_time_ms suited to its expected duration. There is no built-in empty-poll maximum; an operator may configure one. Keep waits short for interactive or indefinite processes. Pi manages cache warming independently.",
 			'on_exit defaults to "none". Prefer polling or human follow-up. Use on_exit: "wake" ONLY when the human explicitly wants auto-resume on unobserved completion — not for indefinite processes (dev servers, watchers). If you armed wake by mistake or the job is wrong/abandoned, call set_on_exit(session_id, on_exit: "none") promptly (does not kill the process). kill_session still kills and suppresses wake. Combining wake with an observing write_stdin is safe: direct completion consumes the wake.',
 			"In codemode scripts, exec_command and write_stdin resolve to objects: print r.output with text(r.output) and check r.exit_code / r.session_id, instead of printing the whole result object.",
-			"tty: true output is rendered terminal state, not raw bytes. Running results show unseen history plus the current screen and cursor; unchanged running screens report screen_changed:false. Completed results show only the frozen final active screen. Read terminal_url for retained history, /screen for active text, or /screen.png for cell colours and styling; raw bytes remain in log_path.",
+			"Output is rendered terminal state, not raw bytes. Running results show unseen history plus the current screen and cursor; unchanged running screens report screen_changed:false. Completed results show only the frozen final active screen. Read terminal_url for retained history, /screen for active text, or /screen.png for cell colours and styling; raw bytes remain in log_path.",
 		],
 		outputSchema: processScriptResultSchema,
 		parameters: Type.Object({
@@ -1109,20 +1071,14 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 						"Shell binary. Defaults to bash (on Windows: bash if on PATH, else powershell). cmd and powershell/pwsh get shell-appropriate flags.",
 				}),
 			),
-			tty: Type.Optional(
-				Type.Boolean({
-					description:
-						"Allocate a PTY. Default false (plain pipes). With a PTY, output is the rendered terminal screen (plus lines that scrolled off since the last call) rather than the raw stream.",
-				}),
-			),
 			cols: Type.Optional(
 				Type.Number({
-					description: `PTY width in columns (tty: true only; ignored for pipes). Default 120, clamped to [${MIN_PTY_COLS}, ${MAX_PTY_COLS}].`,
+					description: `PTY width in columns. Default 120, clamped to [${MIN_PTY_COLS}, ${MAX_PTY_COLS}].`,
 				}),
 			),
 			rows: Type.Optional(
 				Type.Number({
-					description: `PTY height in rows (tty: true only; ignored for pipes). Default ${DEFAULT_PTY_ROWS}, clamped to [${MIN_PTY_ROWS}, ${MAX_PTY_ROWS}].`,
+					description: `PTY height in rows. Default ${DEFAULT_PTY_ROWS}, clamped to [${MIN_PTY_ROWS}, ${MAX_PTY_ROWS}].`,
 				}),
 			),
 			yield_time_ms: Type.Optional(
@@ -1155,14 +1111,14 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 		name: "write_stdin",
 		label: "write_stdin",
 		description:
-			"Write bytes to a running session. Omit both chars and chars_b64 to poll without writing. Use `chars` for text with C-style escapes (e.g. \\x03 Ctrl-C, \\x1b ESC, \\n newline); use `chars_b64` for raw binary. For empty polls, wait with a finite yield_time_ms (relative, no built-in maximum) or yield_until (absolute UTC deadline, only when the human explicitly asks).",
+			"Write bytes verbatim to a running session's PTY; nothing (no \\r or \\n) is appended. Omit both chars and chars_b64 to poll without writing. Use `chars` for text with C-style escapes (e.g. \\x03 Ctrl-C, \\x1b ESC, \\r Enter); use `chars_b64` for raw binary. For empty polls, wait with a finite yield_time_ms (relative, no built-in maximum) or yield_until (absolute UTC deadline, only when the human explicitly asks).",
 		promptSnippet: "Send input to or poll a running session",
 		promptGuidelines: [
 			"Empty write_stdin polls default to 5 seconds and accept finite yield_time_ms durations with no built-in maximum. Choose a wait based on expected job duration and needed responsiveness, not cache lifetime. Exit or cancellation returns early; cancellation leaves the process alive. Respect any configured operator limit.",
 			'Use yield_until ONLY when the human explicitly asks for a long attached wait or an explicit UTC deadline. Omit yield_time_ms and pass a future UTC timestamp ending in "Z" (compute it from tool_time_utc in tool results). Finite non-interactive sessions only. The call returns immediately when the process exits.',
 			"NEVER use yield_until for REPLs, sudo, ssh, password prompts, dev servers, file watchers, debuggers, or any indefinite/interactive session — it is only for finite commands that will exit on their own.",
 			'on_exit wake is set via exec_command or set_on_exit, not write_stdin. Observing an exit here consumes an armed wake (direct result). To disarm wake without killing, call set_on_exit(session_id, on_exit: "none").',
-			"In tty sessions, submit lines with \\r (the Enter key) rather than \\n: POSIX terminals accept both, but Windows console programs only execute input on \\r.",
+			"Submit lines with \\r (the Enter key) rather than \\n: POSIX terminals accept both, but Windows console programs only execute input on \\r. Keys such as ESC or arrows are sent alone, without Enter.",
 			"For very noisy jobs, rely on the log_path and final/truncated output instead of repeatedly polling.",
 		],
 		outputSchema: processScriptResultSchema,
@@ -1284,7 +1240,7 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 		description: "Subscribe to future session output with an optional JavaScript regex condition; each matched batch wakes the agent without stopping the process. Without condition, await output closure once. Replaces any existing monitor; action cancel silently removes it. Default max_returns is 10 successful match messages.",
 		promptSnippet: "Await matching output or completion of an existing session",
 		promptGuidelines: [
-			"Monitor observes without consuming output. Use read term:// for tty history/screens and log_path for pipe recovery.",
+			"Monitor observes without consuming output. Use read term:// for history and screens, and log_path for raw bytes.",
 			"Only output after establishment participates. Match batches coalesce for about 250ms; the final allowed return ends the monitor, not the process.",
 			"Model kill_session, explicit cancel, replacement and session reset silently cancel monitoring. Already delivered follow-ups cannot be recalled.",
 		],
@@ -1371,7 +1327,6 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 				exitCode: session.exitCode,
 				signal: session.signal,
 				failure: killFailure || null,
-				tty: session.tty,
 				logPath: session.logPath,
 				cwd: session.cwd,
 				command: session.displayCommand,
@@ -1422,7 +1377,6 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 					session_id: s.id,
 					command: s.displayCommand,
 					cwd: s.cwd,
-					tty: s.tty,
 					pid: s.pid,
 					started_at_ms: s.startedAt,
 					elapsed_ms: now - s.startedAt,
@@ -1444,9 +1398,7 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 							: `  [exited${s.exit_code !== undefined && s.exit_code !== null ? ` exit_code=${s.exit_code}` : ""}${s.signal ? ` signal=${s.signal}` : ""}; removed from store]`;
 						const wake = s.wake_armed ? " [wake]" : "";
 						const monitor = s.monitor ? ` [monitor ${s.monitor.returns}/${s.monitor.max_returns} condition=${JSON.stringify(s.monitor.condition)}]` : "";
-						return `  ${String(s.session_id).padStart(3)}  pid=${String(s.pid ?? "?").padStart(6)}  ${
-							s.tty ? "tty" : "pipe"
-						}  ${((s.elapsed_ms / 1000).toFixed(1) + "s").padStart(8)}${wake}${monitor}  ${oneLineCommand(s.command, 60)}${exitedSuffix}\n        log: ${s.log_path}${s.terminal_url ? `\n        terminal_url: ${s.terminal_url}` : ""}`;
+						return `  ${String(s.session_id).padStart(3)}  pid=${String(s.pid ?? "?").padStart(6)}  ${((s.elapsed_ms / 1000).toFixed(1) + "s").padStart(8)}${wake}${monitor}  ${oneLineCommand(s.command, 60)}${exitedSuffix}\n        log: ${s.log_path}${s.terminal_url ? `\n        terminal_url: ${s.terminal_url}` : ""}`;
 					})
 				: ["  (no live sessions)"];
 			const header = reaped.length
@@ -1483,6 +1435,6 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 	};
 }
 
-// Fork: on oh-my-pi, tools present through omp's bash renderer and tty sessions
+// Fork: on oh-my-pi, tools present through omp's bash renderer and sessions
 // get a Tern HUD (fork-features/README.md).
 export default withHostPresentation(activate);

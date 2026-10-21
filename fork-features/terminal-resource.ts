@@ -56,9 +56,13 @@ export async function freezeTerminal(key: string): Promise<void> {
 	}
 }
 
-/** Shutdown may discard unfinished live projections, never frozen or other activations' resources. */
-export function discardLiveTerminal(key: string): void {
-	if (terminalRegistry.resources.get(key)?.kind === "live") terminalRegistry.resources.delete(key);
+/**
+ * Shutdown may discard unfinished live projections, never frozen or other
+ * activations' resources. Returns whether this call discarded the resource.
+ */
+export function discardLiveTerminal(key: string): boolean {
+	if (terminalRegistry.resources.get(key)?.kind !== "live") return false;
+	return terminalRegistry.resources.delete(key);
 }
 
 export type TerminalReadTarget =
