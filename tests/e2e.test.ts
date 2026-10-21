@@ -769,12 +769,13 @@ describe("unified-exec e2e", () => {
 		const marker = `30.${process.pid}${Date.now() % 1000}`;
 		const h = makeHarness();
 		await h.emit("session_start");
-		const inflight = h.call("exec_command", { cmd: `trap '' TERM HUP; sleep ${marker}`, yield_time_ms: 500 });
+		const inflight = h.call("exec_command", { cmd: `trap '' TERM HUP; sleep ${marker}`, shell: "/bin/bash", yield_time_ms: 500 });
 		await new Promise((r) => setTimeout(r, 40)); // inside the grace window
 		await h.emit("session_shutdown");
 		const r = await inflight;
 		assert.equal(r.details.session_id, undefined, JSON.stringify(r.details));
 		assert.equal(r.details.signal, "SIGKILL", JSON.stringify(r.details));
+		assert.equal(r.details.shell, "/bin/bash", JSON.stringify(r.details));
 		await h.emit("session_start");
 		const l = await h.call("list_sessions", {});
 		assert.deepEqual(l.details.sessions, [], JSON.stringify(l.details));

@@ -361,6 +361,7 @@ async function runExecCommand(
 				failure: exited ? session.failureMessage : "terminated by session_shutdown; exit not confirmed",
 				logPath: session.logPath,
 				cwd: effectiveCwd,
+				shell: session.shell,
 				command: args.cmd,
 				yieldTimeMs,
 				// Without a session_id the result would default to exited; an
