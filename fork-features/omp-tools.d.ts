@@ -26,3 +26,22 @@ declare module "@oh-my-pi/pi-natives" {
 declare module "@oh-my-pi/pi-coding-agent/config/registry" {
 	export const lookup: unknown;
 }
+
+declare module "@oh-my-pi/pi-coding-agent" {
+	export const AgentRegistry: unknown;
+	export const CRITICAL_BASH_PATTERNS: unknown;
+}
+
+declare module "@oh-my-pi/pi-coding-agent/exec/settings" {
+	export const cfgBashPatterns: unknown;
+	export const cfgBashAllowCompoundCommands: unknown;
+}
+
+declare module "@oh-my-pi/pi-coding-agent/tools/shell-tokenize" {
+	export const tokenizeShellSegments: unknown;
+	export const extractLiteralAndChainSegments: unknown;
+}
+
+declare module "@oh-my-pi/pi-coding-agent/tools/approval" {
+	export const truncateForPrompt: unknown;
+}
