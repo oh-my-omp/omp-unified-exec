@@ -191,9 +191,9 @@ describe("registered tools return structuredContent", { skip: IS_WINDOWS }, () =
 		assert.equal(typeof sid, "number");
 		assert.equal(started.structuredContent.status, "running");
 
-		const polled = await call("write_stdin", { session_id: sid, yield_time_ms: 5000 });
-		assert.ok(Value.Check(processScriptResultSchema, polled.structuredContent));
-		assert.equal(polled.structuredContent.running, true);
+		const written = await call("write_stdin", { session_id: sid, chars: "x", yield_time_ms: 250 });
+		assert.ok(Value.Check(processScriptResultSchema, written.structuredContent));
+		assert.equal(written.structuredContent.running, true);
 
 		const listed = await call("list_sessions", {});
 		assert.ok(Value.Check(listSessionsScriptResultSchema, listed.structuredContent));

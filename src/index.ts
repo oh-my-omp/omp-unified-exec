@@ -5,7 +5,7 @@
  * Tools exposed to the LLM (the host's `bash` stays active for short one-shot
  * commands):
  *   - exec_command(cmd, workdir?, shell?, cols?, rows?, yield_time_ms?, on_exit?)
- *   - write_stdin(session_id, chars?, yield_time_ms?, yield_until?)
+ *   - write_stdin(session_id, chars?, chars_b64?, yield_time_ms?)
  *   - set_on_exit(session_id, on_exit)            [disarm/re-arm wake without kill]
  *   - monitor(session_id, condition?, …)         [future-output wakes]
  *   - kill_session(session_id, signal?)          [pi-flavor; codex has no equivalent]
@@ -15,10 +15,10 @@
  *   - Every exec_command starts a long-lived session in a PTY with no command
  *     deadline. If the process is still alive when the call's yield deadline
  *     expires, the tool returns with `session_id` in its body and the LLM can
- *     follow up with write_stdin.
- *   - `write_stdin` with empty `chars` is a pure poll; with non-empty, it also
- *     writes the bytes verbatim to the PTY (\\x03 is Ctrl-C to the foreground
- *     process group; nothing such as a trailing \\r is appended).
+ *     read terminal_url, subscribe with monitor, or send input with write_stdin.
+ *   - `write_stdin` requires nonempty decoded input and writes bytes verbatim
+ *     to the PTY (\\x03 is Ctrl-C to the foreground process group; nothing
+ *     such as a trailing \\r is appended).
  *   - Results report the session's rendered terminal screen, so every read
  *     is bounded by the screen size.
  *   - Aborting the tool call (Esc) breaks the wait but does not kill the
@@ -42,8 +42,8 @@ import { bindingContext, bindSession, type HostBindingState, recheckBinding } fr
 import { MonitorError } from "../fork-features/monitor-subscription.ts";
 import { type CollectResult, NO_OUTPUT } from "./collect.ts";
 import { CompletionCoordinator, type OnExitPolicy, sanitizeMeta } from "./completion.ts";
-import { formatElapsed } from "./format-time.ts";
-import { type LongWaitOutcome, startRateLimitedStream, waitForExitOrDeadline } from "./long-wait.ts";
+import { formatElapsed, nowUtcIso } from "./format-time.ts";
+import { waitForExitOrDeadline } from "./long-wait.ts";
 import { sleep } from "./notify.ts";
 import { sanitizeOutputText } from "./output-safety.ts";
 import { DEFAULT_PTY_ROWS } from "./pty.ts";
@@ -64,8 +64,6 @@ import { ExecSession } from "./session.ts";
 import { SessionStore } from "./session-store.ts";
 import { buildShellCommand, IS_WINDOWS, resolveBinary, resolveDefaultShell, resolveWindowsShell } from "./shell.ts";
 import type { TerminalAppearance } from "./terminal-screen.ts";
-import { MIN_EMPTY_YIELD_TIME_MS, nowUtcIso, parseYieldUntil, resolveEmptyPollYield } from "./time.ts";
-export { MAX_EMPTY_POLL_ENV_VAR, resolveMaxEmptyPollMs } from "./time.ts";
 import {
 	finalizeKillResult,
 	finalizeProcessResult,
@@ -91,14 +89,12 @@ const SHUTDOWN_KILL_GRACE_MS = 500;
 const MAX_SESSIONS = 64;
 const WARNING_SESSIONS = 60;
 const LRU_PROTECTED_COUNT = 8;
-const OUTPUT_POLL_INTERVAL_MS = 250; // exec/input updates and short empty-poll rate limit
+const OUTPUT_POLL_INTERVAL_MS = 250; // exec/input streaming updates
 // PTY dimension clamps for exec_command's cols/rows.
 const MIN_PTY_COLS = 20;
 const MAX_PTY_COLS = 500;
 const MIN_PTY_ROWS = 5;
 const MAX_PTY_ROWS = 300;
-// Long empty polls use output-driven updates, never a periodic heartbeat.
-const LONG_WAIT_UPDATE_INTERVAL_MS = 30_000;
 const SESSION_UI_KEY = "unified-exec.sessions";
 
 /**
@@ -189,8 +185,17 @@ type WriteStdinArgs = {
 	chars?: string;
 	chars_b64?: string;
 	yield_time_ms?: number;
-	yield_until?: string;
 };
+
+/** The write surface does not observe a session without sending input. */
+export class EmptyPollRemovedError extends Error {
+	readonly code = "empty_poll_removed";
+
+	constructor(terminalUrl: string | undefined) {
+		super(`empty_poll_removed: write_stdin requires input bytes. Read state and content with read ${terminalUrl ?? "term://<key>"}; wait for output events or completion with monitor.`);
+		this.name = "EmptyPollRemovedError";
+	}
+}
 
 /**
  * Resolve the two mutually-exclusive input channels (`chars` and
@@ -502,36 +507,10 @@ async function runWriteStdin(
 ): Promise<ResponseShape> {
 	const finalizeResponse = (input: FinalizeInput): ResponseShape =>
 		finalizeProcessResult({ ...input, operation: "write_stdin" });
-	const session = ctx.store.get(args.session_id);
-	if (!session) {
-		throw new Error(`unknown session_id: ${args.session_id}`);
-	}
 	const writeBytes = resolveWriteInput(args);
-	const isEmptyPoll = writeBytes === undefined || writeBytes.length === 0;
-	const hasYieldUntil = typeof args.yield_until === "string" && args.yield_until.length > 0;
-
-	// Relative durations and absolute UTC deadlines are mutually exclusive.
-	if (hasYieldUntil && args.yield_time_ms !== undefined) {
-		throw new Error(
-			`write_stdin: pass either yield_time_ms (relative wait) or ` +
-				`yield_until (absolute UTC deadline), not both. tool_time_utc: ${nowUtcIso()}`,
-		);
-	}
-	// `yield_until` is only valid for an empty poll (no input bytes).
-	if (hasYieldUntil && !isEmptyPoll) {
-		throw new Error(
-			`write_stdin: yield_until is only valid for an empty poll (no non-empty chars or chars_b64). ` +
-				`Send the input with a relative yield_time_ms first, then follow up with an empty yield_until poll. ` +
-				`tool_time_utc: ${nowUtcIso()}`,
-		);
-	}
-	if (isEmptyPoll) {
-		const parsed = hasYieldUntil ? parseYieldUntil(args.yield_until!, Date.now()) : undefined;
-		const wait: EmptyWait = parsed
-			? { mode: "absolute", durationMs: parsed.remainingMs, yieldUntil: parsed.normalized }
-			: { mode: "relative", durationMs: resolveEmptyPollYield(args.yield_time_ms) };
-		return runAttachedWait(ctx, session, wait, signal, onUpdate, toolCallId);
-	}
+	const session = ctx.store.get(args.session_id);
+	if (!writeBytes?.length) throw new EmptyPollRemovedError(session?.terminalUrl);
+	if (!session) throw new Error(`unknown session_id: ${args.session_id}`);
 
 	const yieldTimeMs = clampYield(args.yield_time_ms, DEFAULT_WRITE_STDIN_YIELD_MS);
 
@@ -569,12 +548,10 @@ async function runWriteStdin(
 					shell: session.shell,
 					command: session.displayCommand,
 					yieldTimeMs,
-					// This path is only reachable for input writes (never an empty
-					// poll), so no wait_mode is reported — just direct delivery.
-					extra: terminalWaitExtra(undefined, armed),
+					extra: terminalWriteExtra(armed),
 				});
 			}
-			// Give the child a small window to react before the poll.
+			// Give the child a small window to react before collecting.
 			await sleep(100, signal);
 		}
 
@@ -604,7 +581,7 @@ async function runWriteStdin(
 				shell: session.shell,
 				command: session.displayCommand,
 				yieldTimeMs,
-				extra: terminalWaitExtra(undefined, armed),
+				extra: terminalWriteExtra(armed),
 			});
 		}
 		// Still running: release the lease WITHOUT marking observed — the wake
@@ -638,108 +615,14 @@ async function runWriteStdin(
 }
 
 /** Shared "exited" extra fields for direct terminal delivery. */
-function terminalWaitExtra(
-	waitMode: "relative" | "absolute" | undefined,
-	wakeWasArmed: boolean,
-): Partial<ResponseShape> {
+function terminalWriteExtra(wakeWasArmed: boolean): Partial<ResponseShape> {
 	return {
-		wait_mode: waitMode,
-		wait_status: waitMode ? ("completed" as const) : undefined,
 		completion_delivery: "direct",
 		tool_time_utc: nowUtcIso(),
 		...(wakeWasArmed ? { on_exit: "wake" as const, on_exit_wake: "consumed" as const } : {}),
 	};
 }
 
-type EmptyWait =
-	| { mode: "relative"; durationMs: number }
-	| { mode: "absolute"; durationMs: number; yieldUntil: string };
-
-/** Both empty-poll forms retain bounded output in the session, not in the wait. */
-async function runAttachedWait(
-	ctx: ExtensionCtx,
-	session: ExecSession,
-	wait: EmptyWait,
-	signal: AbortSignal | undefined,
-	onUpdate: AgentToolUpdateCallback<ProcessUpdateDetails> | undefined,
-	toolCallId: string,
-): Promise<ResponseShape> {
-	const startedAt = performance.now();
-	const waitFields: Partial<ResponseShape> =
-		wait.mode === "absolute"
-			? { wait_mode: wait.mode, yield_until: wait.yieldUntil }
-			: { wait_mode: wait.mode, yield_time_ms: wait.durationMs };
-	session.touch();
-	ctx.coordinator.beginObservation(session.id, toolCallId);
-	let pendingTerminal = false;
-	let streamer: { stop: () => void } | undefined;
-	try {
-		if (onUpdate) {
-			streamer = startRateLimitedStream({
-				outputNotify: session.outputNotify,
-				minIntervalMs: wait.mode === "relative" && wait.durationMs <= MAX_YIELD_TIME_MS
-					? OUTPUT_POLL_INTERVAL_MS : LONG_WAIT_UPDATE_INTERVAL_MS,
-				emit: () => onUpdate(buildStreamUpdate(session, waitFields)),
-			});
-		}
-		let outcome: LongWaitOutcome = await waitForExitOrDeadline({
-			exited: session.exited,
-			externalAbort: signal,
-			durationMs: wait.durationMs,
-		});
-		// Exit wins close races. A cancelled live wait never drains output.
-		if (session.hasExited) outcome = "exit";
-		const collected = outcome === "cancelled"
-			? NO_OUTPUT
-			: await session.collect({
-				deadlineMs: Date.now() + (outcome === "exit" ? 1000 : 0),
-				externalAbort: outcome === "exit" ? undefined : signal,
-			});
-		const armed = ctx.coordinator.isArmed(session.id);
-		const elapsedMs = performance.now() - startedAt;
-		const extra: Partial<ResponseShape> = { ...waitFields };
-		if (outcome === "exit") {
-			Object.assign(extra, terminalWaitExtra(wait.mode, armed));
-		} else {
-			extra.wait_status = outcome === "cancelled" ? "cancelled"
-				: wait.mode === "relative" ? "relative_deadline_reached" : "absolute_deadline_reached";
-			extra.effective_wait_ms = elapsedMs;
-			extra.tool_time_utc = nowUtcIso();
-			extra.note = heldOpenNote(session);
-			if (armed) {
-				extra.on_exit = "wake";
-				extra.completion_notification = "armed";
-			}
-		}
-		const shape = finalizeProcessResult({
-			operation: "write_stdin",
-			wallTimeSec: elapsedMs / 1000,
-			collected,
-			totalBytes: session.totalBytesSeen,
-			sessionId: outcome === "exit" ? undefined : session.id,
-			exitCode: outcome === "exit" ? session.exitCode : undefined,
-			signal: outcome === "exit" ? session.signal : null,
-			failure: outcome === "exit" ? session.failureMessage : null,
-			logPath: session.logPath,
-			cwd: session.cwd,
-			shell: session.shell,
-			command: session.displayCommand,
-			extra,
-		});
-		if (outcome === "exit") {
-			removeSession(ctx, session.id);
-			ctx.coordinator.markPendingTerminal(session.id, toolCallId);
-			pendingTerminal = true;
-		} else {
-			session.touch();
-		}
-		return shape;
-	} finally {
-		streamer?.stop();
-		// Successful terminal delivery is committed by tool_execution_end.
-		if (!pendingTerminal) ctx.coordinator.releaseObservation(session.id, toolCallId);
-	}
-}
 
 /** Result of terminating a session via kill_session or the sessions command. */
 interface TerminateOutcome {
@@ -888,11 +771,8 @@ function clearSessionExitWatchers(ctx: ExtensionCtx): void {
 	ctx.exitUnsubscribers.clear();
 }
 
-/** Shared streaming-update payload (relative polls and absolute waits). */
-function buildStreamUpdate(
-	session: ExecSession,
-	extra?: Partial<ProcessResultDetails>,
-): AgentToolResult<ProcessUpdateDetails> {
+/** Shared non-consuming streaming-update payload for exec and input attachment. */
+function buildStreamUpdate(session: ExecSession): AgentToolResult<ProcessUpdateDetails> {
 	const snapshot = session.liveSnapshot();
 	const text = snapshot ? sanitizeOutputText(snapshot.text) : "";
 	return {
@@ -910,7 +790,6 @@ function buildStreamUpdate(
 			// of streaming vs final state.
 			output: text,
 			...(snapshot ? { terminal: terminalViewDetails(snapshot.view, true) } : {}),
-			...extra,
 		},
 	};
 }
@@ -1139,8 +1018,8 @@ export function activate(
 			"Use bash for short one-shot commands. Use exec_command for long-running commands, interactive programs (REPLs, TUIs, ssh, sudo), concurrent computation and dev-time daemons: it runs in a PTY, has no command deadline, and never restarts a process that exits.",
 			"Shell selection: explicit shell argument, then omp shellPath, then $SHELL, then the platform default (bash, or Git Bash/PowerShell on Windows). Results name the selected shell; write commands in that shell's syntax. Working directory defaults to the current host session cwd.",
 			"The 10s default yield suits most starts; interactive processes return a session_id you then drive with write_stdin.",
-			"For a long non-interactive command, start with a short yield to obtain a session_id, then use a monitor (with a condition for progress lines, or without one to await completion) or an empty write_stdin poll with a finite yield_time_ms suited to its expected duration. There is no built-in empty-poll maximum; an operator may configure one. Keep waits short for interactive or indefinite processes. omp manages cache warming independently.",
-			'on_exit defaults to "none". Prefer polling or human follow-up. Use on_exit: "wake" ONLY when the human explicitly wants auto-resume on unobserved completion — not for indefinite processes (dev servers, watchers). If you armed wake by mistake or the job is wrong/abandoned, call set_on_exit(session_id, on_exit: "none") promptly (does not kill the process). kill_session still kills and suppresses wake. Combining wake with an observing write_stdin is safe: direct completion consumes the wake.',
+			"For a long non-interactive command, start with a short yield to obtain a session_id. Read terminal_url for progress; use monitor with a condition for future progress lines, or without one to await completion. Use write_stdin only to send input. omp manages cache warming independently.",
+			'on_exit defaults to "none". Prefer monitor or human follow-up. Use on_exit: "wake" ONLY when the human explicitly wants auto-resume on unobserved completion — not for indefinite processes (dev servers, watchers). If you armed wake by mistake or the job is wrong/abandoned, call set_on_exit(session_id, on_exit: "none") promptly (does not kill the process). kill_session still kills and suppresses wake. Combining wake with an input-bearing write_stdin is safe: direct completion consumes the wake.',
 			"Output is rendered terminal state, not raw bytes. Running results show unseen history plus the current screen and cursor; unchanged running screens report screen_changed:false. Completed results show only the frozen final active screen. Read terminal_url for retained history, /screen for active text, or /screen.png for cell colours and styling; raw bytes remain in log_path.",
 		],
 		outputSchema: processScriptResultSchema,
@@ -1171,7 +1050,7 @@ export function activate(
 			on_exit: Type.Optional(
 				StringEnum(
 					["none", "wake"] as const,
-					'"none" (default): no auto-resume; poll with write_stdin. "wake": ONE follow-up notification on unobserved exit that resumes the agent — only when the human explicitly wants auto-resume. Change later via set_on_exit. A completion observed directly by a tool result consumes the wake.',
+					'"none" (default): no auto-resume; read terminal_url for state/content and use monitor for events or completion. "wake": ONE follow-up notification on unobserved exit that resumes the agent — only when the human explicitly wants auto-resume. Change later via set_on_exit. A completion observed directly by a tool result consumes the wake.',
 				),
 			),
 		}),
@@ -1191,15 +1070,14 @@ export function activate(
 		name: "write_stdin",
 		label: "write_stdin",
 		description:
-			"Write bytes verbatim to a running session's PTY; nothing (no \\r or \\n) is appended. Omit both chars and chars_b64 to poll without writing. Use `chars` for text with C-style escapes (e.g. \\x03 Ctrl-C, \\x1b ESC, \\r Enter); use `chars_b64` for raw binary. For empty polls, wait with a finite yield_time_ms (relative, no built-in maximum) or yield_until (absolute UTC deadline, only when the human explicitly asks).",
-		promptSnippet: "Send input to or poll a running session",
+			"Write nonempty input bytes verbatim to a running session's PTY; nothing (no \\r or \\n) is appended. Use `chars` for text with C-style escapes (e.g. \\x03 Ctrl-C, \\x1b ESC, \\r Enter); use `chars_b64` for raw binary. Read state and content with read terminal_url (term://); wait for output events or completion with monitor. Zero-byte input is rejected with empty_poll_removed.",
+		promptSnippet: "Send nonempty input to a running session",
 		promptGuidelines: [
-			"Empty write_stdin polls default to 5 seconds and accept finite yield_time_ms durations with no built-in maximum. Choose a wait based on expected job duration and needed responsiveness, not cache lifetime. Exit or cancellation returns early; cancellation leaves the process alive. Respect any configured operator limit.",
-			'Use yield_until ONLY when the human explicitly asks for a long attached wait or an explicit UTC deadline. Omit yield_time_ms and pass a future UTC timestamp ending in "Z" (compute it from tool_time_utc in tool results). Finite non-interactive sessions only. The call returns immediately when the process exits.',
-			"NEVER use yield_until for REPLs, sudo, ssh, password prompts, dev servers, file watchers, debuggers, or any indefinite/interactive session — it is only for finite commands that will exit on their own.",
+			"write_stdin only sends input. Use read term:// for state/content without consuming observations; use monitor with a condition for future output events, or without a condition to await completion.",
+			"Input-bearing calls retain their attachment window: default 250ms, clamped to [250, 30000]. Cancellation leaves the process alive.",
 			'on_exit wake is set via exec_command or set_on_exit, not write_stdin. Observing an exit here consumes an armed wake (direct result). To disarm wake without killing, call set_on_exit(session_id, on_exit: "none").',
 			"Submit lines with \\r (the Enter key) rather than \\n: POSIX terminals accept both, but Windows console programs only execute input on \\r. Keys such as ESC or arrows are sent alone, without Enter.",
-			"For very noisy jobs, rely on the log_path and final/truncated output instead of repeatedly polling.",
+			"For very noisy jobs, use monitor for events and read terminal_url or log_path for output.",
 		],
 		outputSchema: processScriptResultSchema,
 		parameters: Type.Object({
@@ -1217,16 +1095,10 @@ export function activate(
 			),
 			yield_time_ms: Type.Optional(
 				Type.Number({
-					description: `Attachment window in ms, not a process timeout. With input: default ${DEFAULT_WRITE_STDIN_YIELD_MS}, clamped to [${MIN_YIELD_TIME_MS}, ${MAX_YIELD_TIME_MS}]. Empty polls: default/minimum ${MIN_EMPTY_YIELD_TIME_MS}, no built-in maximum; an optional PI_UNIFIED_EXEC_MAX_EMPTY_POLL_MS limit rejects larger values. Use a non-negative finite number no greater than Number.MAX_SAFE_INTEGER; fractional ms are rounded down. Mutually exclusive with yield_until.`,
+					description: `Attachment window in ms, not a process timeout. Default ${DEFAULT_WRITE_STDIN_YIELD_MS}, clamped to [${MIN_YIELD_TIME_MS}, ${MAX_YIELD_TIME_MS}].`,
 				}),
 			),
-			yield_until: Type.Optional(
-				Type.String({
-					description:
-						'Absolute UTC deadline to stay attached to an EMPTY poll, as strict RFC 3339 UTC ("2026-07-21T18:30:00Z" or with .mmm; uppercase Z, full date+time with seconds; no offsets). Only when the human explicitly asks for a long attached wait. Returns immediately when the process exits. No default max horizon. Mutually exclusive with yield_time_ms and with input bytes.',
-				}),
-			),
-		}),
+		}, { additionalProperties: false }),
 		async execute(toolCallId, params, signal, onUpdate, eventCtx) {
 			ctx.ui ??= eventCtx.ui;
 			const shape = await runWriteStdin(ctx, params, signal, onUpdate, toolCallId);
@@ -1313,7 +1185,7 @@ export function activate(
 	pi.registerTool({
 		name: "monitor",
 		label: "monitor",
-		description: "Subscribe to future session output with an optional JavaScript regex condition; each matched batch wakes the agent without stopping the process. Without condition, await output closure once. Replaces any existing monitor; action cancel silently removes it. Default max_returns is 10 successful match messages.",
+		description: "Wait for future output events or completion of an existing session. An optional JavaScript regex condition wakes the agent for each matched batch; omit it to await output closure once. Read state/content with read terminal_url (term://), and send input with write_stdin. Replaces any existing monitor; action cancel silently removes it. Default max_returns is 10 successful match messages.",
 		promptSnippet: "Await matching output or completion of an existing session",
 		promptGuidelines: [
 			"Monitor observes without consuming output. Use read term:// for history and screens, and log_path for raw bytes.",
@@ -1481,8 +1353,7 @@ export function activate(
 				? `unified-exec sessions (${live.length} live, ${reaped.length} just exited):`
 				: `unified-exec sessions (${live.length}):`;
 			return {
-				// tool_time_utc lets the model compute a yield_until deadline from a
-				// trustworthy host clock without an extra probing call.
+				// Report the host clock alongside this inventory snapshot.
 				content: [{ type: "text", text: `${header}\n${lines.join("\n")}\ntool_time_utc: ${toolTimeUtc}` }],
 				details: { sessions, active_count: live.length, just_exited_count: reaped.length, tool_time_utc: toolTimeUtc },
 				structuredContent: listSessionsScriptResult({

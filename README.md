@@ -6,7 +6,7 @@ Long-lived terminal sessions for [oh-my-pi](https://github.com/can1357/oh-my-pi)
 (omp), with a terminal HUD in Tern. The host's `bash` keeps short one-shot
 commands; long commands, interactive programs (REPLs, TUIs, `ssh`, `sudo`),
 concurrent computation and dev-time daemons go to `exec_command`, which runs
-each in a PTY session the model drives with writes and polls instead of a
+each in a PTY session the model drives with input, reads and monitors instead of a
 single blocking call. Sessions keep running between turns, with no command
 deadline, and a human can watch and type into them from Tern.
 
@@ -49,9 +49,10 @@ that same factory before omp modules load or any tools register.
 
 - **Sessions, not calls.** `exec_command` starts a process in a PTY and returns
   within its yield window with output so far and a `session_id`; on later turns
-  `write_stdin` writes bytes to it verbatim (text, `\x03` Ctrl-C, arrow keys) or
-  polls it. Cancelling a call never kills the process. There is no command
-  deadline, and a process that exits is never restarted.
+  `write_stdin` writes bytes to it verbatim (text, `\x03` Ctrl-C, arrow keys).
+  Read `terminal_url` for state/content and use `monitor` for events or completion.
+  Cancelling a call never kills the process. There is no command deadline,
+  and a process that exits is never restarted.
 - **The host's shell.** Unless the call names a `shell`, commands run in omp's
   `shellPath` setting, else the environment's `SHELL`, else the platform
   default. Every result names the shell it started, so the model writes that
@@ -143,7 +144,7 @@ Runs a command in a persistent PTY session. Use it for long commands,
 interactive programs (REPLs, TUIs, `ssh`, `sudo`), concurrent computation and
 dev-time daemons; use the host's `bash` for short one-shot commands. There is no
 command deadline, and nothing restarts a process that exits. Observe a session
-with `write_stdin` polls, `monitor` and `read term://…`; its output is the
+with `monitor` and `read term://…`, and send input with `write_stdin`; its output is the
 rendered terminal screen (see [Terminal output](#terminal-output)).
 
 | Param | Type | Default | Notes |
@@ -170,7 +171,7 @@ shell: /bin/zsh                     (absolute path of the shell the session star
 wall_time_seconds: 0.502
 chunk_id: a4f2c1
 original_token_count: 37
-output_bytes_total: 148            (cumulative bytes since spawn — compare across polls to detect stalls)
+output_bytes_total: 148            (cumulative bytes since spawn)
 terminal: normal screen 120x80, cursor row 4 col 5
 history_lines: 2                   (running, optional: lines scrolled off above the screen since the last call)
 ---
@@ -306,43 +307,34 @@ extension reloads preserve the image handler and existing URLs.
 
 ### `write_stdin`
 
-Drives or polls an existing session.
+Sends nonempty decoded input to an existing session. Missing or zero-byte input
+returns the typed `empty_poll_removed` error without consuming observations or
+affecting the process. The error points to the session's `read term://…` address
+and `monitor`.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `session_id` | number | — | Required. |
-| `chars` | string | `""` | Empty = pure poll; non-empty writes the bytes (after escape decoding) verbatim, appending nothing, then polls. Mutually exclusive with `chars_b64`. |
-| `chars_b64` | string | `""` | Base64-encoded bytes to write. Binary-safe. Mutually exclusive with `chars`. |
-| `yield_time_ms` | number | `250` with input; `5_000` empty | Attachment window, not a process timeout. Input-bearing calls clamp to [250, 30_000]. Empty polls have a 5_000 minimum and no built-in maximum; fractional milliseconds round down. An explicit operator cap rejects larger relative polls. Mutually exclusive with `yield_until`. |
-| `yield_until` | string | — | Absolute UTC deadline for an **empty poll only**, strict RFC 3339 UTC (`2026-07-21T18:30:00Z` or with `.mmm`; uppercase `Z`; real calendar dates only). **Only when the human explicitly asks** for a long attached wait. Returns on exit, cancellation or the deadline; a past deadline is an immediate poll. Mutually exclusive with `yield_time_ms` and with input bytes. |
+| `chars` | string | omitted | Text decoded with C-style escapes, then written verbatim with nothing appended. Mutually exclusive with `chars_b64`; decoded input must be nonempty. |
+| `chars_b64` | string | omitted | Base64-encoded input bytes. Binary-safe; decoded input must be nonempty. Mutually exclusive with `chars`. |
+| `yield_time_ms` | number | `250` | Attachment window after writing, not a process timeout. Clamped to [250, 30_000]; fractional milliseconds round down. |
 
 #### Waiting on long-running commands
 
-1. Use a finite `yield_time_ms` based on the expected job duration, or a
-   `monitor` (without a condition it wakes the model once output closes).
-   Empty polls default to five seconds and have no built-in maximum. An
-   attachment deadline never kills the process.
-2. Use `yield_until` **only when the human explicitly asks** for a long attached
-   wait or a wall-clock deadline on a **finite, non-interactive** command,
-   computed from `tool_time_utc`. **Never** for REPLs, `sudo`, `ssh`, password
-   prompts, dev servers, watchers or debuggers.
+1. Read `terminal_url` (or its `/screen`) for state and content without consuming
+   ordinary observations.
+2. Use `monitor` with a condition for future output events, or without a condition
+   to await output closure and process completion. Send input only with `write_stdin`.
 3. `on_exit` defaults to `"none"`. Use `"wake"` only when the human explicitly
    wants auto-resume; `set_on_exit(session_id, on_exit: "none")` disarms it
    without killing.
-4. A completion observed directly by a tool result consumes the wake; a
-   deadline or cancellation leaves it armed.
+4. A completion observed directly by an input-bearing tool result consumes the
+   wake; an attachment window ending or cancellation leaves it armed. Monitor
+   End merges an already-armed wake into the same notification.
 
-Both empty-poll forms use the same event-driven wait on monotonic time. Output
-stays in the session's terminal screen, so a wait never accumulates it; the log
-always gets the raw stream. Streaming updates are
-output-driven (short polls at most four per second, long and absolute waits at
-most once per 30 seconds), with no heartbeat while quiet. Cache warming during
-waits is the host's business, not this package's. Raw logs are unbounded on
-disk; archive quotas are [follow-up work](docs/IV-0002-output-lifecycle-and-rendering.md#output-archive-safety).
-
-| Env var | Default | Notes |
-|---|---|---|
-| `PI_UNIFIED_EXEC_MAX_EMPTY_POLL_MS` | unset, no cap | Optional limit for empty relative polls. Values below `5_000` become `5_000`; invalid values fail the poll instead of removing the limit. Does not affect `yield_until`. |
+The attachment window never kills a process. Cache warming during waits is the
+host's business, not this package's. Raw logs are unbounded on disk; archive
+quotas are [follow-up work](docs/IV-0002-output-lifecycle-and-rendering.md#output-archive-safety).
 
 #### Control bytes and escapes in `chars`
 
@@ -404,7 +396,7 @@ follow-up already queued to the host.
   interrupting a running turn). Simultaneous completions are batched into one
   prompt.
 - The prompt carries bounded metadata only (session id, exit code/signal,
-  command, cwd, elapsed time, log path, failure) — never raw output.
+  command, cwd, elapsed time, terminal reading address, log path, failure) — never raw output.
 - `kill_session`, the `/unified-exec-sessions` command, LRU eviction of a live
   process and `session_shutdown` suppress the wake; a kill that fails restores
   it. A naturally exited wake session evicted before notification keeps a
@@ -458,8 +450,7 @@ path.
 Lists live sessions and reports each exited one a final time (with
 `running: false`, `exit_code`/`signal` and `log_path`) before pruning it. Each
 entry has the `shell` it started with, `wake_armed` and an active monitor's
-condition/returns/limit; the response carries `tool_time_utc` for computing
-`yield_until` deadlines.
+condition/returns/limit; the response carries the current host `tool_time_utc`.
 
 ## Command
 
@@ -474,7 +465,7 @@ omp's exported bash renderer, in the ANSI TUI and in Tern: `$ cmd`, collapsed
 output with omp's expand binding, the exit chip and error tone for failures,
 `Backgrounded: session N` for running sessions, and the truncation marker with
 the log path as the last line. `write_stdin` and `kill_session` show their
-action as a bash comment (`# poll session N`, `# stdin → session N: "…"`,
+action as a bash comment (`# stdin → session N: "…"`,
 `# kill session N (SIGTERM)`). `monitor`, `set_on_exit` and `list_sessions`
 use omp's default card. If omp's bash renderer is missing or reshaped, plugin loading
 fails rather than showing raw envelopes.
@@ -484,7 +475,6 @@ fails rather than showing raw envelopes.
 ```
 MIN_YIELD_TIME_MS            = 250
 MAX_YIELD_TIME_MS            = 30_000
-MIN_EMPTY_YIELD_TIME_MS      = 5_000
 DEFAULT_EXEC_YIELD_MS        = 10_000
 DEFAULT_WRITE_STDIN_YIELD_MS = 250
 EARLY_EXIT_GRACE_PERIOD_MS   = 150
@@ -499,8 +489,8 @@ DEFAULT_MAX_LINES            = 2000
 
 - **Early exit:** commands that finish within 150 ms never enter the session
   store; the result has `exit_code` and no `session_id`.
-- **Exits between calls** stay in the store until the next `write_stdin` or
-  `list_sessions` reports them.
+- **Exits between calls** stay in the store until an input-bearing `write_stdin`
+  or `list_sessions` reports them. `read` and `monitor` never remove them.
 - **Spawn failures** (missing shell or `workdir`) are checked before the PTY
   starts and surface as `failure_message` (`spawn <file> ENOENT: …`). A
   missing selected shell is never replaced by another shell.
@@ -539,12 +529,15 @@ DEFAULT_MAX_LINES            = 2000
 > exec_command(cmd="npm run dev", yield_time_ms=5000)
 [still running]
 session_id: 1
+terminal_url: term://1-9f2c1a7e-…
 ---
 > Server listening on :3000
 
-> write_stdin(session_id=1, chars="", yield_time_ms=10000)
-[still running]
----
+> monitor(session_id=1, condition="GET /health")
+{"session_id":1,"status":"started",…}
+# A subsequent matching request wakes the model.
+> read term://1-9f2c1a7e-…/screen
+Server listening on :3000
   GET /health 200 in 3ms
 
 > kill_session(session_id=1)
@@ -610,9 +603,8 @@ src/
 ├── session.ts            # ExecSession: spawn, read, write, kill, log stream, state
 ├── session-store.ts      # SessionStore + LRU eviction
 ├── collect.ts            # CollectResult: screen, final screen or none
-├── long-wait.ts          # event-driven waits (polls, collection, kill) + rate-limited streaming
-├── time.ts               # durations, operator limit, strict UTC deadlines
-├── format-time.ts        # elapsed / remaining labels
+├── long-wait.ts          # event-driven waits (collection, shutdown, kill)
+├── format-time.ts        # elapsed labels and host UTC time
 ├── completion.ts         # on_exit "wake" coordination (exactly-once)
 ├── notify.ts             # Notify / Gate / sleep primitives
 ├── pty.ts                # Bun.Terminal backend, host admission, spawn preflight, Windows tree-kill

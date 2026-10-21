@@ -27,24 +27,7 @@ export function formatDurationSeconds(ms: number): string {
 	return `${(ms / 1000).toFixed(1)}s`;
 }
 
-/**
- * Absolute-wait remaining label: `2h40m later`, `12m later`, `45s later`, `now`.
- */
-export function formatRemainingLater(ms: number): string {
-	if (!Number.isFinite(ms) || ms <= 0) return "now";
-	const totalSeconds = Math.round(ms / 1000);
-	if (totalSeconds < 60) return `${totalSeconds}s later`;
-	const totalMinutes = Math.floor(totalSeconds / 60);
-	const seconds = totalSeconds % 60;
-	if (totalMinutes < 60) {
-		return seconds === 0 ? `${totalMinutes}m later` : `${totalMinutes}m${String(seconds).padStart(2, "0")}s later`;
-	}
-	const hours = Math.floor(totalMinutes / 60);
-	const minutes = totalMinutes % 60;
-	if (hours < 48) {
-		return minutes === 0 ? `${hours}h later` : `${hours}h${String(minutes).padStart(2, "0")}m later`;
-	}
-	const days = Math.floor(hours / 24);
-	const remHours = hours % 24;
-	return remHours === 0 ? `${days}d later` : `${days}d${remHours}h later`;
+/** Current host UTC time — the trustworthy clock surfaced in tool results. */
+export function nowUtcIso(nowMs: number = Date.now()): string {
+	return new Date(nowMs).toISOString();
 }

@@ -52,9 +52,7 @@ npm test                            # typecheck + all tests
 Expect zero failures on Linux/macOS. Platform-specific cases and the explicit
 omp install gate may skip; PTY availability never does. Windows fixture
 portability remains tracked in [#46](https://github.com/oh-my-omp/omp-unified-exec/issues/46).
-Tests that intentionally complete a real five-second empty poll declare a
-15-second per-test timeout, rather than shortening the poll to fit Bun's
-five-second default. The Node admission regression compiles the actual
+The Node admission regression compiles the actual
 TypeScript entry before executing it in Node, whose strip-only loader cannot
 parse the HUD's parameter properties.
 
@@ -69,8 +67,8 @@ sibling view, indexed by concern:
 | Session lifecycle (spawn, write, kill, log-stream) | `src/session.ts` |
 | Session registry, LRU eviction, shutdown | `src/session-store.ts` |
 | Per-call observation (`CollectResult`: screen, final screen or none) | `src/collect.ts`; produced by `ExecSession.collect` in `src/session.ts` |
-| Event-driven, monotonic waits: relative and absolute empty polls, collection, kill confirmation | `src/long-wait.ts` + `src/time.ts`, `runAttachedWait` in `src/index.ts` |
-| Human duration / remaining labels | `src/format-time.ts` (re-exported remaining helper from `time.ts`) |
+| Event-driven, monotonic waits: collection, shutdown and kill confirmation | `src/long-wait.ts` |
+| Human duration labels and host UTC time | `src/format-time.ts` |
 | `on_exit: "wake"` completion scheduling (exactly-once) | `src/completion.ts` (`setOnExit`, tombstones, flush) |
 | Rendered terminal screen: emulator, history + screen observations, snapshots | `src/terminal-screen.ts` (owned by `ExecSession`) |
 | On-disk raw log file mirroring | `src/session.ts` (`logStream`) |
@@ -146,8 +144,8 @@ bun tests/bun-pty-runtime.mjs
 bun build --compile tests/bun-pty-runtime.mjs --outfile /tmp/bun-pty-runtime
 /tmp/bun-pty-runtime
 
-# Empty-poll duration policy, shared waits and wake delivery
-bun test ./tests/time.test.ts ./tests/long-wait.test.ts ./tests/wake-e2e.test.ts
+# Shared waits and wake delivery
+bun test ./tests/long-wait.test.ts ./tests/wake-e2e.test.ts
 
 # Display adapters and direct host-admission checks
 bun test ./tests/omp-presentation.test.ts

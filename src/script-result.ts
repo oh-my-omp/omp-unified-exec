@@ -70,13 +70,12 @@ export const processScriptResultSchema = Type.Object({
 	status: Type.Union([Type.Literal("running"), Type.Literal("exited")]),
 	running: Type.Boolean(),
 	session_id: Type.Optional(
-		Type.Number({ description: "Present while the process is still running; drive it with write_stdin." }),
+		Type.Number({ description: "Present while the process is still running; read terminal_url for state/content, use monitor for events or completion, and write_stdin for input." }),
 	),
 	...outputFields,
 	note: Type.Optional(Type.String()),
-	wait_status: Type.Optional(Type.String()),
 	on_exit: Type.Optional(Type.Union([Type.Literal("none"), Type.Literal("wake")])),
-	tool_time_utc: Type.Optional(Type.String({ description: "Host UTC time, for computing yield_until deadlines." })),
+	tool_time_utc: Type.Optional(Type.String({ description: "Current host UTC time." })),
 });
 export type ProcessScriptResult = Static<typeof processScriptResultSchema>;
 
@@ -96,7 +95,6 @@ export function processScriptResult(shape: ProcessResultDetails): ProcessScriptR
 		wall_time_seconds: shape.wall_time_seconds,
 		terminal: shape.terminal,
 		note: optionalMeta(shape.note),
-		wait_status: shape.wait_status,
 		on_exit: shape.on_exit,
 		tool_time_utc: shape.tool_time_utc,
 	});

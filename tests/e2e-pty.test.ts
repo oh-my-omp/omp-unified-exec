@@ -6,6 +6,8 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
+import { readTerminal } from "../fork-features/terminal-resource.ts";
 import { activate } from "../src/index.ts";
 import { IS_WINDOWS } from "../src/shell.ts";
 
@@ -54,6 +56,19 @@ function makeHarness() {
 	};
 }
 
+/** Real child startup/output is external to fake clocks; read its non-consuming projection. */
+async function readUntil(url: string, expected: RegExp): Promise<string> {
+	const deadline = Date.now() + 8000;
+	let text = "";
+	do {
+		text = (await readTerminal(url.slice(7))).screenLines.join("\n");
+		if (expected.test(text)) return text;
+		await delay(25);
+	} while (Date.now() < deadline);
+	assert.match(text, expected);
+	return text;
+}
+
 describe("unified-exec PTY mode", () => {
 	// NOTE: every test runs its body in try/finally with session_shutdown in
 	// the finally. A failed assertion mid-test must not leak a live PTY
@@ -81,7 +96,7 @@ describe("unified-exec PTY mode", () => {
 		}
 	});
 
-	it("write_stdin drives a Python REPL over PTY", { skip: !hasRealPython3() }, async () => {
+	it("write_stdin drives a Python REPL over PTY", { skip: !hasRealPython3(), timeout: 15_000 }, async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		try {
@@ -106,15 +121,10 @@ describe("unified-exec PTY mode", () => {
 				chars: "print(2 + 40)\r",
 				yield_time_ms: 2000,
 			});
-			let output = r2.details.output as string;
-			// Cold python startup on a loaded CI runner can exceed the write's
-			// yield window (input is buffered by the PTY and executes once the
-			// REPL is up). Keep polling before declaring failure.
-			for (let i = 0; i < 3 && !output.includes("42"); i++) {
-				const poll = await h.call("write_stdin", { session_id: sid, yield_time_ms: 5000 });
-				output += poll.details.output;
-				if (poll.details.session_id === undefined) break; // REPL died
-			}
+			// A cold child may outlive the input attachment window; read without writing.
+			const output = r2.details.output.includes("42")
+				? r2.details.output
+				: await readUntil(r1.details.terminal_url, /^42$/m);
 			assert.ok(output.includes("42"), `got: ${output}`);
 
 			// Quit.
@@ -129,7 +139,7 @@ describe("unified-exec PTY mode", () => {
 		}
 	});
 
-	it("write_stdin round-trips input through a Node line-echo fixture", async () => {
+	it("write_stdin round-trips input through a Node line-echo fixture", { timeout: 15_000 }, async () => {
 		// Repo-owned fixture (no python dependency): a Node child that echoes
 		// each stdin line as GOT:<line>| and exits 7 on "quit". This asserts
 		// MANDATORY PTY input behavior on every platform — a no-op
@@ -144,19 +154,19 @@ describe("unified-exec PTY mode", () => {
 			assert.equal(typeof sid, "number", `fixture did not stay alive: ${JSON.stringify(r1.details)}`);
 
 			const r2 = await h.call("write_stdin", { session_id: sid, chars: "hello\r", yield_time_ms: 2000 });
-			let output = r2.details.output as string;
-			for (let i = 0; i < 2 && !output.includes("GOT:hello|"); i++) {
-				const poll = await h.call("write_stdin", { session_id: sid, yield_time_ms: 5000 });
-				output += poll.details.output;
-				if (poll.details.session_id === undefined) break;
-			}
+			const output = r2.details.output.includes("GOT:hello|")
+				? r2.details.output
+				: await readUntil(r1.details.terminal_url, /GOT:hello\|/);
 			assert.ok(output.includes("GOT:hello|"), `PTY input did not round-trip: ${JSON.stringify(output)}`);
 
 			const r3 = await h.call("write_stdin", { session_id: sid, chars: "quit\r", yield_time_ms: 3000 });
 			let exitCode = r3.details.exit_code;
-			if (r3.details.session_id !== undefined) {
-				const poll = await h.call("write_stdin", { session_id: sid, yield_time_ms: 5000 });
-				exitCode = poll.details.exit_code;
+			// The process exit is external to fake clocks; inventory confirms its actual closure.
+			const deadline = Date.now() + 8000;
+			while (exitCode === undefined && Date.now() < deadline) {
+				const listed = await h.call("list_sessions", {});
+				exitCode = listed.details.sessions.find((s: { session_id: number }) => s.session_id === sid)?.exit_code;
+				if (exitCode === undefined) await delay(25);
 			}
 			assert.equal(exitCode, 7, `fixture did not exit on quit: ${JSON.stringify(r3.details)}`);
 		} finally {

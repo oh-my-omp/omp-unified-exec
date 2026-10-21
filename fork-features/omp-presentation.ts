@@ -314,7 +314,7 @@ export function writeStdinShellArgs(args: StreamedArgs<"session_id" | "chars" | 
 	if (typeof args?.chars_b64 === "string" && args.chars_b64.length > 0) {
 		return { command: `# stdin → ${target}: ${base64ByteLength(args.chars_b64)} bytes` };
 	}
-	return { command: `# poll ${target}` };
+	return { command: `# stdin → ${target}: (input required)` };
 }
 
 /** Pure: kill_session args → a bash comment naming the action. */

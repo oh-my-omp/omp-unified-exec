@@ -28,10 +28,11 @@ both register `exec_command` and the other unified-exec tools.
 | Shell selection follows the host: an explicit `shell`, then omp's live `shellPath`, then `SHELL`, then the platform default; results, streaming updates, kill results and session listings name the executable actually spawned | `fork-features/omp-presentation.ts` (`loadOmpShellPath`, passed to `activate` by `withHostPresentation`), `fork-features/omp-tools.d.ts`; `resolveDefaultShell` in `src/shell.ts`; shell resolution in `runExecCommand` and `activate` in `src/index.ts`; `ExecSession.shell` in `src/session.ts`; `shell` in `src/tool-result.ts` and `src/script-result.ts`; `tests/shell.test.ts`, `tests/e2e.test.ts` | Upstream hard-wired `bash` on POSIX and probed Windows itself, so omp's configured or login shell could differ from the shell that ran a command, and results did not say which one ran ([#63](https://github.com/oh-my-omp/omp-unified-exec/issues/63)). omp owns `shellPath`: `@oh-my-pi/pi-coding-agent/config/registry` exposes `lookup("shellPath").get(host.pi.settings)`. The admitted factory loads it with the other omp modules; each new process reads the effective setting through that getter, never an activation-time copy. A reshaped registry fails plugin loading. Shell resolution precedes argv construction, with no lower-priority fallback after failure. `ExecSession.shell` reads `command[0]`, so later results retain the spawned executable. Command text is not translated: cmd and PowerShell keep their argv; every other shell gets `-c`. | Fork-only |
 | Command approval and host session binding ([#29](https://github.com/oh-my-omp/omp-unified-exec/issues/29)) | `fork-features/command-approval.ts`, `fork-features/session-binding.ts`, `fork-features/omp-presentation.ts`, `fork-features/omp-tools.d.ts`, `src/index.ts`, `tests/command-approval.test.ts` | `exec_command` checks raw `cmd` through the built-in bash decision logic before execution. Its first `session_start` binds `AgentRegistry.global().get(ctx.agent.id)?.session` with `sessionManager` identity; switches/branches only recheck. Every approval reads that actual session's live settings, never global settings or cwd. Unbound returns bare `exec` without settings access and does not disable execution. Other tools retain host-default approval. | Fork-only |
 | `gh` mutations through `exec_command` invalidate omp's `issue://` / `pr://` view cache before the PTY starts ([#32](https://github.com/oh-my-omp/omp-unified-exec/issues/32)) | `fork-features/omp-presentation.ts` (`loadGithubCacheInvalidation`), `fork-features/omp-tools.d.ts`; `runExecCommand` and `activate` in `src/index.ts` | Interactive `gh` mutations (merge confirmations, comment editors) need a terminal and therefore run through `exec_command`, which the host bash's invalidation never saw. The factory imports omp's `tools/gh-cache-invalidation.invalidateGithubCacheForBashCommand` and calls it with the raw `cmd` before spawning, as `BashTool.execute` does; the detector and the SQLite cache stay host-owned. On omp upgrades, requalify that this export still exists and that a `gh issue close` through `exec_command` makes the next `issue://` read refetch. | Fork-only |
+| Input-only `write_stdin`; zero-byte polling and its deadline/configuration paths are deleted ([#44](https://github.com/oh-my-omp/omp-unified-exec/issues/44)) | `src/index.ts`, `src/completion.ts`, `src/long-wait.ts`, `src/format-time.ts`, `src/tool-result.ts`, `src/script-result.ts`, `fork-features/omp-presentation.ts`; deleted `src/time.ts` | Reads obtain state/content through `term://`; monitor waits for events or completion; writes require nonempty decoded input and otherwise return typed `empty_poll_removed` without observation. Completion wakes point to each terminal's read address; input attachment and human-explicit wake policy remain unchanged. | Fork-only |
 
-Environment variables (`PI_UNIFIED_EXEC_*`) and existing tool names are unchanged.
-Remaining `src/*` module paths are unchanged; pipe-only and Pi-only modules are
-deleted rather than retained as compatibility shims.
+Existing tool names and retained environment variables (`PI_UNIFIED_EXEC_*`)
+keep their names. Modules used only for deleted paths are removed rather than
+retained as compatibility shims.
 
 ## Repository state
 
@@ -68,11 +69,13 @@ Upstream's v0.13 steer gate (`src/steer-gate.ts`, `wait_status:
 "interrupted_by_steer"`, `PI_UNIFIED_EXEC_STEER_INTERRUPT`; upstream
 `d393051`, `f5e5d96`, `1baa416`) is not adopted: it was merged with the
 `ours` strategy ([PR #1](https://github.com/oh-my-omp/omp-unified-exec/pull/1)).
-It listens for Pi's `input` event to end attached waits, mostly empty
-`write_stdin` polls; this fork targets omp, whose extension context carries
-no steering signal, and replaces empty polls with `read term://` and `monitor`
+This fork targets omp, whose extension context carries no steering signal.
+Zero-byte polling, `yield_until` and the associated environment limit are
+deleted in favour of `read term://` and `monitor`
 ([#44](https://github.com/oh-my-omp/omp-unified-exec/issues/44)). Upstream
-changes to the steer gate arrive as modify/delete conflicts; keep the deletion.
+changes to those paths or steer waits arrive as modify/delete or content
+conflicts; keep the deletion and do not restore their parameters, configuration
+or waiting helpers.
 
 Shell selection follows the host here ([#63](https://github.com/oh-my-omp/omp-unified-exec/issues/63)):
 upstream's `resolveDefaultShell` returns `bash` on POSIX, its `shell`
@@ -119,7 +122,7 @@ still return omp's effective setting as a string or undefined. Through real
 interactive omp, a `shellPath` overlay must outrank `SHELL` and an explicit
 `shell` must outrank both; an explicit `shell` that does not exist must
 return `spawn … ENOENT` and no output rather than another shell (omp itself
-rejects a missing `shellPath` at startup, before the extension loads); later polls, kills and listings must repeat the session's shell;
+rejects a missing `shellPath` at startup, before the extension loads); later input writes, kills and listings must repeat the session's shell;
 and the default `workdir` must still follow omp's cwd.
 
 Command approval is ported from

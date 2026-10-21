@@ -75,10 +75,6 @@ export interface ProcessResultDetails extends OutputResultDetails {
 	operation: ProcessOperation;
 	status: ProcessStatus;
 	yield_time_ms?: number;
-	wait_mode?: "relative" | "absolute";
-	wait_status?: "completed" | "relative_deadline_reached" | "absolute_deadline_reached" | "cancelled";
-	yield_until?: string;
-	effective_wait_ms?: number;
 	on_exit?: OnExitPolicy;
 	completion_notification?: "armed";
 	completion_delivery?: "direct";
@@ -332,10 +328,6 @@ export function renderProcessResultText(shape: ProcessResultDetails): string {
 	if (shape.signal) lines.push(`signal: ${safeMeta(shape.signal)}`);
 	if (shape.failure_message) lines.push(`failure: ${safeMeta(shape.failure_message)}`);
 	if (shape.note) lines.push(`note: ${safeMeta(shape.note)}`);
-	if (shape.wait_mode) lines.push(`wait_mode: ${safeMeta(shape.wait_mode)}`);
-	if (shape.wait_status) lines.push(`wait_status: ${safeMeta(shape.wait_status)}`);
-	if (shape.yield_until) lines.push(`yield_until: ${safeMeta(shape.yield_until)}`);
-	if (shape.effective_wait_ms !== undefined) lines.push(`effective_wait_ms: ${shape.effective_wait_ms}`);
 	if (shape.on_exit) lines.push(`on_exit: ${safeMeta(shape.on_exit)}`);
 	if (shape.completion_notification) lines.push(`completion_notification: ${safeMeta(shape.completion_notification)}`);
 	if (shape.completion_delivery) lines.push(`completion_delivery: ${safeMeta(shape.completion_delivery)}`);

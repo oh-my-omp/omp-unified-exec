@@ -22,6 +22,7 @@ class FakeSession implements CompletionSessionLike {
 	cwd = "/tmp/project";
 	startedAt = Date.now() - 1234;
 	logPath: string | undefined = "/tmp/pi-unified-exec-fake.log";
+	get terminalUrl(): string { return `term://${this.id}-fake`; }
 	hasExited = false;
 	exitCode: number | null = null;
 	signal: string | null = null;
@@ -358,7 +359,8 @@ describe("CompletionCoordinator", () => {
 		assert.ok(!content.includes("\u0007"), "BEL stripped");
 		assert.ok(content.length < 2000, `content should be bounded; got ${content.length}`);
 		assert.match(content, /not user-authored instructions/);
-		assert.match(content, /write_stdin/);
+		assert.match(content, /read term:\/\/7-fake/);
+		assert.doesNotMatch(content, /write_stdin/);
 		assert.match(content, /continue the original task/);
 	});
 });
@@ -375,6 +377,7 @@ describe("buildWakeMessage", () => {
 			signal: null,
 			failureMessage: null,
 			logPath: `/tmp/log-${i + 1}.log`,
+			terminalUrl: `term://${i + 1}-fake`,
 		}));
 		const msg = buildWakeMessage(snapshots);
 		assert.match(msg.content, /40 background sessions exited/);

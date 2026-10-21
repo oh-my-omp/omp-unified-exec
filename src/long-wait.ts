@@ -1,6 +1,5 @@
 /**
- * Event-driven wait for empty `write_stdin` polls, session collection and
- * kill confirmation.
+ * Event-driven wait for session collection, shutdown and kill confirmation.
  *
  *   - listens ONLY on process exit, external cancellation, and one timer;
  *   - never consumes process output (the session's terminal screen keeps
@@ -14,8 +13,8 @@
 export type LongWaitOutcome = "exit" | "deadline" | "cancelled";
 
 /**
- * Max single setTimeout arm. Values above ~2^31-1 overflow and fire early;
- * multi-day yield_until waits re-arm in chunks of this size instead.
+ * Max single setTimeout arm. Longer durations re-arm in chunks to avoid
+ * overflowing the platform timer.
  */
 export const MAX_TIMER_ARM_MS = 2_147_483_647; // 2^31 - 1
 
@@ -102,88 +101,4 @@ export async function waitForExitOrDeadline(inputs: LongWaitInputs): Promise<Lon
 	} finally {
 		for (const cleanup of cleanups) cleanup();
 	}
-}
-
-// ---------------- Rate-limited streaming for empty polls ----------------
-
-/** Minimal Notify surface (src/notify.ts) needed by the rate-limited streamer. */
-interface NotifyLike {
-	notified(): Promise<void>;
-}
-
-export interface RateLimitedStreamOptions {
-	/** Fired whenever new output arrives (session.outputNotify). */
-	outputNotify: NotifyLike;
-	/** Emit one non-destructive tail-snapshot update. */
-	emit: () => void;
-	/** Minimum interval between output-driven updates (ms). */
-	minIntervalMs: number;
-	/** Injectable monotonic clock. Test hook. */
-	monotonicNow?: () => number;
-	setTimeoutFn?: (cb: () => void, ms: number) => unknown;
-	clearTimeoutFn?: (handle: unknown) => void;
-}
-
-/**
- * TUI updates for an empty poll. An ordinary periodic heartbeat must not
- * run for hours, so this streamer:
- *   - emits one initial waiting update;
- *   - emits output-driven updates rate-limited to `minIntervalMs`
- *     (coalescing bursts into at most one trailing update);
- *   - emits one final update on stop;
- *   - emits NOTHING when no output arrives — no periodic wakeups.
- */
-export function startRateLimitedStream(opts: RateLimitedStreamOptions): { stop: () => void } {
-	const monotonicNow = opts.monotonicNow ?? (() => performance.now());
-	const setTimeoutFn = opts.setTimeoutFn ?? ((cb: () => void, ms: number) => setTimeout(cb, ms));
-	const clearTimeoutFn = opts.clearTimeoutFn ?? ((h: unknown) => clearTimeout(h as NodeJS.Timeout));
-
-	let stopped = false;
-	let lastEmitAt = monotonicNow();
-	let trailingTimer: unknown;
-
-	const safeEmit = () => {
-		lastEmitAt = monotonicNow();
-		try {
-			opts.emit();
-		} catch {
-			// ignore transient render errors
-		}
-	};
-
-	// Initial waiting update.
-	safeEmit();
-
-	// Output-driven loop: parked on outputNotify, not on a timer. A stale
-	// parked waiter after stop() is released by the session's next notifyAll
-	// (exit always notifies) and then no-ops.
-	void (async () => {
-		while (!stopped) {
-			await opts.outputNotify.notified();
-			if (stopped) return;
-			const since = monotonicNow() - lastEmitAt;
-			if (since >= opts.minIntervalMs) {
-				safeEmit();
-			} else if (trailingTimer === undefined) {
-				// Coalesce the burst into one trailing update.
-				trailingTimer = setTimeoutFn(() => {
-					trailingTimer = undefined;
-					if (!stopped) safeEmit();
-				}, opts.minIntervalMs - since);
-			}
-		}
-	})();
-
-	return {
-		stop: () => {
-			if (stopped) return;
-			stopped = true;
-			if (trailingTimer !== undefined) {
-				clearTimeoutFn(trailingTimer);
-				trailingTimer = undefined;
-			}
-			// Final update so the TUI shows the last tail state.
-			safeEmit();
-		},
-	};
 }
