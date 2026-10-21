@@ -49,3 +49,7 @@ declare module "@oh-my-pi/pi-coding-agent/tools/shell-tokenize" {
 declare module "@oh-my-pi/pi-coding-agent/tools/approval" {
 	export const truncateForPrompt: unknown;
 }
+
+declare module "@oh-my-pi/pi-coding-agent/tools/gh-cache-invalidation" {
+	export const invalidateGithubCacheForBashCommand: unknown;
+}

@@ -430,6 +430,16 @@ async function loadOmpShellPath(host: ExtensionAPI): Promise<() => string | unde
 	};
 }
 
+/** omp's shared `gh` mutation detector and SQLite view-cache invalidation; the plugin keeps no copy of either. */
+async function loadGithubCacheInvalidation(): Promise<(command: string) => void> {
+	const module: unknown = await import("@oh-my-pi/pi-coding-agent/tools/gh-cache-invalidation");
+	if (typeof module !== "object" || module === null ||
+		!("invalidateGithubCacheForBashCommand" in module) || typeof module.invalidateGithubCacheForBashCommand !== "function") {
+		throw new Error("omp-unified-exec: tools/gh-cache-invalidation lacks invalidateGithubCacheForBashCommand");
+	}
+	return module.invalidateGithubCacheForBashCommand as (command: string) => void;
+}
+
 /**
  * Admit only omp, identified by its injected `arktype` builder, and activate
  * through {@link presentOnOmp} with omp's theme appearance
@@ -438,7 +448,13 @@ async function loadOmpShellPath(host: ExtensionAPI): Promise<() => string | unde
  * factory during package install/force-reinstall validation.
  */
 export function withHostPresentation(
-	activate: (pi: ExtensionAPI, appearance?: () => TerminalAppearance, shellPath?: () => string | undefined, approvalHost?: CommandApprovalHost) => ActivatedExtension,
+	activate: (
+		pi: ExtensionAPI,
+		appearance?: () => TerminalAppearance,
+		shellPath?: () => string | undefined,
+		approvalHost?: CommandApprovalHost,
+		invalidateGithubCache?: (command: string) => void,
+	) => ActivatedExtension,
 ): (host: ExtensionAPI) => void | Promise<void> {
 	return (host) => {
 		if (!("arktype" in host)) {
@@ -446,10 +462,13 @@ export function withHostPresentation(
 		}
 		requireBunRuntime();
 		// The omp modules load before activating, so a reshaped omp fails plugin loading with nothing registered.
-		return Promise.all([presentOnOmp(host), loadTernHudHost(), loadOmpAppearance(), loadOmpShellPath(host), loadCommandApprovalHost()]).then(async ([pi, hud, appearance, shellPath, approvalHost]) => {
+		return Promise.all([
+			presentOnOmp(host), loadTernHudHost(), loadOmpAppearance(), loadOmpShellPath(host), loadCommandApprovalHost(),
+			loadGithubCacheInvalidation(),
+		]).then(async ([pi, hud, appearance, shellPath, approvalHost, invalidateGithubCache]) => {
 			await initializeTernPlugin();
 			await initializeTerminalUrls();
-			const activated = activate(pi, appearance, shellPath, approvalHost);
+			const activated = activate(pi, appearance, shellPath, approvalHost, invalidateGithubCache);
 			mountTerminalHud(pi, activated.store, hud, activated.kill);
 		});
 	};
