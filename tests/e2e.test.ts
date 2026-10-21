@@ -13,8 +13,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { describe, it } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
-import { activate, MAX_EMPTY_POLL_ENV_VAR, resolveMaxEmptyPollMs } from "../src/index.ts";
+import { activate, EmptyPollRemovedError } from "../src/index.ts";
+import { readTerminal } from "../fork-features/terminal-resource.ts";
 import { IS_WINDOWS } from "../src/shell.ts";
 
 
@@ -37,6 +39,7 @@ interface ToolDef {
 function makeHarness(shellPath?: () => string | undefined) {
 	const tools: Record<string, ToolDef> = {};
 	const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
+	const sentMessages: Array<{ customType: string; content: string }> = [];
 	const commands: Record<string, { description?: string; handler: (args: string, ctx: any) => Promise<void> }> = {};
 	const uiEvents = {
 		notifications: [] as Array<{ message: string; type?: string }>,
@@ -77,6 +80,7 @@ function makeHarness(shellPath?: () => string | undefined) {
 		getFlag: () => false,
 		getActiveTools: () => ["bash"],
 		setActiveTools: () => {},
+		sendMessage: (message: { customType: string; content: string }) => { sentMessages.push(message); },
 	};
 
 	// Activate the tool core directly; factory admission is covered separately.
@@ -97,6 +101,7 @@ function makeHarness(shellPath?: () => string | undefined) {
 		},
 		stubCtx,
 		tools,
+		sentMessages,
 		uiEvents,
 		async emit(event: string, evt: any = {}) {
 			const results = [];
@@ -116,33 +121,55 @@ function assertReportedShell(
 	assert.ok(result.content[0].text.split("\n").includes(`shell: ${shell}`), result.content[0].text);
 }
 
-/** Poll until `cond` is true or the deadline passes (CI runners are slow). */
-async function waitFor(cond: () => boolean, timeoutMs = 8000): Promise<boolean> {
+/** Real process state is external to fake clocks; wait for the named condition. */
+async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 8000): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
-	while (!cond() && Date.now() < deadline) {
-		await new Promise((r) => setTimeout(r, 50));
+	while (Date.now() < deadline) {
+		if (await cond()) return true;
+		await delay(50);
 	}
-	return cond();
+	return await cond();
 }
 
 describe("unified-exec e2e", () => {
-	it("resolveMaxEmptyPollMs has no default cap and permits operator limits above 290s", () => {
-		assert.equal(resolveMaxEmptyPollMs({}), undefined);
-		assert.equal(resolveMaxEmptyPollMs({ [MAX_EMPTY_POLL_ENV_VAR]: "300000" }), 300_000);
-		assert.equal(resolveMaxEmptyPollMs({ [MAX_EMPTY_POLL_ENV_VAR]: "60000" }), 60_000);
-		assert.equal(resolveMaxEmptyPollMs({ [MAX_EMPTY_POLL_ENV_VAR]: "1000" }), 5_000);
-		assert.throws(() => resolveMaxEmptyPollMs({ [MAX_EMPTY_POLL_ENV_VAR]: "not-a-number" }), /positive finite/);
-	});
-
-	it("describes uncapped empty waits without cache-TTL polling guidance", () => {
+	it("guides reads, event waits and input as separate operations", () => {
 		const h = makeHarness();
-		for (const name of ["exec_command", "write_stdin"]) {
+		for (const name of ["exec_command", "write_stdin", "monitor"]) {
 			const tool = h.tools[name];
 			const prompt = JSON.stringify([tool.description, tool.promptGuidelines, tool.parameters]);
-			assert.doesNotMatch(prompt, /290|cache-friendly/);
-			assert.match(prompt, /no built-in (?:empty-poll )?maximum/i);
+			assert.match(prompt, /read .*term/);
+			assert.match(prompt, /monitor/);
+			assert.doesNotMatch(prompt, /poll without writing|no built-in.*maximum/i);
 		}
-		assert.match(h.tools.write_stdin.promptGuidelines!.join("\n"), /yield_until ONLY when the human explicitly asks/);
+	});
+
+	it("rejects zero-byte input before observation and preserves later input", async () => {
+		const h = makeHarness();
+		await h.emit("session_start");
+		try {
+			const started = await h.call("exec_command", { cmd: "sleep 0.5; echo unobserved-marker; exec cat", yield_time_ms: 250 });
+			const sid = started.details.session_id;
+			const url: string = started.details.terminal_url;
+			assert.ok(await waitFor(async () => (await readTerminal(url.slice(7))).screenLines.some((line) => line.includes("unobserved-marker"))));
+			for (const input of [{}, { chars: "" }, { chars_b64: "" }, { chars_b64: " \n" }]) {
+				await assert.rejects(h.call("write_stdin", { session_id: sid, ...input }), (error: unknown) => {
+					assert.ok(error instanceof EmptyPollRemovedError);
+					assert.equal(error.code, "empty_poll_removed");
+					assert.ok(error.message.includes(`read ${url}`), error.message);
+					assert.match(error.message, /monitor/);
+					return true;
+				});
+			}
+			const after = await h.call("write_stdin", { session_id: sid, chars: "after\n" });
+			assert.equal(after.details.running, true);
+			assert.match(after.details.output, /unobserved-marker/);
+			assert.match(after.details.output, /after/);
+			for (const input of [{}, { chars: "" }, { chars_b64: "" }]) {
+				await assert.rejects(h.call("write_stdin", { session_id: -1, ...input }), EmptyPollRemovedError);
+			}
+		} finally {
+			await h.emit("session_shutdown");
+		}
 	});
 
 	it("leaves presentation hooks to the omp factory rather than the tool core", () => {
@@ -363,11 +390,11 @@ describe("unified-exec e2e", () => {
 		await h.emit("session_shutdown");
 	});
 
-	it("process that exits BETWEEN calls is still drainable via write_stdin", async () => {
+	it("process that exits BETWEEN calls remains readable through its terminal", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		// 3 ticks @ 200ms = 600ms runtime. Yield at 250ms -> session_id returned.
-		// Then wait 800ms so the process exits, then poll.
+		// Then wait 800ms so the process exits, then read its retained terminal.
 		const r1 = await h.call("exec_command", {
 			cmd: "for i in 1 2 3; do echo tock $i; sleep 0.2; done",
 			yield_time_ms: 250,
@@ -381,85 +408,15 @@ describe("unified-exec e2e", () => {
 		// Wait for the process to definitely exit (600ms runtime - 250ms yield + slack).
 		await new Promise((r) => setTimeout(r, 800));
 
-		// Now poll — process has already exited, but the store should still have
-		// the entry so we can observe the exit and drain trailing output.
-		const r2 = await h.call("write_stdin", {
-			session_id: sid,
-			chars: "",
-			yield_time_ms: 5000,
-		});
-		assert.equal(r2.details.exit_code, 0, `expected exit_code=0; got ${JSON.stringify(r2.details)}`);
-		assert.equal(r2.details.session_id, undefined);
-		assert.ok(r2.details.output.includes("tock 3"), `expected 'tock 3' in output: ${r2.details.output}`);
+		const projection = await readTerminal(r1.details.terminal_url.slice(7));
+		assert.ok(projection.screenLines.some((line) => line.includes("tock 3")));
+		const listed = await h.call("list_sessions", {});
+		assert.equal(listed.details.sessions.find((s: { session_id: number }) => s.session_id === sid)?.exit_code, 0);
 		await h.emit("session_shutdown");
 	});
 
-	it("empty write_stdin accepts a long relative wait and returns early on exit", async () => {
-		const previous = process.env[MAX_EMPTY_POLL_ENV_VAR];
-		delete process.env[MAX_EMPTY_POLL_ENV_VAR];
-		const h = makeHarness();
-		try {
-			await h.emit("session_start");
-			const r1 = await h.call("exec_command", {
-				cmd: "sleep 0.6; echo long-poll-finished",
-				yield_time_ms: 250,
-			});
-			assert.ok(typeof r1.details.session_id === "number", `got ${JSON.stringify(r1.details)}`);
-			const sid = r1.details.session_id;
-			const start = performance.now();
-			const r2 = await h.call("write_stdin", { session_id: sid, chars: "", yield_time_ms: 2_000_000 });
-			assert.ok(performance.now() - start < 10_000);
-			assert.equal(r2.details.yield_time_ms, 2_000_000);
-			assert.equal(r2.details.session_id, undefined);
-			assert.equal(r2.details.exit_code, 0);
-			assert.equal(r2.details.wait_mode, "relative");
-			assert.equal(r2.details.wait_status, "completed");
-			assert.equal(r2.details.yield_until, undefined);
-			assert.match(r2.details.output, /long-poll-finished/);
-		} finally {
-			if (previous === undefined) delete process.env[MAX_EMPTY_POLL_ENV_VAR];
-			else process.env[MAX_EMPTY_POLL_ENV_VAR] = previous;
-			await h.emit("session_shutdown");
-		}
-	});
 
-	it("an explicit operator cap rejects longer relative waits without clamping", async () => {
-		const previous = process.env[MAX_EMPTY_POLL_ENV_VAR];
-		process.env[MAX_EMPTY_POLL_ENV_VAR] = "10000";
-		const h = makeHarness();
-		try {
-			await h.emit("session_start");
-			const r1 = await h.call("exec_command", {
-				cmd: "sleep 0.4",
-				yield_time_ms: 250,
-			});
-			assert.ok(typeof r1.details.session_id === "number", `got ${JSON.stringify(r1.details)}`);
-			const sid = r1.details.session_id;
-
-			await new Promise((r) => setTimeout(r, 700));
-
-			// Values above the lowered cap are rejected against that cap…
-			await assert.rejects(
-				() => h.call("write_stdin", { session_id: sid, chars: "", yield_time_ms: 20_000 }),
-				/exceeds the configured empty-poll cap of 10000 ms/,
-			);
-			// …while in-cap values behave normally.
-			const r2 = await h.call("write_stdin", {
-				session_id: sid,
-				chars: "",
-				yield_time_ms: 10_000,
-			});
-			assert.equal(r2.details.yield_time_ms, 10_000);
-			assert.equal(r2.details.session_id, undefined);
-			assert.equal(r2.details.exit_code, 0);
-		} finally {
-			if (previous === undefined) delete process.env[MAX_EMPTY_POLL_ENV_VAR];
-			else process.env[MAX_EMPTY_POLL_ENV_VAR] = previous;
-			await h.emit("session_shutdown");
-		}
-	});
-
-	it("long-running command yields session_id and write_stdin resumes", async () => {
+	it("long-running command yields a session and monitor awaits completion", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		// 5 ticks, 0.3s apart = ~1.5s total. Yield at 600ms.
@@ -473,15 +430,13 @@ describe("unified-exec e2e", () => {
 		// Expect ~ticks 1-2 in first yield.
 		assert.ok(r1.details.output.includes("tick 1"), `first out: ${r1.details.output}`);
 
-		// Poll with big yield to catch the rest + exit.
-		const r2 = await h.call("write_stdin", {
-			session_id: sid,
-			chars: "",
-			yield_time_ms: 5000,
-		});
-		assert.equal(r2.details.exit_code, 0, `r2=${JSON.stringify(r2.details)}`);
-		assert.equal(r2.details.session_id, undefined);
-		assert.ok(r2.details.output.includes("tick 5"), `second out: ${r2.details.output}`);
+		const monitoring = await h.call("monitor", { session_id: sid });
+		assert.equal(monitoring.details.status, "started");
+		assert.ok(await waitFor(() => h.sentMessages.some((m) => m.customType === "unified-exec-monitor" && m.content.includes("End"))));
+		const projection = await readTerminal(r1.details.terminal_url.slice(7));
+		assert.ok(projection.screenLines.some((line) => line.includes("tick 5")));
+		const listed = await h.call("list_sessions", {});
+		assert.equal(listed.details.sessions.find((s: { session_id: number }) => s.session_id === sid)?.exit_code, 0);
 		await h.emit("session_shutdown");
 	});
 
@@ -674,9 +629,8 @@ describe("unified-exec e2e", () => {
 			`status did not clear: ${h.uiEvents.statuses.get("unified-exec.sessions")}`,
 		);
 
-		const r2 = await h.call("write_stdin", { session_id: sid, chars: "", yield_time_ms: 5000 });
-		assert.equal(r2.details.exit_code, 0, `details=${JSON.stringify(r2.details)}`);
-		assert.equal(r2.details.session_id, undefined);
+		const r2 = await h.call("list_sessions", {});
+		assert.equal(r2.details.sessions.find((s: { session_id: number }) => s.session_id === sid)?.exit_code, 0);
 		await h.emit("session_shutdown");
 	});
 
@@ -696,8 +650,8 @@ describe("unified-exec e2e", () => {
 			`widget did not clear: ${JSON.stringify(h.uiEvents.widgets.get("unified-exec.sessions"))}`,
 		);
 
-		const r2 = await h.call("write_stdin", { session_id: sid, chars: "", yield_time_ms: 5000 });
-		assert.equal(r2.details.exit_code, 0, `details=${JSON.stringify(r2.details)}`);
+		const r2 = await h.call("list_sessions", {});
+		assert.equal(r2.details.sessions.find((s: { session_id: number }) => s.session_id === sid)?.exit_code, 0);
 		await h.emit("session_shutdown");
 	});
 
@@ -723,8 +677,8 @@ describe("unified-exec e2e", () => {
 		assert.ok(widget.includes(`#${longSid}`), `widget=${widget}`);
 		assert.ok(!widget.includes(`#${shortSid}`), `widget=${widget}`);
 
-		const drained = await h.call("write_stdin", { session_id: shortSid, chars: "", yield_time_ms: 5000 });
-		assert.equal(drained.details.exit_code, 0, `details=${JSON.stringify(drained.details)}`);
+		const reaped = await h.call("list_sessions", {});
+		assert.equal(reaped.details.sessions.find((s: { session_id: number }) => s.session_id === shortSid)?.exit_code, 0);
 		await h.call("kill_session", { session_id: longSid });
 		await h.emit("session_shutdown");
 	});

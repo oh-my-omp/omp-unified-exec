@@ -39,6 +39,7 @@ export interface CompletionSessionLike {
 	readonly cwd: string;
 	readonly startedAt: number;
 	readonly logPath: string | undefined;
+	readonly terminalUrl?: string;
 	readonly hasExited: boolean;
 	readonly exitCode: number | null;
 	readonly signal: string | null;
@@ -57,6 +58,7 @@ export interface CompletionSnapshot {
 	signal: string | null;
 	failureMessage: string | null;
 	logPath: string | undefined;
+	terminalUrl?: string;
 }
 
 interface CompletionRecord {
@@ -285,6 +287,7 @@ export class CompletionCoordinator {
 			signal: s.signal,
 			failureMessage: s.failureMessage,
 			logPath: s.logPath,
+			terminalUrl: s.terminalUrl,
 		};
 		this.scheduleFlush();
 	}
@@ -548,14 +551,14 @@ export function buildWakeMessage(snapshots: CompletionSnapshot[]): WakeMessage {
 		);
 		lines.push(`  command: ${oneLine(s.command, MAX_COMMAND_CHARS)}`);
 		if (s.logPath) lines.push(`  log_path: ${oneLine(s.logPath, 200)}`);
+		if (s.terminalUrl) lines.push(`  read ${s.terminalUrl}`);
 	}
 	if (snapshots.length > shown.length) {
 		lines.push(`… and ${snapshots.length - shown.length} more (use list_sessions).`);
 	}
 	lines.push(
-		"Final output has NOT necessarily been consumed: call write_stdin with no chars for each exited " +
-			"session_id to drain its final output, or read the log_path (if a session_id is no longer known, " +
-			"use the log_path). Then continue the original task — do not merely acknowledge this notification.",
+		"Read each session's term:// address above for retained output, or its log_path for raw bytes. " +
+			"Then continue the original task — do not merely acknowledge this notification.",
 	);
 	return {
 		content: lines.join("\n"),

@@ -77,7 +77,8 @@ The initiative establishes a durable output contract across these layers:
   cell attributes (SGR for the HUD, SVG rasterized to PNG for screenshots);
   no child byte reaches either.
 - Consuming observations, non-consuming projections and emulator disposal
-  are serialized per session. A cancelled empty poll does not observe.
+  are serialized per session. Zero-byte writes are rejected before observation;
+  use `read term://…` for state/content and `monitor` for events or completion.
   Reads use an ordered parser barrier covering bytes accepted before the read,
   rather than waiting for continuous output to become idle. Streaming snapshots
   and HUD screens may lag unparsed output and never consume; the HUD reads only
@@ -151,7 +152,7 @@ The initiative establishes a durable output contract across these layers:
 | Keep structured schemas and projections | `outputSchema` / `structuredContent` expose typed bounded results without changing model text or persisted details. |
 | Keep complete logs for now | Archive bounding/retention is a separate policy change and remains follow-up work. |
 | Present only on omp through its exported bash renderer | omp's `toolRenderers.bash` (`@oh-my-pi/pi-tui/tools`) owns collapse, expansion, exit/background status and ANSI/Tern views. A pure display adapter is plugin code. The injected `ExtensionAPI.arktype` identifies omp; non-omp hosts fail at factory invocation, and missing or reshaped required omp modules fail loading before activation. |
-| Show write/kill actions as bash comments | `# poll session N`, `# stdin → session N: "…"`, `# kill session N (SIGTERM)` name the action without presenting input bytes as an executable command; base64 input shows only its byte count. |
+| Show write/kill actions as bash comments | `# stdin → session N: "…"`, `# kill session N (SIGTERM)` name the action without presenting input bytes as an executable command; base64 input shows only its byte count. Incomplete or rejected zero-byte writes display `input required`, not an observation action. |
 | Append the truncation marker to the omp display text | The marker and `log_path` live outside `details.output`; appending `truncationMarker()` keeps recovery visible as the last collapsed line without claiming the log is an omp artifact. |
 | Mark omp Tern failures with view tone, not result `isError` | Tern derives card status from the host result's `isError`, which stays false for a nonzero exit because that is an ordinary completion for the model. The describe view sets `tone: "error"` for failed exits, signals, start failures and failed or unknown kills; the exit chip comes from omp's bash head. |
 | Run every session in a PTY | A rendered screen bounds every read by its size, so neither an in-memory retention cap with omission markers nor a streaming sanitizer for raw output is needed; the raw stream stays in the log. A non-PTY session duplicated the host's `bash`, whose deadline is harmless for short commands, so short one-shot commands stay there and `exec_command` keeps long, interactive, concurrent and daemon work with no command deadline ([#61](https://github.com/oh-my-omp/omp-unified-exec/issues/61)). |
@@ -333,23 +334,6 @@ bun test ./tests/tern-terminal-hud.test.ts ./tests/omp-presentation.test.ts
 These cover list Kill/x, terminal-page echo and Kill, native resume and
 last-tty removal. The real omp installation gate remains explicit below.
 
-omp 18.8.7 presentation qualification, 2026-10-10, macOS arm64
-([#11](https://github.com/mouriya-s-lab/omp-unified-exec/issues/11)). The
-installed omp binary loaded the checkout with `-e src/index.ts --keep-builtin-bash`
-and an offline scripted provider extension that emits tool calls only. Seventeen
-calls covered failed and successful exits, 14-line collapse with Ctrl+O, a
-yielded session followed by a poll, `seq 1 100000` truncation, a missing
-workdir, `kill -TERM $$`, a tty `cat` driven by text and base64 stdin,
-`set_on_exit`, `list_sessions` (non-empty and empty), a successful kill, and an
-unknown kill. In the ANSI TUI (tmux), the exec, write and kill cards match the
-built-in bash card: `$ cmd`, Output, `Exit: N` and error border for failures,
-`Backgrounded: session N`, and the truncation marker with the full log path
-while collapsed. In TSP frames from a real PTY handshake, the tool nodes carry
-the bash head (command target, `lang: bash`, exit chip), and failures have
-`tone: "error"`. Neither frontend showed envelope fields, and the logs had zero
-`Tool renderer failed` / `Tool describe failed` entries. The same day,
-`npm test` passed 371 tests with three Windows-only skips. TSP evidence is
-wire-level; no Tern GUI screenshot was taken.
 
 Automated gate:
 

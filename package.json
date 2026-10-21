@@ -1,7 +1,7 @@
 {
 	"name": "omp-unified-exec",
 	"version": "0.14.7",
-	"description": "Codex-style unified_exec for omp: long-lived shell sessions the LLM polls and drives with write_stdin (Ctrl-C, arrow keys, PTY, REPLs, ssh, dev servers). Full output logged to disk.",
+	"description": "Long-lived PTY sessions for omp: send input with write_stdin, read terminal state via term://, and await events or completion with monitor. Full raw output logged to disk.",
 	"keywords": [
 		"omp",
 		"omp-extension",

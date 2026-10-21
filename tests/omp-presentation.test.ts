@@ -330,13 +330,13 @@ describe("omp shell argument presentation", () => {
 		assert.deepEqual(execShellArgs(undefined), { command: undefined, cwd: undefined });
 	});
 
-	it("describes polls, escaped stdin, and base64 byte counts as shell comments", () => {
-		assert.deepEqual(writeStdinShellArgs({ session_id: 1 }), { command: "# poll session 1" });
-		assert.deepEqual(writeStdinShellArgs({ session_id: 1, chars: "" }), { command: "# poll session 1" });
+	it("describes required input, escaped stdin, and base64 byte counts as shell comments", () => {
+		assert.deepEqual(writeStdinShellArgs({ session_id: 1 }), { command: "# stdin → session 1: (input required)" });
+		assert.deepEqual(writeStdinShellArgs({ session_id: 1, chars: "" }), { command: "# stdin → session 1: (input required)" });
 		assert.deepEqual(writeStdinShellArgs({ session_id: 1, chars: "q\n" }), { command: '# stdin → session 1: "q\\n"' });
 		assert.deepEqual(writeStdinShellArgs({ session_id: 1, chars_b64: "aGk=" }), { command: "# stdin → session 1: 2 bytes" });
-		assert.deepEqual(writeStdinShellArgs({}), { command: "# poll session ?" });
-		assert.deepEqual(writeStdinShellArgs(undefined), { command: "# poll session ?" });
+		assert.deepEqual(writeStdinShellArgs({}), { command: "# stdin → session ?: (input required)" });
+		assert.deepEqual(writeStdinShellArgs(undefined), { command: "# stdin → session ?: (input required)" });
 	});
 
 	it("describes default and custom kill signals, including streamed missing args", () => {

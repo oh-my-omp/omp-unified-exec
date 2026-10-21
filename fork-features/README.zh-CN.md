@@ -23,8 +23,9 @@
 | Shell 选择跟随宿主：显式 `shell`，然后是 omp 实时的 `shellPath`，然后是 `SHELL`，最后是平台默认值；结果、流式更新、kill 结果和会话列表写明实际启动的可执行文件 | `fork-features/omp-presentation.ts`（`loadOmpShellPath`，由 `withHostPresentation` 传给 `activate`）、`fork-features/omp-tools.d.ts`；`src/shell.ts` 中的 `resolveDefaultShell`；`src/index.ts` 中 `runExecCommand` 的 shell 解析和 `activate`；`src/session.ts` 中的 `ExecSession.shell`；`src/tool-result.ts` 和 `src/script-result.ts` 中的 `shell`；`tests/shell.test.ts`、`tests/e2e.test.ts` | 上游在 POSIX 上固定使用 `bash`，在 Windows 上自行探测，所以 omp 配置的 shell 或登录 shell 可能与实际执行命令的 shell 不同，而结果也不说明用的是哪个（[#63](https://github.com/oh-my-omp/omp-unified-exec/issues/63)）。`shellPath` 归 omp 所有：`@oh-my-pi/pi-coding-agent/config/registry` 提供 `lookup("shellPath").get(host.pi.settings)`。通过准入的 factory 与其他 omp 模块一起加载它；每个新进程都通过该 getter 读取有效设置，从不使用激活时的副本。注册表形状改变时让插件加载失败。shell 解析先于 argv 构造，失败后绝不换用优先级更低的 shell。`ExecSession.shell` 读取 `command[0]`，所以后续结果沿用实际启动的可执行文件。命令文本不做转换：cmd 和 PowerShell 保留各自的 argv；其他 shell 一律使用 `-c`。 | 仅 fork |
 | 命令审批与宿主会话绑定（[#29](https://github.com/oh-my-omp/omp-unified-exec/issues/29)） | `fork-features/command-approval.ts`、`fork-features/session-binding.ts`、`fork-features/omp-presentation.ts`、`fork-features/omp-tools.d.ts`、`src/index.ts`、`tests/command-approval.test.ts` | `exec_command` 在执行之前用内置 bash 的决定逻辑检查原始 `cmd`。第一次 `session_start` 经 `AgentRegistry.global().get(ctx.agent.id)?.session` 取得会话并核对 `sessionManager` 身份；switch/branch 只复核身份。每次审批读取实际会话的实时 settings，不用全局 settings 或 cwd。Unbound 不读 settings，返回裸 `exec`，不禁用执行。其他工具保留宿主默认审批。 | 仅 fork |
 | 经 `exec_command` 执行的 `gh` 变更命令在 PTY 启动前使 omp 的 `issue://` / `pr://` 视图缓存失效（[#32](https://github.com/oh-my-omp/omp-unified-exec/issues/32)） | `fork-features/omp-presentation.ts`（`loadGithubCacheInvalidation`）、`fork-features/omp-tools.d.ts`；`src/index.ts` 中的 `runExecCommand` 与 `activate` | 交互式 `gh` 变更命令（merge 确认、comment 编辑器）需要终端，因此走 `exec_command`，宿主 bash 的失效从来看不到它们。factory 导入 omp 的 `tools/gh-cache-invalidation.invalidateGithubCacheForBashCommand`，在 spawn 之前以原始 `cmd` 调用，与 `BashTool.execute` 相同；检测逻辑与 SQLite 缓存都归宿主所有。omp 升级后重新验证该导出仍存在，且经 `exec_command` 的 `gh issue close` 使下一次 `issue://` 读取重新获取。 | 仅 fork |
+| 仅输入的 `write_stdin`；空轮询及其截止时间/配置路径已删除（[#44](https://github.com/oh-my-omp/omp-unified-exec/issues/44)） | `src/index.ts`、`src/completion.ts`、`src/long-wait.ts`、`src/format-time.ts`、`src/tool-result.ts`、`src/script-result.ts`、`fork-features/omp-presentation.ts`；删除 `src/time.ts` | 状态与内容用 `term://` 读取，事件与完成用 monitor 等待；写入要求解码后非空，否则返回类型化 `empty_poll_removed`，不消费观察。完成唤醒指向各终端读取地址；输入附着窗口与仅在人明确要求时启用 wake 的策略不变。 | 仅 fork |
 
-环境变量（`PI_UNIFIED_EXEC_*`）和原有工具名保持不变。其余 `src/*` 模块路径不变；仅用于管道和 Pi 的模块直接删除，不保留兼容 shim。
+已有工具名与仍保留的环境变量（`PI_UNIFIED_EXEC_*`）保持原名。只用于已删除路径的模块直接移除，不保留兼容 shim。
 
 ## 仓库状态
 
@@ -39,7 +40,7 @@
 
 插件宿主与 PTY 后端都只用 Bun；上游对 Node PTY 后端的改动保留删除，不恢复该路径。
 
-上游 v0.13 的 steer gate（`src/steer-gate.ts`、`wait_status: "interrupted_by_steer"`、`PI_UNIFIED_EXEC_STEER_INTERRUPT`；上游 `d393051`、`f5e5d96`、`1baa416`）不采用，以 `ours` 策略合并（[PR #1](https://github.com/oh-my-omp/omp-unified-exec/pull/1)）。它监听 Pi 的 `input` 事件来提前结束附着等待，主要针对空 `write_stdin` 轮询；本 fork 面向 omp，其扩展上下文没有 steering 信号，空轮询由 `read term://` 与 `monitor` 取代（[#44](https://github.com/oh-my-omp/omp-unified-exec/issues/44)）。上游对 steer gate 的改动会以 modify/delete 冲突的形式到来，保留删除。
+上游 v0.13 的 steer gate（`src/steer-gate.ts`、`wait_status: "interrupted_by_steer"`、`PI_UNIFIED_EXEC_STEER_INTERRUPT`；上游 `d393051`、`f5e5d96`、`1baa416`）不采用，以 `ours` 策略合并（[PR #1](https://github.com/oh-my-omp/omp-unified-exec/pull/1)）。本 fork 面向 omp，其扩展上下文没有 steering 信号。空轮询、`yield_until` 与对应环境变量上限已删除，改用 `read term://` 和 `monitor`（[#44](https://github.com/oh-my-omp/omp-unified-exec/issues/44)）。上游对这些路径或 steer 等待的改动会以 modify/delete 或内容冲突的形式到来，保留删除，不恢复参数、配置和等待辅助代码。
 
 本仓库的 shell 选择跟随宿主（[#63](https://github.com/oh-my-omp/omp-unified-exec/issues/63)）：上游的 `resolveDefaultShell` 在 POSIX 上返回 `bash`，其 `shell` 参数说明也这样写，spawn 选项还记录原始 `shell` 参数。上游对这些地方的改动会在 `src/shell.ts`、`src/index.ts` 和 `src/session.ts` 中以内容冲突的形式到来。解决方法：保留优先级（显式 `shell`、omp `shellPath`、`SHELL`、平台默认值）、在 `buildShellCommand` 之前解析，以及 `ExecSession.shell` 取 `command[0]`；上游对 Windows Git Bash/PowerShell 探测的修复只搬进平台默认值分支，选中的 shell 失败后也绝不增加回退。
 
@@ -65,7 +66,7 @@ omp 升级后，要重新验证 `@oh-my-pi/pi-coding-agent/internal-urls`：
 过多提示、最后部分行、人工/模型终止、End/wake 合并、渲染后的提示符
 与重绘，以及 ANSI/Tern 的默认工具卡片和消息样式保持一致。
 
-omp 升级后要重新验证 shell 桥接：`@oh-my-pi/pi-coding-agent/config/registry` 必须仍然导出 `lookup`，`lookup("shellPath").get(host.pi.settings)` 必须仍以字符串或 undefined 返回 omp 的有效设置。通过真实的交互式 omp 验证：`shellPath` overlay 优先于 `SHELL`，显式 `shell` 优先于两者；不存在的显式 `shell` 必须返回 `spawn … ENOENT` 且没有输出，而不是改用其他 shell（omp 自己会在启动时、扩展加载之前拒绝不存在的 `shellPath`）；之后的轮询、kill 和列表必须沿用会话的 shell；默认 `workdir` 必须仍然跟随 omp 的 cwd。
+omp 升级后要重新验证 shell 桥接：`@oh-my-pi/pi-coding-agent/config/registry` 必须仍然导出 `lookup`，`lookup("shellPath").get(host.pi.settings)` 必须仍以字符串或 undefined 返回 omp 的有效设置。通过真实的交互式 omp 验证：`shellPath` overlay 优先于 `SHELL`，显式 `shell` 优先于两者；不存在的显式 `shell` 必须返回 `spawn … ENOENT` 且没有输出，而不是改用其他 shell（omp 自己会在启动时、扩展加载之前拒绝不存在的 `shellPath`）；之后的输入写入、kill 和列表必须沿用会话的 shell；默认 `workdir` 必须仍然跟随 omp 的 cwd。
 
 命令审批移植自
 [`can1357/oh-my-pi@57b56631ee009098a78d9badf91afc3a48eef32e`](https://github.com/can1357/oh-my-pi/blob/57b56631ee009098a78d9badf91afc3a48eef32e/packages/coding-agent/src/tools/bash.ts)

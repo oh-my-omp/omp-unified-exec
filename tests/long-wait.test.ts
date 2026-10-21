@@ -1,13 +1,12 @@
 /**
- * Unit tests for the event-driven absolute wait (src/long-wait.ts).
+ * Unit tests for event-driven collection/termination waits (src/long-wait.ts).
  * Uses injected monotonic clocks / timers where determinism matters; real
  * waits are all sub-second.
  */
 
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
-import { MAX_TIMER_ARM_MS, startRateLimitedStream, waitForExitOrDeadline } from "../src/long-wait.ts";
-import { Notify } from "../src/notify.ts";
+import { MAX_TIMER_ARM_MS, waitForExitOrDeadline } from "../src/long-wait.ts";
 
 describe("waitForExitOrDeadline", () => {
 	it("returns 'exit' immediately when the process already exited", async () => {
@@ -26,7 +25,7 @@ describe("waitForExitOrDeadline", () => {
 		);
 	});
 
-	it("returns 'deadline' immediately for a non-positive duration (past yield_until)", async () => {
+	it("returns 'deadline' immediately for a non-positive duration", async () => {
 		const exited = new AbortController();
 		assert.equal(await waitForExitOrDeadline({ exited: exited.signal, durationMs: 0 }), "deadline");
 		assert.equal(await waitForExitOrDeadline({ exited: exited.signal, durationMs: -100 }), "deadline");
@@ -161,60 +160,5 @@ describe("waitForExitOrDeadline", () => {
 		const exited2 = new AbortController();
 		await waitForExitOrDeadline({ exited: exited2.signal, durationMs: 20 });
 		exited2.abort(); // must be inert
-	});
-});
-
-describe("startRateLimitedStream", () => {
-	it("emits initial + final updates, and rate-limits output-driven updates", async () => {
-		const notify = new Notify();
-		let emits = 0;
-		const stream = startRateLimitedStream({
-			outputNotify: notify,
-			emit: () => emits++,
-			minIntervalMs: 10_000, // effectively "never twice" within this test
-		});
-		assert.equal(emits, 1, "one initial waiting update");
-
-		// A noisy burst must NOT produce one update per chunk.
-		for (let i = 0; i < 50; i++) {
-			notify.notifyAll();
-			await new Promise((r) => setImmediate(r));
-		}
-		assert.ok(emits <= 2, `burst should be coalesced; got ${emits} emits`);
-
-		stream.stop();
-		const afterStop = emits;
-		assert.ok(afterStop >= 2, "final update on stop");
-		notify.notifyAll();
-		await new Promise((r) => setTimeout(r, 20));
-		assert.equal(emits, afterStop, "no emissions after stop");
-	});
-
-	it("emits nothing extra when no output arrives (no periodic heartbeat)", async () => {
-		const notify = new Notify();
-		let emits = 0;
-		const stream = startRateLimitedStream({
-			outputNotify: notify,
-			emit: () => emits++,
-			minIntervalMs: 5,
-		});
-		await new Promise((r) => setTimeout(r, 100)); // 100ms of silence
-		assert.equal(emits, 1, "only the initial update — no timer-driven heartbeat");
-		stream.stop();
-		assert.equal(emits, 2);
-	});
-
-	it("emits again once the rate-limit interval has elapsed with new output", async () => {
-		const notify = new Notify();
-		let emits = 0;
-		const stream = startRateLimitedStream({
-			outputNotify: notify,
-			emit: () => emits++,
-			minIntervalMs: 20,
-		});
-		notify.notifyAll();
-		await new Promise((r) => setTimeout(r, 60)); // trailing update fires
-		assert.ok(emits >= 2, `expected a trailing rate-limited update; got ${emits}`);
-		stream.stop();
 	});
 });
