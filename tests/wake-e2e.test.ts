@@ -237,7 +237,7 @@ describe("write_stdin yield_until", () => {
 		await h.emit("session_shutdown");
 	});
 
-	it("cancellation leaves the process alive with output retrievable later", async () => {
+	it("cancellation leaves the process alive with output retrievable later", { timeout: 15_000 }, async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		const r1 = await h.call("exec_command", { cmd: "echo pre-cancel-output && sleep 30", yield_time_ms: 600 });
@@ -312,7 +312,7 @@ describe("write_stdin bounded relative waits", () => {
 		assert.match(killed.details.output, /relative-cancel-marker/);
 	});
 
-	it("returns running at the relative deadline without disarming wake", async () => {
+	it("returns running at the relative deadline without disarming wake", { timeout: 15_000 }, async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		const r1 = await h.call("exec_command", { cmd: "sleep 30", yield_time_ms: 250, on_exit: "wake" });
@@ -637,8 +637,7 @@ describe("exec_command on_exit", () => {
 		};
 		const r1 = await h.call("exec_command", { cmd: "sleep 0.3", yield_time_ms: 250, on_exit: "wake" });
 		assert.ok(typeof r1.details.session_id === "number");
-		// Wait until the exit's first send attempt has actually failed, not a
-		// fixed delay: on Windows node-pty reports exits ~1 s late.
+		// Wait until the exit's first send attempt has actually failed, not a fixed delay.
 		assert.ok(await waitFor(() => failures === 0), "first send attempt never happened");
 		assert.equal(h.sentMessages.length, 0);
 		await h.emit("agent_settled", { type: "agent_settled" });

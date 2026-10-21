@@ -117,10 +117,11 @@ The initiative establishes a durable output contract across these layers:
   rather than inferring liveness from the presence of `session_id`.
 - Preserve failed-kill ownership: an unconfirmed kill remains registered and is
   reported as running.
-- Reject non-omp hosts in the extension factory before activation. Exec/write/kill
-  delegate render and describe hooks to omp's bash renderer; monitor, set_on_exit
-  and list_sessions use omp's bounded default card. Tool-core definitions carry
-  no host renderer hooks.
+- Reject non-omp hosts, and omp hosts without `Bun.spawn` and `Bun.Terminal`,
+  in the extension factory before loading omp modules or activating.
+  Exec/write/kill delegate render and describe hooks to omp's bash renderer;
+  monitor, set_on_exit and list_sessions use omp's bounded default card.
+  Tool-core definitions carry no host renderer hooks.
 - On omp, mount the terminal HUD only while omp renders natively and the store
   holds a session, so the ANSI TUI gains no row. In Tern the pill takes a
   line of its own above omp's pill line. The stylesheet moves and resets the
@@ -191,7 +192,7 @@ The initiative establishes a durable output contract across these layers:
 | Shared output envelope, truncation, incremental/final terminal metadata and process/kill text | `src/tool-result.ts`; `CollectResult` (`screen`, `final-screen`, `none`) in `src/collect.ts`, produced by `ExecSession.collect` (final screens from the frozen projection) |
 | Structured tool schemas and projections | `src/script-result.ts`, `tests/script-result.test.ts` |
 | Kill collection, partial sanitization, and tool registration | `src/index.ts` (`TerminateOutcome`, `buildStreamUpdate`, `kill_session`) |
-| omp host selection, bash-renderer delegation, result/args display adapters | `fork-features/omp-presentation.ts`, `fork-features/omp-tools.d.ts`; wired by `withHostPresentation` in `src/index.ts`; tests `tests/omp-presentation.test.ts` |
+| omp/Bun host admission, bash-renderer delegation, result/args display adapters | `src/pty.ts` (`requireBunRuntime`), `fork-features/omp-presentation.ts`, `fork-features/omp-tools.d.ts`; wired by `withHostPresentation` in `src/index.ts`; tests `tests/pty-load.test.ts`, `tests/omp-presentation.test.ts` |
 | Tern terminal HUD: native counter pill, Terminals picker sheet, terminal page, session/native mount gate | `fork-features/tern-terminal-hud.ts`, mounted by `withHostPresentation` with the store and kill `activate` returns; tests `tests/tern-terminal-hud.test.ts` |
 | Tern plugin placing the pill above omp's pill line and setting the sheet preview's output rows in the mono face | `fork-features/tern-plugin/` (`plugin.toml`, `terminals.css`, empty `window.luau`), shipped in the package; `initializeTernPlugin` in `fork-features/tern-plugin-install.ts` awaited by `withHostPresentation` during omp factory initialization; state tests `tests/tern-plugin-install.test.ts`, real omp install-boundary regression `tests/tern-install-cli.test.ts` |
 | Pure output and terminal-safety tests | `tests/{tool-result,output-safety}.test.ts` |
@@ -347,14 +348,15 @@ editor. Its computed Spine background changed, but with no paint area.
 Evidence: `final-baseline-summary.json`, `final-plugin-*.json/png`,
 `final-pluginfree-*.json/png` and `plugin-lifecycle-comparison.json`.
 
-Automated qualification after the install-boundary change: `npm test`
-passed strict types and 492 tests, with zero failures and five individual
-skips (two Windows-only, two opt-in PTY cases and the opt-in omp install
-gate); the unavailable Node PTY backend also excluded its real-session
-suites. The mandatory real omp install gate passed 1/1 with no skips.
-`EXPECT_PTY=1 bun test ./tests/tern-terminal-hud.test.ts
-./tests/omp-presentation.test.ts` passed all 54 with no skips, including
-list Kill/x, terminal-page echo and Kill, native resume and last-tty removal.
+Current automated qualification runs strict types and the full suite through
+`npm test` (Bun's native runner). Real PTY suites are mandatory, including:
+
+```bash
+bun test ./tests/tern-terminal-hud.test.ts ./tests/omp-presentation.test.ts
+```
+
+These cover list Kill/x, terminal-page echo and Kill, native resume and
+last-tty removal. The real omp installation gate remains explicit below.
 
 omp 18.8.7 presentation qualification, 2026-10-10, macOS arm64
 ([#11](https://github.com/mouriya-s-lab/omp-unified-exec/issues/11)). The
@@ -384,7 +386,7 @@ Real omp installation gate (POSIX host, `git` and an installed omp required):
 
 ```bash
 EXPECT_TERN_INSTALL_CLI=1 OMP_TEST_BINARY=/ABSOLUTE/PATH/TO/omp \
-  npx tsx --test tests/tern-install-cli.test.ts
+  bun test ./tests/tern-install-cli.test.ts
 ```
 
 Without `OMP_TEST_BINARY`, the test resolves `omp` on PATH. The isolated

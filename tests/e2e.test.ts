@@ -333,8 +333,7 @@ describe("unified-exec e2e", () => {
 		assert.ok(r2.details.output.includes("hello from stdin"), `got ${JSON.stringify(r2.details)}`);
 		assert.ok(typeof r2.details.session_id === "number");
 
-		// Send EOF so cat exits. The call returns as soon as the exit is
-		// observed; on Windows node-pty reports it ~1 s after the process ends.
+		// Send EOF so cat exits. The call returns as soon as the exit is observed.
 		const r3 = await h.call("write_stdin", {
 			session_id: sid,
 			chars: "\x04",
@@ -819,8 +818,7 @@ describe("unified-exec e2e", () => {
 		const r1 = await h.call("exec_command", { cmd: "sleep 0.3", yield_time_ms: 250 });
 		const sid = r1.details.session_id;
 		assert.ok(typeof sid === "number", JSON.stringify(r1.details));
-		// Wait for the observed exit (the running-sessions status clears), not a
-		// fixed delay: on Windows node-pty reports exits ~1 s late.
+		// Wait for the observed exit (the running-sessions status clears), not a fixed delay.
 		assert.ok(await waitFor(() => h.uiEvents.statuses.get("unified-exec.sessions") === undefined), "exit was not observed");
 
 		const l1 = await h.call("list_sessions", {});

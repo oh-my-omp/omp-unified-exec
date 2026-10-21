@@ -23,7 +23,7 @@ omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
 
 Tern 更新会在这条命令成功返回前完成，无需单独执行 Tern 命令，也不使用开发链接。
 
-本插件只支持 omp。Pi 等非 omp 宿主会在扩展 factory 阶段立即收到明确的“only supports omp”错误，不会注册任何工具。每个会话都在 PTY 中运行：Bun 1.4+ 下使用 Bun 原生的 `Bun.Terminal`（omp 是编译后的 Bun 可执行文件），Node 运行时测试使用可选依赖 `@homebridge/node-pty-prebuilt-multiarch`。没有 PTY 后端时，`exec_command` 在调用时报错并给出加载原因，会话开始时显示一条警告；宿主的 `bash` 照常可用。
+本插件只支持运行于 Bun 1.4+ 的 omp（omp 是编译后的 Bun 可执行文件）。Pi 等非 omp 宿主会在扩展 factory 阶段立即收到明确的“only supports omp”错误。每个会话都使用 Bun 原生的 `Bun.Terminal`；宿主缺少 `Bun.spawn` 或 `Bun.Terminal` 时，也在同一 factory 阶段被拒绝，早于 omp 模块加载和任何工具注册。
 
 ## 功能
 
@@ -244,8 +244,6 @@ write_stdin chars_b64="G3s6wgo="  → exact 5 decoded bytes
 显式取消、替换、reset 与关闭都静默结束，即使模型 kill 失败也是如此。
 已排队交给宿主的后续消息无法撤回。未知/已结束会话、非法正则及非法上限
 返回类型化错误。
-Windows 上 node-pty 在进程结束后再等 1000 ms 尾部输出，输出关闭与退出约晚 1 s
-才报告；因此退出前刚打印的匹配会先作为匹配消息发出，不并入 End。
 
 ### `kill_session`
 
@@ -289,7 +287,7 @@ DEFAULT_MAX_LINES            = 2000
 - **提前退出：**150 毫秒内结束的命令不会进入会话存储；结果带 `exit_code`，没有 `session_id`。
 - **在两次调用之间退出**的会话会留在存储里，直到下一次 `write_stdin` 或 `list_sessions` 报告它。
 - **启动失败**（shell 或 `workdir` 不存在）在 PTY 启动前检查，以 `failure_message` 报告（`spawn <file> ENOENT: …`）。
-- **没有 PTY 后端：**`exec_command` 在调用时报错并给出加载原因。
+- **必须有 Bun PTY：**宿主缺少 `Bun.spawn` 或 `Bun.Terminal` 时，在扩展 factory 阶段、工具注册之前被拒绝。
 - **没有截止时间，也不重启：**本包从不因运行太久而结束命令，也从不重启已退出的进程。
 - **shell 退出与终端关闭：**会话一直运行到其终端关闭。在 shell 退出后仍存活并持有 PTY 的后代进程（例如 `nohup` 或忽略 SIGHUP 的任务）会让终端保持打开；这类结果会带一条 `note`，说明如何把它分离出去（`setsid cmd >log 2>&1 </dev/null &`），运行中会话小部件会把该会话标为 `terminal held`。
 - **终端已关闭**不会让宿主崩溃；写入时报告 `failure_message`。
@@ -351,12 +349,11 @@ completion_notification: armed
 
 ## Windows
 
-每个会话都在 ConPTY 中运行，经由 `Bun.Terminal`（Bun）或 node-pty（Node）。
+每个会话都通过 Bun 原生的 `Bun.Terminal` 在 ConPTY 中运行。
 
 - **默认 shell：**`bash`，依次查找 `PI_UNIFIED_EXEC_BASH`、PATH 上的 `bash`（排除 System32 里的 WSL 存根）、由 `git.exe` 推导或常见安装位置下的 Git for Windows，最后退回 `powershell` 并提示一次。启动前会把 shell 名解析成绝对路径。
 - **PowerShell**（`powershell`，或任何平台上的 `pwsh`）以 `-NoProfile -NoLogo -Command <cmd>` 运行，所以它的交互式提示可以用 `write_stdin` 回答。
 - **没有 POSIX 信号：**每次 kill 都是结束整个进程树（`taskkill /T /F`）；被结束的进程报告 `exit_code: 1`，kill 失败会如实报告。
-- **Node PTY 预编译包**在安装时下载，不受 npm 摘要校验覆盖；Bun 内置的后端不需要这一下载。
 
 ## 目录结构
 
@@ -371,7 +368,7 @@ src/
 ├── format-time.ts        # elapsed / remaining labels
 ├── completion.ts         # on_exit "wake" coordination (exactly-once)
 ├── notify.ts             # Notify / Gate / sleep primitives
-├── pty.ts                # Bun.Terminal + node-pty backends, spawn preflight, Windows tree-kill
+├── pty.ts                # Bun.Terminal backend, host admission, spawn preflight, Windows tree-kill
 ├── shell.ts              # shell selection and argv (Windows-aware)
 ├── output-safety.ts      # terminal-control stripping
 ├── terminal-screen.ts    # headless terminal: observations, styled screens, query answers
@@ -400,11 +397,11 @@ docs/
 
 ```bash
 npm install
-npm test                                   # strict typecheck + unit/integration suites
-EXPECT_PTY=1 bun test ./tests/tern-terminal-hud.test.ts ./tests/omp-presentation.test.ts
+npm test                                   # strict typecheck + Bun unit/integration suites
+bun test ./tests/tern-terminal-hud.test.ts ./tests/omp-presentation.test.ts
 ```
 
-在 Node 下加载不到预编译包时，Node PTY 测试会跳过；Bun 那条命令会用真实的 PTY 会话跑 HUD 生命周期测试。Tern 上的行为在真实的 Tern 窗口里验证，做法见 [fork-features/README.zh-CN.md](fork-features/README.zh-CN.md)。
+完整套件使用 Bun 原生的 `bun test` 运行器，包括真实 PTY 会话和 HUD 生命周期测试；PTY 是必备条件，不是跳过条件。Node 仍是测试前提，因为独立的 `tests/bun-pty-runtime.mjs` fixture 把 `node` 作为普通子程序启动，而不是插件宿主。CI 在 Linux、macOS、Windows 上运行完整套件和源码/编译版 fixture。Tern 上的行为在真实的 Tern 窗口里验证，做法见 [fork-features/README.zh-CN.md](fork-features/README.zh-CN.md)。
 
 ## 开发与上游
 

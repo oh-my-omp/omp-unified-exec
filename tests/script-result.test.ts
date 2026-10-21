@@ -184,7 +184,7 @@ describe("registered tools return structuredContent", { skip: IS_WINDOWS }, () =
 		assert.equal(result.structuredContent.exit_code, 3);
 	});
 
-	it("write_stdin, list_sessions, set_on_exit and kill_session cover live and unknown sessions", async () => {
+	it("write_stdin, list_sessions, set_on_exit and kill_session cover live and unknown sessions", { timeout: 15_000 }, async () => {
 		const { call } = makeHarness();
 		const started = await call("exec_command", { cmd: "echo ready; sleep 30", yield_time_ms: 300 });
 		const sid = started.structuredContent.session_id;

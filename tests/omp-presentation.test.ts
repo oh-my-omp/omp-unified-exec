@@ -2,6 +2,11 @@ import type { FinalScreenOutput } from "../src/collect.ts";
 
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, it } from "node:test";
 import { DEFAULT_MAX_LINES, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -366,6 +371,34 @@ describe("host presentation activation", () => {
 		});
 		assert.equal(activations, 0);
 		assert.deepEqual(registered, []);
+	});
+
+	it("rejects an omp-shaped Node host before loading modules or registering tools", (t) => {
+		const temporary = mkdtempSync(join(tmpdir(), "omp-bun-admission-"));
+		t.after(() => rmSync(temporary, { recursive: true, force: true }));
+		const root = fileURLToPath(new URL("../", import.meta.url));
+		const compiled = join(temporary, "plugin.mjs");
+		// Node's strip-only TS loader cannot parse the HUD's parameter properties.
+		// Compile the real entry without bundling dependencies, then exercise it in Node.
+		const build = spawnSync(process.execPath, [
+			"build", fileURLToPath(new URL("../src/index.ts", import.meta.url)),
+			"--target=node", "--packages=external", "--outfile", compiled,
+		], { cwd: root, encoding: "utf8" });
+		assert.equal(build.status, 0, `${build.stdout}\n${build.stderr}`);
+		symlinkSync(join(root, "node_modules"), join(dirname(compiled), "node_modules"), "junction");
+		const result = spawnSync("node", ["--input-type=module", "--eval", `
+			import assert from "node:assert/strict";
+			import factory from ${JSON.stringify(pathToFileURL(compiled).href)};
+			let registrations = 0;
+			assert.throws(
+				() => factory({ arktype: {}, registerTool() { registrations++; } }),
+				/requires a Bun host with Bun\\.Terminal; the current runtime is not Bun/,
+			);
+			assert.equal(registrations, 0);
+			console.log("NODE_HOST_REJECTED");
+		`], { encoding: "utf8" });
+		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+		assert.match(result.stdout, /NODE_HOST_REJECTED/);
 	});
 
 	it("rejects omp activation when its required renderer module is absent, without fallback", async () => {

@@ -38,13 +38,11 @@ omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
 The Tern update finishes before this command succeeds; no separate Tern
 command or developer link is needed.
 
-This plugin supports only omp. Pi and other non-omp hosts fail immediately at
-the extension factory with an explicit “only supports omp” error, before any
-tools register. Every session runs in a PTY: Bun's native `Bun.Terminal` under
-Bun 1.4+ (omp is a compiled Bun executable), and the optional
-`@homebridge/node-pty-prebuilt-multiarch` in Node runtime tests. Without a PTY
-backend, `exec_command` fails at call time with the load reason and session
-start shows a warning; the host's `bash` keeps working.
+This plugin supports only omp running on Bun 1.4+ (omp is a compiled Bun
+executable). Pi and other non-omp hosts fail immediately at the extension
+factory with an explicit “only supports omp” error. Every session uses Bun's
+native `Bun.Terminal`; a host without `Bun.spawn` and `Bun.Terminal` fails at
+that same factory before omp modules load or any tools register.
 
 ## What it does
 
@@ -379,9 +377,6 @@ already-armed ordinary completion wake. Model `kill_session`, explicit cancel,
 replacement, reset and shutdown end monitoring silently, including a failed
 model kill. Already-enqueued follow-ups cannot be recalled. Unknown/ended
 sessions, invalid regexes and invalid limits return typed errors.
-On Windows, node-pty reports output closure (and the exit) about 1 s after the
-process ends, because it waits 1000 ms for trailing output; matches printed
-just before exit therefore arrive as a match message ahead of End.
 
 ### `kill_session`
 
@@ -445,7 +440,7 @@ DEFAULT_MAX_LINES            = 2000
   `list_sessions` reports them.
 - **Spawn failures** (missing shell or `workdir`) are checked before the PTY
   starts and surface as `failure_message` (`spawn <file> ENOENT: …`).
-- **No PTY backend:** `exec_command` throws at call time with the load reason.
+- **Bun PTY required:** a host without `Bun.spawn` and `Bun.Terminal` is rejected at the extension factory, before tools register.
 - **No deadline, no restart:** the package never ends a command for running
   long and never restarts a process that exits.
 - **Shell exit vs terminal close:** a session runs until its terminal closes.
@@ -524,7 +519,7 @@ completion_notification: armed
 
 ## Windows
 
-Every session runs in ConPTY, through `Bun.Terminal` (Bun) or node-pty (Node).
+Every session runs in ConPTY through Bun's native `Bun.Terminal`.
 
 - **Default shell:** `bash`, found via `PI_UNIFIED_EXEC_BASH`, then `bash` on
   PATH (excluding System32's WSL stub), then Git for Windows derived from
@@ -535,8 +530,6 @@ Every session runs in ConPTY, through `Bun.Terminal` (Bun) or node-pty (Node).
   answered with `write_stdin`.
 - **No POSIX signals:** every kill is a tree kill (`taskkill /T /F`); killed
   processes report `exit_code: 1`, and failed kills are reported, not hidden.
-- **Node PTY prebuilds** are downloaded at install time and not covered by an
-  npm digest; Bun's built-in backend has no such download.
 
 ## Layout
 
@@ -551,7 +544,7 @@ src/
 ├── format-time.ts        # elapsed / remaining labels
 ├── completion.ts         # on_exit "wake" coordination (exactly-once)
 ├── notify.ts             # Notify / Gate / sleep primitives
-├── pty.ts                # Bun.Terminal + node-pty backends, spawn preflight, Windows tree-kill
+├── pty.ts                # Bun.Terminal backend, host admission, spawn preflight, Windows tree-kill
 ├── shell.ts              # shell selection and argv (Windows-aware)
 ├── output-safety.ts      # terminal-control stripping
 ├── terminal-screen.ts    # headless terminal: observations, styled screens, query answers
@@ -580,14 +573,17 @@ docs/
 
 ```bash
 npm install
-npm test                                   # strict typecheck + unit/integration suites
-EXPECT_PTY=1 bun test ./tests/tern-terminal-hud.test.ts ./tests/omp-presentation.test.ts
+npm test                                   # strict typecheck + Bun unit/integration suites
+bun test ./tests/tern-terminal-hud.test.ts ./tests/omp-presentation.test.ts
 ```
 
-Under Node the Node PTY suites skip when no prebuild loads; the Bun command runs
-the HUD lifecycle tests against real PTY sessions. Tern behaviour is qualified
-in a real Tern window, as described in
-[fork-features/README.md](fork-features/README.md).
+The full suite runs with Bun's native `bun test` runner, including real PTY
+session and HUD lifecycle tests; PTY availability is mandatory, not a skip
+condition. Node remains a test prerequisite because the standalone
+`tests/bun-pty-runtime.mjs` fixture starts `node` as an ordinary child program,
+not as the plugin host. CI runs the full suite and the source/compiled fixture
+on Linux, macOS and Windows. Tern behaviour is qualified in a real Tern window,
+as described in [fork-features/README.md](fork-features/README.md).
 
 ## Development and upstream
 

@@ -1,14 +1,13 @@
 /**
- * PTY spawn: Bun's native terminal under Bun, node-pty under Node.
+ * PTY spawn through Bun's native terminal.
  *
- * Presents a single `SpawnedChild` abstraction used by `session.ts` regardless
- * of backend. Mirrors codex's `codex_utils_pty::pty`; every session runs in a
- * PTY, so there is no pipe backend.
+ * Presents a single `SpawnedChild` abstraction used by `session.ts`.
+ * Mirrors codex's `codex_utils_pty::pty`; every session runs in a PTY,
+ * so there is no pipe backend.
  */
 
 import { spawn as cpSpawn } from "node:child_process";
 import { statSync } from "node:fs";
-import { createRequire } from "node:module";
 import { constants as osConstants } from "node:os";
 import { resolve as resolvePath } from "node:path";
 
@@ -62,7 +61,7 @@ export interface SpawnedChild {
 	kill(signal?: NodeJS.Signals): void;
 }
 
-// ---------------- PTY backends ----------------
+// ---------------- Bun runtime admission ----------------
 
 type BunTerminal = {
 	readonly closed: boolean;
@@ -105,97 +104,22 @@ type BunRuntime = {
 	spawn(command: string[], options: BunSpawnOptions): BunSubprocess;
 };
 
-type BunRuntimeStatus =
-	| { kind: "absent" }
-	| { kind: "unsupported"; error: string }
-	| { kind: "available"; runtime: BunRuntime };
-
-function detectBunRuntime(): BunRuntimeStatus {
-	// TypeScript's Node globals omit Bun; the value is validated below before use.
-	const globals = globalThis as unknown as Record<string, unknown>;
-	const candidate = globals.Bun;
-	if (candidate === undefined) return { kind: "absent" };
+/** Require the host's native PTY capability before extension activation. */
+export function requireBunRuntime(
+	candidate: unknown = Reflect.get(globalThis, "Bun"),
+): BunRuntime {
+	const requirement = "omp-unified-exec requires a Bun host with Bun.Terminal";
 	if ((typeof candidate !== "object" || candidate === null) && typeof candidate !== "function") {
-		return { kind: "absent" };
+		throw new Error(`${requirement}; the current runtime is not Bun. Load this plugin in omp.`);
 	}
 	const fields = candidate as Record<string, unknown>;
 	const version = typeof fields.version === "string" ? fields.version : "unknown";
 	if (typeof fields.spawn !== "function" || typeof fields.Terminal !== "function") {
-		return {
-			kind: "unsupported",
-			error: `Bun ${version} does not provide Bun.spawn with Bun.Terminal support`,
-		};
+		throw new Error(
+			`${requirement}; Bun ${version} does not provide Bun.spawn with Bun.Terminal support. Upgrade the omp/Bun host.`,
+		);
 	}
-	return { kind: "available", runtime: candidate as BunRuntime };
-}
-
-type PtyModule = {
-	spawn: (
-		file: string,
-		// Windows only: a string is used as the raw command line, bypassing
-		// node-pty's argsToCommandLine re-escaping.
-		args: string[] | string,
-		opts: {
-			name?: string;
-			cols?: number;
-			rows?: number;
-			cwd?: string;
-			env?: NodeJS.ProcessEnv;
-			encoding?: null | string;
-		},
-	) => PtyProcess;
-};
-
-type PtyProcess = {
-	pid: number;
-	onData: (cb: (data: string | Buffer) => void) => { dispose: () => void };
-	onExit: (cb: (e: { exitCode: number; signal?: number }) => void) => { dispose: () => void };
-	write: (data: string | Buffer) => void;
-	resize: (cols: number, rows: number) => void;
-	kill: (signal?: string) => void;
-};
-
-/**
- * Node-only PTY provider. Bun uses Bun.Terminal instead: omp installs package
- * dependencies with lifecycle scripts blocked, and Node ABI prebuilds cannot
- * provide a reliable native backend to a compiled Bun executable.
- *
- * Loaded strictly by this name — no fallback to the old package: Node's
- * require walks ancestor node_modules, so a fallback name could load an
- * unaudited native module planted in an enclosing project.
- */
-const PTY_PACKAGE = "@homebridge/node-pty-prebuilt-multiarch";
-
-let ptyModule: PtyModule | null | undefined;
-let ptyLoadError: string | undefined;
-
-export function getPtyLoadError(): string | undefined {
-	const bun = detectBunRuntime();
-	if (bun.kind === "available") return undefined;
-	if (bun.kind === "unsupported") return bun.error;
-	loadNodePty();
-	return ptyLoadError;
-}
-
-export function isPtyAvailable(): boolean {
-	const bun = detectBunRuntime();
-	if (bun.kind === "available") return true;
-	if (bun.kind === "unsupported") return false;
-	loadNodePty();
-	return !!ptyModule;
-}
-
-function loadNodePty(): void {
-	if (ptyModule !== undefined) return; // already attempted
-	try {
-		// Use createRequire so CJS-only native modules work under ESM + jiti.
-		const req = createRequire(import.meta.url);
-		ptyModule = req(PTY_PACKAGE) as PtyModule;
-		ptyLoadError = undefined;
-	} catch (err: unknown) {
-		ptyModule = null;
-		ptyLoadError = `${PTY_PACKAGE}: ${err instanceof Error ? err.message : String(err)}`;
-	}
+	return candidate as BunRuntime;
 }
 
 // Numeric signal → name, built from the platform's full signal table so our
@@ -262,24 +186,7 @@ function killPosixProcessGroup(pid: number, signal: NodeJS.Signals): void {
 }
 
 /**
- * Windows: node-pty's conpty connection holds a worker thread and named-pipe
- * sockets that keep the Node event loop alive even after the child exits.
- * Dispose them once the terminal is done, otherwise the host process (pi or
- * the test runner) never exits. Best-effort: internals are undocumented.
- */
-export function disposeWindowsConpty(child: unknown): void {
-	try {
-		const agent = (child as any)?._agent;
-		agent?._inSocket?.destroy?.();
-		agent?._outSocket?.destroy?.();
-		agent?._conoutSocketWorker?.dispose?.();
-	} catch {
-		// best-effort cleanup
-	}
-}
-
-/**
- * PTY backends exec the child after the terminal exists, so a missing shell
+ * Bun execs the child after the terminal exists, so a missing shell
  * binary or workdir surfaces only as a bare non-zero exit with no output.
  * Check both first so the caller gets a diagnosable failure.
  */
@@ -297,26 +204,10 @@ function assertSpawnable(opts: SpawnOptions): void {
 	if (!found) throw new Error(`spawn ${file} ENOENT: shell binary not found (check shell binary and workdir: ${opts.cwd})`);
 }
 
-/**
- * Spawn a child in a PTY. Throws with the load reason when neither Bun.Terminal
- * nor node-pty is available.
- */
+/** Spawn a child in the Bun host's native PTY. */
 export function spawnChild(opts: SpawnOptions): SpawnedChild {
 	assertSpawnable(opts);
-	const bun = detectBunRuntime();
-	if (bun.kind === "available") return spawnBunPty(bun.runtime, opts);
-	if (bun.kind === "unsupported") {
-		throw new Error(`exec_command needs a PTY, but ${bun.error}. Upgrade Bun to a version with Bun.Terminal.`);
-	}
-
-	loadNodePty();
-	if (!ptyModule) {
-		throw new Error(
-			`exec_command needs a PTY: ${PTY_PACKAGE} failed to load under Node: ${ptyLoadError ?? "unknown error"}.\n` +
-				`Install this package's optional dependencies.`,
-		);
-	}
-	return spawnNodePty(ptyModule, opts);
+	return spawnBunPty(requireBunRuntime(), opts);
 }
 
 // ---------------- Bun PTY impl ----------------
@@ -338,7 +229,7 @@ function bunSignalName(signalCode: number | string | null): NodeJS.Signals | nul
 	return null;
 }
 
-function spawnBunPty(runtime: BunRuntime, opts: SpawnOptions): SpawnedChild {
+export function spawnBunPty(runtime: BunRuntime, opts: SpawnOptions): SpawnedChild {
 	let [file, ...args] = opts.command;
 	if (!file) throw new Error("spawnChild: empty command");
 	if (IS_WINDOWS) file = resolveBinary(file);
@@ -471,101 +362,3 @@ function spawnBunPty(runtime: BunRuntime, opts: SpawnOptions): SpawnedChild {
 	};
 }
 
-// ---------------- Node PTY impl ----------------
-
-function spawnNodePty(mod: PtyModule, opts: SpawnOptions): SpawnedChild {
-	let [file, ...args] = opts.command;
-	if (!file) throw new Error("spawnChild: empty command");
-	// conpty needs a resolvable executable: bare "bash" fails with
-	// "File not found" while "bash.exe" or an absolute path works. Resolve
-	// PATH ourselves (cached) for names without a directory component.
-	if (IS_WINDOWS) {
-		file = resolveBinary(file);
-	}
-	// node-pty has no windowsVerbatimArguments; its argsToCommandLine()
-	// re-escapes embedded quotes, mangling cmd.exe's pre-quoted /s /c payload
-	// (`/c "echo hi"` becomes `/c \"echo hi\"` — guaranteed syntax error).
-	// Passing args as a single string makes node-pty use it verbatim.
-	const ptyArgs: string[] | string = IS_WINDOWS && opts.windowsVerbatimArguments ? args.join(" ") : args;
-	const child = mod.spawn(file, ptyArgs, {
-		cwd: opts.cwd,
-		env: opts.env,
-		cols: opts.cols ?? DEFAULT_PTY_COLS,
-		rows: opts.rows ?? DEFAULT_PTY_ROWS,
-		name: "xterm-256color",
-	});
-
-	const dataHandlers = new Set<(chunk: Uint8Array) => void>();
-	const exitHandlers = new Set<ExitCallback>();
-	let exited = false;
-	let processExited = false;
-
-	const dataSub = child.onData((data) => {
-		const chunk = typeof data === "string" ? new TextEncoder().encode(data) : new Uint8Array(data);
-		for (const h of dataHandlers) {
-			try {
-				h(chunk);
-			} catch {
-				// ignore handler errors
-			}
-		}
-	});
-	const exitSub = child.onExit(({ exitCode, signal }) => {
-		if (exited) return;
-		exited = true;
-		processExited = true;
-		dataSub?.dispose?.();
-		exitSub?.dispose?.();
-		const sigName = signal != null ? signalNameFromNumber(signal) : null;
-		for (const h of exitHandlers) {
-			try {
-				h(sigName ? null : (exitCode ?? 0), sigName);
-			} catch {
-				// ignore
-			}
-		}
-		exitHandlers.clear();
-		dataHandlers.clear();
-		if (IS_WINDOWS) setImmediate(() => disposeWindowsConpty(child));
-	});
-
-	return {
-		pid: child.pid,
-		get processExited() {
-			return processExited;
-		},
-		write(data) {
-			if (exited) return false;
-			try {
-				child.write(Buffer.from(data));
-				return true;
-			} catch {
-				return false;
-			}
-		},
-		onData(handler) {
-			dataHandlers.add(handler);
-			return () => dataHandlers.delete(handler);
-		},
-		onExit(handler) {
-			if (exited) return;
-			exitHandlers.add(handler);
-		},
-		kill(signal = "SIGTERM") {
-			if (exited) return;
-			if (IS_WINDOWS) {
-				// Avoid WindowsTerminal.kill(): it throws when passed a signal
-				// name and its console-process-list helper crashes if the child
-				// is already gone. taskkill the tree instead; node-pty's exit
-				// event then fires and disposeWindowsConpty releases resources.
-				killWindowsTree(child.pid);
-				return;
-			}
-			try {
-				child.kill(signal);
-			} catch {
-				// already gone
-			}
-		},
-	};
-}
