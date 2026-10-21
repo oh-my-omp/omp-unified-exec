@@ -59,7 +59,7 @@ restore the pipe path, the `tty` parameter, the flag or pipe-only PowerShell
 flags.
 
 The plugin host and PTY backend are Bun-only; keep the deletion when upstream
-changes its node-pty/Node backend rather than restoring that path.
+changes its Node PTY backend rather than restoring that path.
 
 Upstream's v0.13 steer gate (`src/steer-gate.ts`, `wait_status:
 "interrupted_by_steer"`, `PI_UNIFIED_EXEC_STEER_INTERRUPT`; upstream

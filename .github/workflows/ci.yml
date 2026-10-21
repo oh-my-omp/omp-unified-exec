@@ -29,10 +29,6 @@ jobs:
       - name: Typecheck
         run: bun run check
 
-      - name: Test
-        run: bun test
-        timeout-minutes: 10
-
       - name: Test Bun PTY from source
         run: bun tests/bun-pty-runtime.mjs
 
@@ -50,3 +46,7 @@ jobs:
           New-Item -ItemType Directory -Force .build | Out-Null
           bun build --compile tests/bun-pty-runtime.mjs --outfile .build/bun-pty-runtime.exe
           & ./.build/bun-pty-runtime.exe
+
+      - name: Test
+        run: bun test
+        timeout-minutes: 10

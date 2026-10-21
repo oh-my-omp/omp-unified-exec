@@ -579,9 +579,17 @@ describe("unified-exec e2e", () => {
 		await new Promise((r) => setTimeout(r, 40)); // inside the grace window
 		await h.emit("session_shutdown");
 		const r = await inflight;
-		// Shutdown owns the pending session: the call reports its end, never a session_id.
+		// Shutdown owns the pending session: the call never returns a session_id. It
+		// reports the exit, or — where exit reporting outlasts shutdown's wait (Bun
+		// Terminal on Windows after taskkill) — an explicit unconfirmed exit.
 		assert.equal(r.details.session_id, undefined, JSON.stringify(r.details));
-		assert.ok(r.details.exit_code != null || r.details.signal, JSON.stringify(r.details));
+		const reportedExit = r.details.exit_code != null || Boolean(r.details.signal);
+		const unconfirmed = r.details.running === true && /exit not confirmed/.test(r.details.failure_message ?? "");
+		assert.ok(reportedExit || unconfirmed, JSON.stringify(r.details));
+		await h.emit("session_start");
+		const l = await h.call("list_sessions", {});
+		assert.deepEqual(l.details.sessions, [], JSON.stringify(l.details));
+		await h.emit("session_shutdown");
 	});
 
 	it("a session in the grace window at shutdown never reaches the next session period", { skip: IS_WINDOWS }, async () => {
