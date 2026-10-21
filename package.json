@@ -28,7 +28,6 @@
 	"files": [
 		"src",
 		"fork-features/*.ts",
-		"fork-features/tern-plugin",
 		"README.md",
 		"LICENSE"
 	],

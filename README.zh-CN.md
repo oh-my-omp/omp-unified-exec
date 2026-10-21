@@ -15,13 +15,13 @@ omp install https://github.com/oh-my-omp/omp-unified-exec
 
 请先卸载已有的 `pi-unified-exec`（`omp plugin uninstall pi-unified-exec`）：两者注册的是同一组工具。本 fork 不向 npm 发布任何内容。
 
-当 PATH 中存在 `tern` 时，omp 也会把附带的 Tern 插件正常安装为副本。更新时执行同一安装命令并加上 `--force`：
+更新时执行同一安装命令并加上 `--force`：
 
 ```bash
 omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
 ```
 
-Tern 更新会在这条命令成功返回前完成，无需单独执行 Tern 命令，也不使用开发链接。
+本扩展不需要 Tern 插件。0.14.7 及以前的版本会安装一个 Tern 插件（`omp-unified-exec`）；PATH 中存在 `tern` 时，加载本扩展（包括安装校验）会通过 Tern 自己的 CLI 移除那份副本或链接。
 
 本插件只支持运行于 Bun 1.4+ 的 omp（omp 是编译后的 Bun 可执行文件）。Pi 等非 omp 宿主会在扩展 factory 阶段立即收到明确的“only supports omp”错误。每个会话都使用 Bun 原生的 `Bun.Terminal`；宿主缺少 `Bun.spawn` 或 `Bun.Terminal` 时，也在同一 factory 阶段被拒绝，早于 omp 模块加载和任何工具注册。
 
@@ -43,18 +43,14 @@ Tern 更新会在这条命令成功返回前完成，无需单独执行 Tern 命
 当 omp 在 Tern 里原生渲染、并且存在会话时：
 
 - **终端分段。** 一个终端图标加存储中的会话数，作为 omp 自己运行中计数药丸的分段，排在 agents 和 jobs 分段之后，同在一个胶囊里；悬停标签还给出仍在运行的数量。药丸、分隔线以及各 chat style 和配色主题都由 Tern 绘制。最后一个会话被移除后分段消失；若 agents 和 jobs 也都没有，药丸整个消失。
-- **Terminals 面板。** 点击终端分段打开一个仿照 omp Agents 面板的面板：每个会话一行，带状态点、尺寸、PID 和运行时长；选中会话的命令、状态、目录、PID、尺寸、启动时间、可点击的日志路径和最新几行输出作为预览。↑/↓ 或点击选择会话，`x` / Kill 按 `kill_session` 的方式结束它，Esc / Close 关闭面板。
-- **终端页。** Enter / Open 把会话打开成一个仿照 omp Console 的全屏页：显示保留的历史和当前屏幕，带颜色、按会话自身宽度显示，跟随新输出，并可向上回滚。键入的按键会发给会话（与 `write_stdin` 的写法相同，模型能看到效果）；Esc / Back 返回面板；Kill 结束会话。
+- **Terminals 视图。** 点击终端分段打开一个仿照 omp Background jobs 视图的视图，在每个主题和 chat style 下都由 Tern 为该视图准备的自带样式绘制：居中卡片，左侧列出会话（终端图标、命令、已运行时间，按状态着色），右侧是选中会话的详情：状态行（Running / Exit N、已运行时间、`exec · #id`、运行中才有的 Kill、Open）、完整命令、目录、PID、尺寸、启动时间、可点击的日志路径，以及跟随最新行的彩色输出。页脚显示运行中和存储中的数量以及 Close。↑/↓ 或点击选择会话，`x` / Kill 按 `kill_session` 的方式结束它，Esc / Close 关闭视图。卡片标题的图标是 Tern 为 jobs 视图绘制的图标。
+- **终端页。** Enter / Open（或双击）把会话打开成一个按 omp Console 框架显示的全屏页：显示保留的历史和当前屏幕，带颜色、按会话自身宽度显示，跟随新输出，并可向上回滚。键入的按键会发给会话（与 `write_stdin` 的写法相同，模型能看到效果）；Esc / Back 返回视图；Kill 结束会话。
 
 HUD 直接读取会话，不保存任何副本。它只在 omp 原生渲染时存在，因此 omp 的 ANSI TUI 不会多出一行。工具结果仍是纯文本；显式 `read term://…/screen.png` 请求返回图像。
 
 **分段如何并入 omp 的药丸。** omp 没有给扩展加药丸分段的 API，所以 HUD 在每个进程里包装一次 omp 的 `InteractiveMode.prototype.describeHudPills`，把自己的分段组件追加为药丸的最后一个子节点；omp 没有药丸时由包装创建。omp 自己的行对象从不被修改。扩展重新加载时只替换装饰函数，不再包装第二次。如果 omp 不再有这个方法，或返回其他形状的行，加载或描述时报 "requalify" 错误，而不是静默不显示分段。
 
-**Tern 插件。** 本包附带一个只含 CSS 的 Tern 插件（`fork-features/tern-plugin/`），只负责让面板的输出预览使用等宽字体；终端分段不需要插件。
-
-omp 等待扩展 factory 完成，因此插件在包安装校验（包括 `install --force`）和普通扩展加载期间同步。它向 Tern 查询插件目录及 catalog；只有三个文件完全一致的正常副本，且版本、样式表和 ready 状态都匹配时，才不改动。缺失或旧文件通过 `tern plugin install <包内目录> --force` 更新。已确认的旧 `.path` 注册由 Tern 自己的 unlink 和正常副本安装自动迁移，不创建开发链接。
-
-CLI 继承 omp 的环境，由 Tern 决定目标目录并负责重新加载。daemon 未运行时，Tern 安装副本供下次启动使用。没有 `tern` 可执行文件不影响非 Tern 使用；如果 Tern 存在但同步失败，包校验或普通扩展加载会失败并报告命令诊断，不延迟到 session-start 重试，也不显示成功 toast。如果 omp 随后保存包配置失败，已经完成的外部 Tern 更新不会一起回滚。没有插件时，预览的输出行使用界面字体。
+**不需要 Tern 插件。** 视图和终端页使用 omp 自己的 overlay role（`omp.overlay.jobs`、`omp.overlay.console`），所以视图、终端页和终端分段都由 Tern 的自带样式绘制。这些 role 是 omp 与 Tern 的展示层契约，升级时需重新验证。本扩展会移除早期版本安装的 `omp-unified-exec` Tern 插件，因为它的样式表仍会移动 omp 共享的 widget 容器：在 omp 等待的扩展 factory 中，先执行 Tern 的 `plugin list`，再执行 `plugin remove`（Tern 回答它是链接时改用 `plugin unlink`），然后确认 Tern 不再列出它。没有 `tern` 时什么也不做；Tern 可用但失败时，加载失败并给出它的诊断信息。
 
 设计、决策和 Tern 实测记录：
 [docs/IV-0002-output-lifecycle-and-rendering.md](docs/IV-0002-output-lifecycle-and-rendering.md)。
@@ -414,13 +410,12 @@ fork-features/
 ├── command-approval.ts   # built-in bash approval port and factory-loaded host helpers
 ├── session-binding.ts    # activation-local AgentSession identity for approval settings
 ├── omp-tools.d.ts        # types of the omp modules loaded at runtime
-├── tern-terminal-hud.ts  # terminals segment in omp's pill, Terminals sheet, terminal page
+├── tern-terminal-hud.ts  # terminals segment in omp's pill, Terminals view, terminal page
 ├── terminal-resource.ts  # process-global terminal keys, live/frozen projections
 ├── terminal-url.ts       # omp `term://` read handler
 ├── terminal-image.ts     # terminal screenshots (SVG → PNG)
 ├── monitor-subscription.ts # monitor conditions, batching and follow-ups
-├── tern-plugin-install.ts# keeps the Tern plugin installed
-├── tern-plugin/          # CSS-only Tern plugin
+├── tern-plugin-removal.ts# removes the Tern plugin earlier versions installed
 └── README.md             # fork customizations and requalification
 docs/
 ├── IV-0001-long-wait-and-wake-control.md

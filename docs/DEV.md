@@ -112,7 +112,7 @@ omp --no-extensions -e "$PWD/src/index.ts" --no-session
 Ask the model to start a long-running command through `exec_command`, drive
 input with `write_stdin`, and terminate it with `kill_session`. Exec/write/kill
 must use omp's bash cards; monitor/set-on-exit/list use its default cards.
-For Tern, exercise the counter, session picker, typed input and Kill in a real
+For Tern, exercise the pill segment, Terminals view, typed input and Kill in a real
 window; the procedure is in
 [fork-features/README.md](../fork-features/README.md).
 
@@ -278,8 +278,8 @@ Users install the Git source with:
 omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
 ```
 
-`files` in `package.json` includes `src`, the fork's TypeScript modules and
-bundled Tern plugin, `README.md`, and `LICENSE`. Keep required runtime files
+`files` in `package.json` includes `src`, the fork's TypeScript modules,
+`README.md`, and `LICENSE`. Keep required runtime files
 inside that package set.
 
 ## Commit conventions

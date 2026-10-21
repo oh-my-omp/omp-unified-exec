@@ -7,28 +7,29 @@
  * count, the words in the hover label. omp has no API for pill segments, so
  * the HUD wraps `InteractiveMode.prototype.describeHudPills` once per process
  * and appends a segment component; Tern draws the capsule, the divider and
- * every chat style. Clicking it opens the Terminals sheet, built like omp's
- * Agents sheet: a `picker` listing the sessions with a status dot, and the
- * selected session's facts and newest output rows as its preview. Open shows
- * its retained history and current screen in a full-pane terminal page, with
- * typed keys sent through ExecSession.write. Kill in the sheet or page uses
- * the same termination path as kill_session.
+ * every chat style. Clicking it opens the Terminals view, built like omp's
+ * Background jobs view: a centered card with the sessions as a master list
+ * (icon, command, elapsed) and the selected session's status row, command,
+ * facts and colored output as its detail. Open shows its retained history
+ * and current screen in a full-pane terminal page, with typed keys sent
+ * through ExecSession.write. Kill in the view or page uses the same
+ * termination path as kill_session.
  *
  * Authority: each session's TerminalScreen (src/terminal-screen.ts) and the
  * SessionStore. The HUD keeps no copy of either: every description re-reads
  * them, and subscriptions only ask omp to describe again.
  *
- * The sheet is an extension custom overlay whose component answers
- * `nativeSheet`, so omp mounts its `picker` description as the modal sheet
- * itself, as it does for the Agents sheet (omp `packages/tui/src/native/backend.ts`);
- * the fork's Tern plugin (`fork-features/tern-plugin/`, CSS only) sets the
- * sheet preview's output rows in the mono face.
+ * The view and the page are extension custom overlays whose components
+ * declare a `nativeOverlay` with omp's own roles (`omp.overlay.jobs`,
+ * `omp.overlay.console`), so Tern's built-in styles draw them in every theme
+ * and chat style without a plugin; the components keep all behavior.
  */
 import { homedir } from "node:os";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { matchesKey, type Component } from "@earendil-works/pi-tui";
 
+import { formatElapsed } from "../src/format-time.ts";
 import { sanitizeOutputText } from "../src/output-safety.ts";
 import type { ExecSession } from "../src/session.ts";
 import type { SessionStore } from "../src/session-store.ts";
@@ -103,17 +104,18 @@ export interface NativeNode {
 
 /** The action a segment click sends (not a Tern built-in action name, which Tern handles itself). */
 export const OPEN_ACTION = "unified-exec.terminals.open";
-/** Picker action: open the selected session's full-pane terminal page. */
+/** View action: open the selected session's full-pane terminal page. */
 export const OPEN_TERMINAL_ACTION = "open";
-/** Picker / page action: kill the session, as `kill_session` does. */
+/** View / page action: kill the session, as `kill_session` does. */
 export const KILL_ACTION = "kill";
-/** The picker action that closes the sheet: omp's `CLOSE_ACTION` id, which Tern's backdrop and head `esc` send too. */
+/** The view action that closes it: omp's `CLOSE_ACTION` id, which Tern's backdrop and head `esc` send too. */
 export const CLOSE_ACTION = "close";
 /** The terminal page's way back to the list (Tern's backdrop and head `esc` send `close` too). */
 export const BACK_ACTION = "back";
-/** Role of the sheet preview's Recent output block, which the fork's Tern plugin sets in the mono face. */
-export const TAIL_ROLE = "unified-exec.terminals.tail";
+/** The Terminals view's frame: omp's Background jobs overlay role, so Tern lays it out as that view. */
+export const VIEW_FRAME = { role: "omp.overlay.jobs", size: "lg", anchor: "center", head: "Terminals" } as const;
 const COMMAND_MAX = 120;
+const SGR = /\x1b\[[0-9;:]*m/g;
 
 // ---------------- view model ----------------
 
@@ -124,11 +126,16 @@ export type TerminalState =
 			readonly exitCode: number | null;
 			readonly signal: string | null;
 			readonly failure: string | null;
+			/** Epoch ms the session exited. */
+			readonly exitedAt: number;
 	  };
 
 export interface TerminalEntry {
 	readonly id: number;
+	/** The command on one line, cut at COMMAND_MAX, for list labels and the page head. */
 	readonly command: string;
+	/** The whole command, sanitized, for the view's command block. */
+	readonly script: string;
 	readonly state: TerminalState;
 	readonly screen: StyledScreen;
 	readonly cwd: string;
@@ -144,12 +151,14 @@ function oneLine(command: string): string {
 }
 
 function terminalEntry(session: ExecSession, screen: StyledScreen): TerminalEntry {
-	const state: TerminalState = session.hasExited
-		? { kind: "exited", exitCode: session.exitCode, signal: session.signal, failure: session.failureMessage }
-		: { kind: "running" };
+	const exitedAt = session.exitedAt;
+	const state: TerminalState = exitedAt === null
+		? { kind: "running" }
+		: { kind: "exited", exitCode: session.exitCode, signal: session.signal, failure: session.failureMessage, exitedAt };
 	return {
 		id: session.id,
 		command: oneLine(session.displayCommand),
+		script: sanitizeOutputText(session.displayCommand),
 		state,
 		screen,
 		cwd: sanitizeOutputText(session.cwd),
@@ -163,6 +172,7 @@ function exitSucceeded(state: Extract<TerminalState, { kind: "exited" }>): boole
 	return state.exitCode === 0 && state.signal === null && state.failure === null;
 }
 
+/** The page head's state words. */
 function stateText(state: TerminalState): string {
 	if (state.kind === "running") return "running";
 	if (state.failure !== null) return `failed: ${oneLine(state.failure)}`;
@@ -170,10 +180,30 @@ function stateText(state: TerminalState): string {
 	return state.exitCode === null ? "exited" : `exit ${state.exitCode}`;
 }
 
-/** Status tone, as omp's Agents sheet colours its dots (running accent, done success, failed error). */
+/** The page head's state span style. */
 function stateTone(state: TerminalState): string {
 	if (state.kind === "running") return "accent";
 	return exitSucceeded(state) ? "success" : "error";
+}
+
+/** A state as the Background jobs view shows one: its label, tone and glyph (pulsing while running). */
+interface StateLook {
+	readonly label: string;
+	readonly tone: "pending" | "success" | "error";
+	readonly glyph: { readonly t: string; readonly fx?: "pulse" };
+}
+
+function stateLook(state: TerminalState): StateLook {
+	if (state.kind === "running") return { label: "Running", tone: "pending", glyph: { t: "●", fx: "pulse" } };
+	if (exitSucceeded(state)) return { label: "Exit 0", tone: "success", glyph: { t: "✓" } };
+	const label = state.failure !== null ? "Failed" : state.signal ?? (state.exitCode === null ? "Exited" : `Exit ${state.exitCode}`);
+	return { label, tone: "error", glyph: { t: "✕" } };
+}
+
+/** How long the session has run, or ran: frozen at its exit. */
+function elapsedMs(entry: TerminalEntry, now: number): number {
+	const end = entry.state.kind === "running" ? now : entry.state.exitedAt;
+	return Math.max(0, Math.round(end - entry.startedAt));
 }
 
 function itemId(id: number): string {
@@ -238,7 +268,7 @@ export function withTerminalSegment(hud: NativeNode, segment: Component): Native
 	return { ...hud, p: { ...hud.p, hidden: undefined }, c: [{ ...pill, c: [...(pill.c ?? []), segment] }] };
 }
 
-/** A picker / sheet action button, as omp's `actionButton` builds it. */
+/** An action button, as omp's `actionButton` builds it. */
 function actionButton(label: string, act: string, keys?: string, tone?: string): HudNode {
 	return {
 		k: "row",
@@ -246,27 +276,6 @@ function actionButton(label: string, act: string, keys?: string, tone?: string):
 		p: { role: "omp.btn", gap: "xs", align: "center", title: keys ? `${label}  ${keys}` : label, actions: { click: act }, ...(tone ? { tone } : {}) },
 		c: [{ k: "text", p: { text: label } }, ...(keys ? [{ k: "kbd", p: { keys: [keys] } }] : [])],
 	};
-}
-
-/** Picker fact columns, as the Agents sheet's roster shows Cost / Time / …; lower priorities hide first. */
-const TERMINAL_COLUMNS = [
-	{ id: "size", head: "Size", format: "dim", priority: 2 },
-	{ id: "pid", head: "PID", format: "text", priority: 3 },
-	{ id: "time", head: "Time", format: "elapsed", priority: 5 },
-] as const;
-
-/** Screen rows the preview's Recent output section shows (the newest ones). */
-const PREVIEW_TAIL_ROWS = 12;
-const SGR = /\x1b\[[0-9;:]*m/g;
-
-/**
- * The newest rows of a screen as plain text, trailing blank rows dropped: the
- * preview is a glance, Open shows the colors at the session's full width.
- */
-function screenTail(screen: StyledScreen, rows: number): string[] {
-	const lines = screen.text.replace(SGR, "").split("\n");
-	while (lines.length > 0 && lines[lines.length - 1]!.trim() === "") lines.pop();
-	return lines.slice(-rows);
 }
 
 /** A leading home directory as `~`, as omp's `shortenPath` shows paths. */
@@ -281,123 +290,150 @@ function localDateTime(at: number): string {
 	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-/**
- * The selected session's preview, laid out like the Agents sheet's: a title
- * row (command and a state badge), a facts grid, and a Recent output section
- * with the screen's newest rows.
- */
-function describePreview(entry: TerminalEntry): HudNode[] {
-	const facts: { k: string; v: unknown }[] = [
-		{ k: "Session", v: `#${entry.id}` },
-		{ k: "Directory", v: [{ t: shortenHome(entry.cwd), s: "path" }] },
-		...(entry.pid !== undefined ? [{ k: "PID", v: String(entry.pid) }] : []),
-		{ k: "Size", v: `${entry.screen.view.cols} × ${entry.screen.view.rows}` },
-		{ k: "Started", v: [{ t: localDateTime(entry.startedAt), s: "dim" }] },
-	];
-	const tail = screenTail(entry.screen, PREVIEW_TAIL_ROWS);
-	return [
-		{
-			k: "row",
-			key: "title",
-			p: { role: "omp.hub.title", gap: "sm", align: "center" },
-			c: [
-				{ k: "text", key: "name", p: { text: entry.command, role: "omp.picker.title", truncate: "end" } },
-				{ k: "badge", key: "state", p: { text: stateText(entry.state), tone: stateTone(entry.state) } },
-			],
+function actionsRow(children: readonly HudNode[]): HudNode {
+	return { k: "row", key: "actions", p: { role: "omp.actions", gap: "sm", align: "center" }, c: children };
+}
+
+const SPACER: HudNode = { k: "spacer", p: { grow: 1 } };
+
+/** A master-list row, as the Background jobs view lists a job: icon, command, elapsed. */
+function describeListItem(entry: TerminalEntry, now: number): HudNode {
+	const look = stateLook(entry.state);
+	const elapsed = formatElapsed(elapsedMs(entry, now));
+	return {
+		k: "item",
+		key: itemId(entry.id),
+		p: {
+			label: [{ t: entry.command, s: "mono" }],
+			value: [{ t: elapsed, s: "mono" }],
+			icon: "terminal",
+			tone: look.tone,
+			title: `${entry.command}\n${look.label} · exec · #${entry.id}`,
+			aria: `${entry.command}, ${look.label.toLowerCase()}, ${elapsed}`,
 		},
-		{ k: "kv", key: "facts", p: { items: facts, layout: "grid", role: "omp.hub.kv" } },
-		// The log path is long and lives in the temp dir: one line cut at its start keeps the file name, the link opens it.
-		{
-			k: "row",
-			key: "log",
-			p: { gap: "md", align: "baseline" },
-			c: [
-				{ k: "text", key: "k", p: { spans: [{ t: "Log", s: "muted" }], shrink: 0 } },
-				{
-					k: "text",
-					key: "v",
-					p: { spans: [{ t: entry.logPath, s: "path", href: `file://${entry.logPath}` }], truncate: "start", wrap: "none", grow: 1, title: entry.logPath },
-				},
-			],
-		},
-		{
-			k: "section",
-			key: `output-${itemId(entry.id)}`,
-			p: { head: "Recent output" },
-			c: [
-				tail.length === 0
-					? { k: "text", key: "empty", p: { spans: [{ t: "No output yet", s: "dim" }] } }
-					: // Plain-text `code` keeps the rows' spacing and scrolls sideways instead of reflowing; the fork's
-						// Tern plugin gives the role the mono face (Tern draws preview code in the UI face).
-						{ k: "code", key: "tail", p: { text: tail.join("\n"), lang: "text", wrap: false, role: TAIL_ROLE } },
-			],
-		},
-	];
+	};
 }
 
 /**
- * Pure: the Terminals sheet, built like omp's Agents sheet: a `lg` `picker`
- * titled with an icon, one row per session (status dot, command, state) with
- * Time / PID / Size columns, the selected session laid out like the Agents
- * preview, and the action bar Kill (x, only while running), Close (esc) and
- * Open (enter).
+ * The selected session's detail, laid out like a job's: a status row (state,
+ * elapsed, `exec · #id`, Kill while running and Open), the command, the
+ * facts and the session's colored output, following it while it runs.
+ */
+function describeDetail(entry: TerminalEntry, now: number): HudNode {
+	const look = stateLook(entry.state);
+	const running = entry.state.kind === "running";
+	const age = elapsedMs(entry, now);
+	const facts: { k: string; v: unknown }[] = [
+		{ k: "Directory", v: [{ t: shortenHome(entry.cwd), s: "path" }] },
+		...(entry.pid !== undefined ? [{ k: "PID", v: [{ t: String(entry.pid), s: "num" }] }] : []),
+		{ k: "Size", v: [{ t: `${entry.screen.view.cols} × ${entry.screen.view.rows}`, s: "num" }] },
+		{ k: "Started", v: [{ t: localDateTime(entry.startedAt), s: "dim" }] },
+		{ k: "Log", v: [{ t: entry.logPath, s: "path", href: `file://${entry.logPath}` }] },
+	];
+	const hasOutput = entry.screen.text.replace(SGR, "").trim() !== "";
+	return {
+		k: "col",
+		key: itemId(entry.id),
+		p: { role: "omp.jobs.detail" },
+		c: [
+			{
+				k: "row",
+				key: "status",
+				p: { role: "omp.jobs.status", gap: "sm", align: "center" },
+				c: [
+					{ k: "text", key: "state", p: { spans: [look.glyph, { t: ` ${look.label}` }], role: "omp.jobs.state", tone: look.tone, wrap: "none" } },
+					// A running session's age ticks Tern-side from the age at send; an exited one is stopped.
+					{ k: "elapsed", key: "age", p: { age, ...(running ? {} : { stopped: age }), format: "short", role: "omp.jobs.age", title: running ? "Running for" : "Ran for" } },
+					{ k: "text", key: "id", p: { spans: [{ t: `exec · #${entry.id}`, s: "mono" }], role: "omp.jobs.id", wrap: "none", truncate: "end" } },
+					SPACER,
+					...(running ? [actionButton("Kill", KILL_ACTION, "x", "error")] : []),
+					actionButton("Open", OPEN_TERMINAL_ACTION, "enter"),
+				],
+			},
+			{ k: "code", key: "command", p: { text: entry.script, lang: "bash", wrap: true, preview: { lines: 4 }, role: "omp.jobs.command" } },
+			{ k: "kv", key: "facts", p: { items: facts, role: "omp.jobs.facts" } },
+			{
+				k: "col",
+				key: "out",
+				p: { role: "omp.jobs.out", gap: "sm" },
+				c: [
+					{ k: "text", key: "label", p: { text: "Output", role: "omp.jobs.label" } },
+					hasOutput
+						? { k: "ansi", key: `output-${itemId(entry.id)}`, p: { text: entry.screen.text, follow: running, role: "omp.jobs.output", max: { h: "16lines" } } }
+						: { k: "text", key: "none", p: { text: running ? "No output yet" : "No output", role: "omp.jobs.nooutput" } },
+				],
+			},
+		],
+	};
+}
+
+/**
+ * Pure: the Terminals view's body, built like omp's Background jobs view: a
+ * master/detail split (the sessions in id order, the selected one's detail)
+ * over a footer with the running/stored summary and Close; with no session,
+ * an empty state and Close. The frame is VIEW_FRAME.
  */
 export function describeTerminalsSheet(
 	entries: readonly TerminalEntry[],
 	selectedId: number | undefined,
 	now = Date.now(),
 ): HudNode {
+	const close = actionButton("Close", CLOSE_ACTION, "esc");
 	const selected = entries.find((entry) => entry.id === selectedId) ?? entries[0];
+	if (!selected) {
+		return {
+			k: "col",
+			c: [
+				{
+					k: "col",
+					key: "empty",
+					p: { role: "omp.jobs.empty", align: "center" },
+					c: [
+						{ k: "icon", key: "icon", p: { name: "terminal" } },
+						{ k: "text", key: "title", p: { text: "No terminals", role: "omp.jobs.empty.title" } },
+						{ k: "text", key: "note", p: { text: "Sessions started with exec_command show up here while they are stored.", role: "omp.jobs.empty.note", wrap: "word" } },
+					],
+				},
+				actionsRow([SPACER, close]),
+			],
+		};
+	}
 	const running = entries.filter((entry) => entry.state.kind === "running").length;
 	return {
-		k: "picker",
-		p: {
-			title: "Terminals",
-			subtitle: `${running} running · ${entries.length} stored`,
-			icon: "terminal",
-			noun: "terminals",
-			size: "lg",
-			layout: "rows",
-			preview: "side",
-			query: null,
-			columns: TERMINAL_COLUMNS,
-			items: entries.map((entry) => ({
-				id: itemId(entry.id),
-				label: entry.command,
-				mono: true,
-				dot: stateTone(entry.state),
-				detail: `#${entry.id} · ${stateText(entry.state)}`,
-				facts: {
-					// A running session's age ticks Tern-side from the age at send; an exited one is frozen.
-					time: entry.state.kind === "running" ? Math.max(0, now - entry.startedAt) : stateText(entry.state),
-					pid: entry.pid === undefined ? "—" : String(entry.pid),
-					size: `${entry.screen.view.cols}×${entry.screen.view.rows}`,
-				},
-			})),
-			selected: selected ? itemId(selected.id) : null,
-			state: "ready",
-			empty: "No sessions. Start one with exec_command.",
-			actions: [
-				{
-					id: KILL_ACTION,
-					label: "Kill",
-					keys: ["x"],
-					danger: true,
-					...(selected?.state.kind === "running" ? {} : { disabled: selected ? "Already exited" : true }),
-				},
-				{ id: CLOSE_ACTION, label: "Close", keys: ["esc"], end: true },
-				{ id: OPEN_TERMINAL_ACTION, label: "Open", keys: ["enter"], primary: true, ...(selected ? {} : { disabled: true }) },
-			],
-			focus: "list",
-		},
-		c: selected ? describePreview(selected) : [],
+		k: "col",
+		c: [
+			{
+				k: "row",
+				key: "split",
+				p: { role: "omp.jobs.split" },
+				c: [
+					{
+						k: "col",
+						key: "master",
+						p: { role: "omp.jobs.master" },
+						c: [{
+							k: "list",
+							key: "terminals",
+							p: { selected: itemId(selected.id), max: { lines: 12 }, actions: { click: "select", dblclick: "activate" } },
+							c: entries.map((entry) => describeListItem(entry, now)),
+						}],
+					},
+					describeDetail(selected, now),
+				],
+			},
+			actionsRow([
+				{ k: "text", key: "summary", p: { role: "omp.jobs.summary", text: `${running} running · ${entries.length} stored`, wrap: "none" } },
+				SPACER,
+				close,
+			]),
+		],
 	};
 }
 
-/** The full-pane terminal page's sheet frame: a `full` glass sheet titled with the path back to the list. */
+/** The full-pane terminal page's frame: omp's PTY Console role, titled with the path back to the list. */
 export function terminalPageFrame(entry: TerminalEntry | undefined, id: number): Readonly<Record<string, unknown>> {
 	return {
-		role: "unified-exec.overlay.terminal",
+		role: "omp.overlay.console",
 		size: "full",
 		head: [
 			{ t: "Terminals · ", s: "muted" },
@@ -486,7 +522,7 @@ function parseHudEvent(event: unknown): HudEvent | undefined {
 /** Kill a stored session the way `kill_session` does; resolves whether it exited. */
 export type KillSession = (id: number) => Promise<boolean>;
 
-/** How the Terminals sheet was left. */
+/** How the Terminals view was left. */
 export type SheetResult = { readonly kind: "closed" } | { readonly kind: "open"; readonly id: number };
 
 /** An interactive mode's terminal handle, asked to describe omp's dock again. */
@@ -671,14 +707,19 @@ class SessionWatch {
 	}
 }
 
+/** How often an open view re-describes while a session runs, so list ages advance (omp's jobs view does the same). */
+const VIEW_TICK_MS = 1000;
+
 /**
- * The Terminals sheet, an extension custom overlay. `nativeSheet` makes omp
- * mount the `picker` description as the modal sheet; it holds focus, so
- * esc / ↑ / ↓ / enter / x arrive in `handleInput`.
+ * The Terminals view, an extension custom overlay framed as omp's
+ * Background jobs view (`VIEW_FRAME`); it holds focus, so esc / ↑ / ↓ /
+ * enter / x arrive in `handleInput`.
  */
 class TerminalsSheet implements Component {
+	readonly nativeOverlay = VIEW_FRAME;
 	private described: HudNode | undefined;
 	private readonly watch: SessionWatch;
+	private readonly tick: NodeJS.Timeout;
 
 	constructor(
 		private readonly store: SessionStore,
@@ -688,6 +729,10 @@ class TerminalsSheet implements Component {
 		private readonly kill: KillSession,
 	) {
 		this.watch = new SessionWatch(store, this.changed, () => this.selectedId);
+		this.tick = setInterval(() => {
+			if (store.values().some((session) => !session.hasExited)) this.changed();
+		}, VIEW_TICK_MS);
+		this.tick.unref?.();
 	}
 
 	private changed = (): void => {
@@ -723,10 +768,6 @@ class TerminalsSheet implements Component {
 		const session = this.selected();
 		if (!session || session.hasExited) return;
 		void this.kill(session.id).then(this.changed);
-	}
-
-	nativeSheet(): boolean {
-		return true;
 	}
 
 	describe(): HudNode {
@@ -767,6 +808,7 @@ class TerminalsSheet implements Component {
 	}
 
 	dispose(): void {
+		clearInterval(this.tick);
 		this.watch.dispose();
 	}
 }
@@ -855,8 +897,8 @@ export async function loadTernHudHost(): Promise<TernHudHost> {
  * Keep this activation's terminals segment in omp's pill exactly while an
  * interactive session renders natively; the segment itself shows only while
  * the store holds a session, and the ANSI TUI never sees it. A segment click
- * opens the Terminals sheet; Open replaces it with the session's terminal
- * page, whose Back reopens the sheet on the same session. At most one of them
+ * opens the Terminals view; Open replaces it with the session's terminal
+ * page, whose Back reopens the view on the same session. At most one of them
  * is open.
  */
 export function mountTerminalHud(pi: ExtensionAPI, store: SessionStore, host: TernHudHost, kill: KillSession): void {
