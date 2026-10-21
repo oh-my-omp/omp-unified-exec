@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import {
-	chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
+	existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
 	rmSync, symlinkSync, utimesSync, writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, type TestContext } from "node:test";
+import { after, before, describe, it, type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
 	ensureTernPlugin,
 	initializeTernPlugin,
@@ -19,6 +22,16 @@ import {
 	type ListedPlugin,
 	type PluginFiles,
 } from "../fork-features/tern-plugin-install.ts";
+
+const fixtureBin = mkdtempSync(join(tmpdir(), "tern-plugin-bin-"));
+after(() => { rmSync(fixtureBin, { recursive: true, force: true }); });
+before(() => {
+	const executable = join(fixtureBin, process.platform === "win32" ? "tern.exe" : "tern");
+	execFileSync(process.execPath, [
+		"build", "--compile", fileURLToPath(new URL("./fixtures/tern-cli.mjs", import.meta.url)),
+		"--outfile", executable,
+	], { stdio: "inherit" });
+});
 
 function listedPlugin(files: PluginFiles, overrides: Partial<ListedPlugin> = {}): ListedPlugin {
 	return { id: TERN_PLUGIN_ID, version: files.version, css: files.css, status: "ready", ...overrides };
@@ -58,9 +71,9 @@ interface Harness {
 	readonly calls: string[][];
 }
 
-/** Independent CLI simulator: catalog entries are derived from the registered on-disk bundle. */
+/** Per-case state for the shared, independently executable CLI simulator. */
 function makeTern(t: TestContext, options: SimulatorOptions = {}): Harness {
-	const root = mkdtempSync(join("/tmp", "tern-plugin-install-"));
+	const root = mkdtempSync(join(tmpdir(), "tern-plugin-install-"));
 	t.after(() => { rmSync(root, { recursive: true, force: true }); });
 	const pluginRoot = join(root, "Tern plugins with spaces");
 	const sourceDir = join(root, "package source ; $not-expanded");
@@ -79,88 +92,9 @@ function makeTern(t: TestContext, options: SimulatorOptions = {}): Harness {
 	writeBundle(legacyDir, files);
 	writeFileSync(logPath, "");
 	writeFileSync(optionsPath, JSON.stringify(options));
-	const executable = join(root, "tern");
-	assert.doesNotMatch(process.execPath, /\s/, "fixture needs an executable path representable in a shebang");
-	writeFileSync(executable, `#!${process.execPath}
-const fs = require("node:fs");
-const path = require("node:path");
-const args = process.argv.slice(2);
-const env = process.env;
-const config = JSON.parse(fs.readFileSync(env.TERN_TEST_OPTIONS, "utf8"));
-const root = env.TERN_TEST_ROOT;
-const id = "omp-unified-exec";
-const destination = path.join(root, id);
-const registration = path.join(root, id + ".path");
-fs.appendFileSync(env.TERN_TEST_LOG, JSON.stringify(args) + "\\n");
-function reply(value) { process.stdout.write(JSON.stringify(value) + "\\n"); }
-function fail(message, code = 23) {
-  process.stdout.write("owner diagnostic\\n");
-  process.stderr.write(message + "\\n");
-  process.exit(code);
-}
-function version(dir) {
-  const manifest = fs.readFileSync(path.join(dir, "plugin.toml"), "utf8");
-  return /^\\s*version\\s*=\\s*"([^"]*)"\\s*$/m.exec(manifest)[1];
-}
-function catalog() {
-  if (fs.existsSync(env.TERN_TEST_CONFLICT) && config.conflictCatalog !== undefined) return config.conflictCatalog;
-  const installed = fs.existsSync(env.TERN_TEST_INSTALLED);
-  const override = installed ? config.installedCatalog : config.initialCatalog;
-  if (override !== undefined) return override;
-  let dir = destination;
-  if (fs.existsSync(registration)) dir = fs.readFileSync(registration, "utf8").trim();
-  if (!fs.existsSync(dir)) return [];
-  return [{ id, version: version(dir), css: fs.readFileSync(path.join(dir, "terminals.css"), "utf8"),
-    status: "ready" }];
-}
-if (args[0] !== "plugin") fail("unexpected command", 64);
-const operation = args[1];
-if (config.failure === operation) fail(config.installError ?? operation + " unavailable");
-if (operation === "dir" && args.length === 3 && args[2] === "--json") {
-  if (config.directoryReply !== undefined) process.stdout.write(config.directoryReply);
-  else reply({ dir: root });
-} else if (operation === "list" && args.length === 3 && args[2] === "--json") {
-  if (config.catalogReply !== undefined) process.stdout.write(config.catalogReply);
-  else reply({ plugins: catalog() });
-} else if (operation === "install" && args.length === 5 && args[3] === "--force" && args[4] === "--json") {
-  const target = config.ownerConflict ?? (fs.existsSync(registration) ? fs.readFileSync(registration, "utf8").trim() : undefined);
-  if (target !== undefined) {
-    fs.writeFileSync(env.TERN_TEST_CONFLICT, "conflict");
-    fail("tern plugin: " + id + " is linked (" + target + "); use unlink first");
-  }
-  const source = args[2];
-  if (config.copyFault !== "no-copy") {
-    fs.rmSync(destination, { recursive: true, force: true });
-    if (config.copyFault === "symlink") fs.symlinkSync(source, destination);
-    else {
-      fs.cpSync(source, destination, { recursive: true });
-      const changedFile = { css: "terminals.css", manifest: "plugin.toml", windowScript: "window.luau" }[config.copyFault];
-      if (changedFile) fs.appendFileSync(path.join(destination, changedFile), "\\n/* incomplete copy */\\n");
-      if (config.copyFault === "extra-file") fs.writeFileSync(path.join(destination, "unexpected.txt"), "extra");
-      if (config.copyFault === "missing-file") fs.rmSync(path.join(destination, "window.luau"));
-    }
-  }
-  fs.writeFileSync(env.TERN_TEST_INSTALLED, "installed");
-  const result = { id, version: version(source), dir: destination };
-  switch (config.replyFault) {
-    case "malformed": process.stdout.write("not JSON\\n"); break;
-    case "missing-fields": reply({ ok: true }); break;
-    case "wrong-id": reply({ ...result, id: "another-plugin" }); break;
-    case "wrong-version": reply({ ...result, version: "wrong-version" }); break;
-    case "wrong-dir": reply({ ...result, dir: source }); break;
-    case "relative-dir": reply({ ...result, dir: id }); break;
-    default: reply(result);
-  }
-} else if (operation === "unlink" && args.length === 4 && args[2] === id && args[3] === "--json") {
-  if (!fs.existsSync(registration)) fail("no linked registration");
-  fs.unlinkSync(registration);
-  reply({ id });
-} else fail("unexpected arguments", 64);
-`);
-	chmodSync(executable, 0o755);
 	const env: NodeJS.ProcessEnv = {
 		// No ambient Tern or pane environment: the fixture is the only executable on PATH.
-		PATH: root,
+		PATH: fixtureBin,
 		TERN_TEST_OPTIONS: optionsPath,
 		TERN_TEST_ROOT: pluginRoot,
 		TERN_TEST_LOG: logPath,
