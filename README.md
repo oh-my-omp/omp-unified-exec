@@ -82,11 +82,12 @@ that same factory before omp modules load or any tools register.
 
 When omp renders natively in Tern and a session exists:
 
-- **Counter pill.** A terminal icon and the stored session count sit on
-  their own line just above omp's counter. The row, pill and segment use
-  Tern's native HUD styling across Reader, Spine, Console and color themes.
-  There is no outer hide button; removing the last session unmounts the pill.
-- **Terminals sheet.** Clicking the pill opens a sheet built like omp's Agents
+- **Terminals segment.** A terminal icon and the stored session count join
+  omp's own running-work pill, after its agents and jobs segments, in the same
+  capsule; the hover label also gives how many still run. Tern draws the pill,
+  its dividers and every chat style and color theme. Removing the last
+  session removes the segment; with no agents or jobs either, the pill goes.
+- **Terminals sheet.** Clicking the segment opens a sheet built like omp's Agents
   sheet: one row per session with a status dot, size, PID and running
   time; the selected session's command, state, directory, PID, size, start
   time, linked log path and newest output rows as the preview. ↑/↓ or a click
@@ -102,14 +103,19 @@ The HUD reads the sessions in place and keeps no copy of them. It only exists
 while omp renders natively, so omp's ANSI TUI gains no row. Tool results stay
 plain text; explicit `read term://…/screen.png` requests return images.
 
-**The Tern plugin.** An omp extension cannot add to omp's pill line, so the
-package ships a CSS-only Tern plugin (`fork-features/tern-plugin/`). It moves
-the shared `belowEditor` widget container above omp's pill line and clears
-its container spacing, background and shadow so native HUD margins are not
-applied twice. Other widgets in that container share this placement and reset;
-the plugin does not restyle the pills or omp's editor. It also sets the sheet's
-output preview in the monospace face. The awaited omp extension factory
-synchronizes this plugin during package-install validation, including
+**How the segment joins omp's pill.** omp has no extension API for pill
+segments, so the HUD wraps omp's `InteractiveMode.prototype.describeHudPills`
+once per process and appends its own segment component as the pill's last
+child, creating the pill when omp has none. omp's own row object is never
+changed. A reloaded extension replaces the decorator rather than wrapping
+again. If omp no longer has that method, or it returns a row of another
+shape, loading or describing fails with a "requalify" error instead of
+silently dropping the segment.
+
+**The Tern plugin.** The package ships a CSS-only Tern plugin
+(`fork-features/tern-plugin/`) that only sets the sheet's output preview in
+the monospace face; the segment needs no plugin. The awaited omp extension
+factory synchronizes this plugin during package-install validation, including
 `install --force`, and during ordinary extension loading. It asks Tern for
 its plugin directory and catalog; an exact three-file normal copy with the
 current ready version and stylesheet is left unchanged. Missing or stale
@@ -123,8 +129,8 @@ With no daemon running, Tern installs the copy for its next start. A missing
 synchronization fails, package validation or ordinary extension loading
 fails with command diagnostics; there is no deferred session-start retry or
 success toast. Tern's external update is not rolled back if omp later fails
-to save its package configuration. Without the plugin the pill sits below
-the composer.
+to save its package configuration. Without the plugin the preview's output
+rows use the interface face.
 
 Design, decisions and Tern qualification evidence:
 [docs/IV-0002-output-lifecycle-and-rendering.md](docs/IV-0002-output-lifecycle-and-rendering.md).
@@ -621,7 +627,7 @@ fork-features/
 ├── command-approval.ts   # built-in bash approval port and factory-loaded host helpers
 ├── session-binding.ts    # activation-local AgentSession identity for approval settings
 ├── omp-tools.d.ts        # types of the omp modules loaded at runtime
-├── tern-terminal-hud.ts  # counter pill, Terminals sheet, terminal page
+├── tern-terminal-hud.ts  # terminals segment in omp's pill, Terminals sheet, terminal page
 ├── terminal-resource.ts  # process-global terminal keys, live/frozen projections
 ├── terminal-url.ts       # omp `term://` read handler
 ├── terminal-image.ts     # terminal screenshots (SVG → PNG)

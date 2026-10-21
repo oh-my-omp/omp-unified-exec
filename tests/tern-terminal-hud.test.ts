@@ -5,15 +5,18 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import {
 	BACK_ACTION,
 	CLOSE_ACTION,
-	describeTerminalPill,
 	describeTerminalPage,
+	describeTerminalSegment,
 	describeTerminalsSheet,
 	KILL_ACTION,
 	mountTerminalHud,
 	OPEN_ACTION,
 	OPEN_TERMINAL_ACTION,
+	parseHudPillsNode,
+	parseInteractiveModeModule,
 	TAIL_ROLE,
 	terminalPageFrame,
+	withTerminalSegment,
 	type HudNode,
 	type NativeRenderingState,
 	type TerminalEntry,
@@ -64,26 +67,51 @@ function exited(exitCode: number | null): TerminalState {
 	return { kind: "exited", exitCode, signal: null, failure: null };
 }
 
-function segmentOf(node: HudNode): HudNode {
-	const segments = nodesOfKind(node, "row").filter((child) => child.p?.role === "omp.hud.seg");
-	assert.equal(segments.length, 1, "pill contains exactly one interactive segment");
-	return segments[0]!;
-}
-
 function ansiText(node: HudNode): string {
 	const text = onlyNode(node, "ansi").p?.text;
 	assert.ok(typeof text === "string");
 	return text;
 }
 
-function terminalCount(node: HudNode): number {
-	const spans = onlyNode(segmentOf(node), "text").p?.spans;
+function terminalCount(segment: HudNode): number {
+	assert.equal(segment.p?.role, "omp.hud.seg");
+	const spans = onlyNode(segment, "text").p?.spans;
 	assert.ok(Array.isArray(spans));
 	assert.equal(spans.length, 1, "count text has one span");
 	const span: unknown = spans[0];
 	assert.ok(typeof span === "object" && span !== null && "t" in span && typeof span.t === "string");
-	assert.match(span.t, /^\d+$/, "pill text is the bare terminal count");
+	assert.match(span.t, /^\d+$/, "segment text is the bare terminal count");
 	return Number(span.t);
+}
+
+/** omp's own segment, as `describeHudPills` builds it. */
+function ompSegment(key: string, icon: string, act: string): HudNode {
+	return {
+		k: "row",
+		key,
+		p: { role: "omp.hud.seg", gap: "xs", align: "center", actions: { click: act } },
+		c: [{ k: "icon", key: "icon", p: { name: icon } }, { k: "text", key: "count", p: { spans: [{ t: "1", s: "num" }] } }],
+	};
+}
+
+/** omp's `describeHudPills` row for its own segments, built as omp 18.12 builds it. */
+function ompPillsRow(segments: readonly HudNode[]): HudNode {
+	const pills = segments.length > 0 ? [{ k: "row", p: { role: "omp.hud.pill", align: "center" }, c: [...segments], key: "running" }] : [];
+	return { k: "row", p: { role: "omp.hud", justify: "end", hidden: pills.length === 0 || undefined }, c: pills };
+}
+
+function isComponent(child: unknown): child is HudComponent {
+	return typeof child === "object" && child !== null && "describe" in child && typeof child.describe === "function";
+}
+
+/** The pill's children of a described `omp.hud` row; none when the row has no pill. */
+function pillChildren(row: unknown): readonly unknown[] {
+	assert.ok(typeof row === "object" && row !== null && "c" in row && Array.isArray(row.c));
+	const pill: unknown = row.c[0];
+	if (pill === undefined) return [];
+	assert.ok(typeof pill === "object" && pill !== null && "p" in pill && "c" in pill && Array.isArray(pill.c));
+	assert.deepEqual(pill.p, { role: "omp.hud.pill", align: "center" });
+	return pill.c;
 }
 
 function recentOutputText(node: HudNode): string {
@@ -133,14 +161,67 @@ function pickerItems(node: HudNode): { readonly id: string; readonly dot: string
 	});
 }
 
-describe("terminal HUD pill description", () => {
-	it("shows the stored terminal count as bare text with singular or plural hover titles", () => {
-		for (const count of [1, 2, 7]) {
-			const view = describeTerminalPill(count);
+describe("terminal HUD pill segment", () => {
+	it("shows the stored terminal count as bare text with stored and running counts in its hover label", () => {
+		for (const [count, running, label] of [[1, 1, "1 terminal · 1 running"], [2, 0, "2 terminals · 0 running"], [7, 3, "7 terminals · 3 running"]] as const) {
+			const view = describeTerminalSegment(count, running);
 			assert.equal(terminalCount(view), count);
-			assert.equal(segmentOf(view).p?.title, `${count} terminal${count === 1 ? "" : "s"}`);
-			assert.equal(segmentOf(view).p?.aria, segmentOf(view).p?.title);
+			assert.equal(view.p?.title, label);
+			assert.equal(view.p?.aria, label);
+			assert.deepEqual(view.p?.actions, { click: OPEN_ACTION });
 		}
+	});
+
+	it("appends the segment after omp's own segments without changing omp's row", () => {
+		const agents = ompSegment("agents", "users", "agents.open");
+		const jobs = ompSegment("jobs", "job", "jobs.open");
+		const row = ompPillsRow([agents, jobs]);
+		const before = structuredClone(row);
+		const segment = { describe: () => describeTerminalSegment(1, 1), render: () => [], invalidate() {} };
+		const decorated = withTerminalSegment(parseHudPillsNode(row), segment);
+		assert.deepEqual(row, before, "omp's cached row is not mutated");
+		assert.equal(decorated.p?.role, "omp.hud");
+		assert.equal(decorated.p?.hidden, undefined);
+		const children = pillChildren(decorated);
+		assert.equal(children.length, 3);
+		assert.strictEqual(children[0], agents);
+		assert.strictEqual(children[1], jobs);
+		assert.strictEqual(children[2], segment, "the terminals segment is the pill's last sibling");
+	});
+
+	it("creates and shows omp's pill when omp has no segments of its own", () => {
+		const row = ompPillsRow([]);
+		assert.equal(row.p?.hidden, true);
+		const segment = { describe: () => describeTerminalSegment(1, 1), render: () => [], invalidate() {} };
+		const decorated = withTerminalSegment(parseHudPillsNode(row), segment);
+		assert.equal(decorated.p?.hidden, undefined);
+		assert.deepEqual(decorated.c?.[0] && { ...decorated.c[0], c: undefined }, { k: "row", key: "running", p: { role: "omp.hud.pill", align: "center" }, c: undefined });
+		assert.deepEqual(pillChildren(decorated), [segment]);
+	});
+
+	it("rejects a reshaped omp with a requalify error", () => {
+		const requalify = { message: /requalify fork-features\/tern-terminal-hud\.ts/ };
+		for (const row of [
+			undefined, null, "row", { k: "col" }, { k: "row", p: { role: "omp.hud.status" } },
+			{ k: "row", p: { role: "omp.hud" }, c: [{ k: "row", p: { role: "omp.hud.seg" } }] },
+			{ k: "row", p: { role: "omp.hud" }, c: [{ k: "row", p: { role: "omp.hud.pill" } }, { k: "row", p: { role: "omp.hud.pill" } }] },
+		]) {
+			assert.throws(() => parseHudPillsNode(row), requalify);
+		}
+		class Reshaped {
+			describePills(): unknown {
+				return ompPillsRow([]);
+			}
+		}
+		for (const module of [{}, { InteractiveMode: {} }, { InteractiveMode: Reshaped }]) {
+			assert.throws(() => parseInteractiveModeModule(module), requalify);
+		}
+		class ReshapedRow {
+			describeHudPills(): unknown {
+				return { k: "col" };
+			}
+		}
+		assert.strictEqual(parseInteractiveModeModule({ InteractiveMode: ReshapedRow }), ReshapedRow.prototype);
 	});
 });
 
@@ -372,12 +453,6 @@ interface CustomComponent extends HudComponent {
 }
 
 type StubTui = { requestRender(): void };
-type WidgetFactory = (tui: StubTui) => HudComponent;
-type WidgetCall = {
-	readonly key: string;
-	readonly content: WidgetFactory | undefined;
-	readonly options: { readonly placement: string } | undefined;
-};
 type CustomFactory = (tui: StubTui, theme: unknown, keybindings: unknown, done: (result?: unknown) => void) => CustomComponent;
 type CustomCall = {
 	readonly component: CustomComponent;
@@ -412,27 +487,38 @@ function waitFor(
 	});
 }
 
-function makeHarness(t: TestContext, initiallyNative = false) {
+/**
+ * Stands in for omp's InteractiveMode: `describeHudPills` returns the same
+ * row while omp's own segments are unchanged, as omp's memo does, and `ui`
+ * is its TUI. Every harness shares this class, as every omp session shares
+ * InteractiveMode, so the process-wide wrapper is installed once.
+ */
+class FakeInteractiveMode {
+	ompSegments: readonly HudNode[] = [];
+	renders = 0;
+	readonly ui = { requestRender: () => { this.renders++; } };
+	private cached: { readonly segments: readonly HudNode[]; readonly node: HudNode } | undefined;
+
+	describeHudPills(): unknown {
+		if (this.cached?.segments !== this.ompSegments) this.cached = { segments: this.ompSegments, node: ompPillsRow(this.ompSegments) };
+		return this.cached.node;
+	}
+}
+
+function makeHarness(t: TestContext, initiallyNative = false, ModeClass: new () => FakeInteractiveMode = FakeInteractiveMode) {
 	const store = new SessionStore({ maxSessions: 20, lruProtectedCount: 0 });
 	const handlers = new Map<string, Handler[]>();
-	const calls: WidgetCall[] = [];
 	const customCalls: CustomCall[] = [];
 	const customListeners = new Set<() => void>();
 	const killCalls: number[] = [];
 	const sessions: ExecSession[] = [];
 	const nativeListeners = new Set<(on: boolean) => void>();
+	const mode = new ModeClass();
 	let nativeOn = initiallyNative;
-	let component: HudComponent | undefined;
 	let overlay: CustomComponent | undefined;
 	let renders = 0;
 	const tui: StubTui = { requestRender: () => { renders++; } };
 	const ui = {
-		setWidget(key: string, content: WidgetFactory | undefined, options?: { placement: string }) {
-			calls.push({ key, content, options });
-			// Widget replacement/removal disposes the old component if it owns resources.
-			component?.dispose?.();
-			component = content?.(tui);
-		},
 		custom(factory: CustomFactory, options: { overlay: boolean }): Promise<unknown> {
 			let resolve!: (result: unknown) => void;
 			const promise = new Promise<unknown>((done) => { resolve = done; });
@@ -467,7 +553,8 @@ function makeHarness(t: TestContext, initiallyNative = false) {
 			return () => { nativeListeners.delete(listener); };
 		},
 	};
-	mountTerminalHud(pi, store, native, async (id) => {
+	const pills = parseInteractiveModeModule({ InteractiveMode: ModeClass });
+	mountTerminalHud(pi, store, { native, pills }, async (id) => {
 		killCalls.push(id);
 		const session = store.get(id);
 		assert.ok(session, "kill targets a stored real session");
@@ -498,9 +585,11 @@ function makeHarness(t: TestContext, initiallyNative = false) {
 		await Promise.all(sessions.map((session) => session.release()));
 	});
 
+	const segments = (): HudComponent[] => pillChildren(mode.describeHudPills()).filter(isComponent);
+
 	return {
 		store,
-		calls,
+		mode,
 		customCalls,
 		killCalls,
 		waitForCustom(count: number) {
@@ -511,9 +600,11 @@ function makeHarness(t: TestContext, initiallyNative = false) {
 		},
 		emit,
 		get renders() { return renders; },
-		get component() {
-			assert.ok(component, "terminal HUD is mounted");
-			return component;
+		/** The terminals segment omp's pill holds this frame. */
+		get segment() {
+			const found = segments();
+			assert.equal(found.length, 1, "omp's pill holds exactly one terminals segment");
+			return found[0]!;
 		},
 		get sheet() {
 			assert.ok(overlay, "custom overlay is open");
@@ -524,7 +615,8 @@ function makeHarness(t: TestContext, initiallyNative = false) {
 			assert.ok(overlay?.nativeOverlay, "terminal page is open");
 			return overlay;
 		},
-		get mounted() { return component !== undefined; },
+		/** Whether omp's pill shows the terminals segment this frame. */
+		get mounted() { return segments().length > 0; },
 		get sheetOpen() { return overlay?.nativeSheet?.() === true; },
 		setNative(on: boolean) {
 			nativeOn = on;
@@ -543,110 +635,158 @@ function makeHarness(t: TestContext, initiallyNative = false) {
 }
 
 describe("terminal HUD lifecycle with real sessions", () => {
-	it("mounts only after UI, native rendering, and a session are all present", async (t) => {
+	it("adds the segment only after UI, native rendering, and a session are all present", async (t) => {
 		const h = makeHarness(t);
 		h.spawn();
-		assert.equal(h.calls.length, 0);
+		assert.equal(h.mounted, false, "no interactive session yet");
 		await h.emit("session_start");
-		assert.equal(h.calls.length, 0, "sessions alone do not mount without native rendering");
+		assert.equal(h.mounted, false, "sessions alone add no segment without native rendering");
 		h.setNative(true);
-		assert.equal(h.calls.length, 1);
-		assert.equal(h.calls[0]?.key, "unified-exec-terminals");
-		assert.equal(typeof h.calls[0]?.content, "function");
-		assert.deepEqual(h.calls[0]?.options, { placement: "belowEditor" });
-		const view = h.component.describe();
+		const view = h.segment.describe();
 		assert.equal(terminalCount(view), 1);
-		assert.deepEqual(segmentOf(view).p?.actions, { click: OPEN_ACTION });
+		assert.deepEqual(view.p?.actions, { click: OPEN_ACTION });
 	});
 
 	it("waits for an interactive session_start even when native rendering and a session already exist", async (t) => {
 		const h = makeHarness(t, true);
 		h.spawn();
-		assert.equal(h.calls.length, 0);
 		await h.emit("session_start", false);
-		assert.equal(h.calls.length, 0, "headless session has no widget");
+		assert.equal(h.mounted, false, "a headless session has no segment");
 		await h.emit("session_start");
 		assert.equal(h.mounted, true);
 	});
 
-	it("keeps mounting until the last stored session is removed", async (t) => {
+	it("joins omp's own pill after its agents and jobs segments, one component per interactive mode", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
+		const agents = ompSegment("agents", "users", "agents.open");
+		const jobs = ompSegment("jobs", "job", "jobs.open");
+		h.mode.ompSegments = [agents, jobs];
+		assert.deepEqual(pillChildren(h.mode.describeHudPills()), [agents, jobs], "no session leaves omp's row as omp built it");
+		h.spawn();
+		const row = h.mode.describeHudPills();
+		const children = pillChildren(row);
+		assert.equal(children.length, 3);
+		assert.strictEqual(children[0], agents);
+		assert.strictEqual(children[1], jobs);
+		const segment = children[2];
+		assert.ok(isComponent(segment), "the terminals segment is the pill's last sibling");
+		assert.strictEqual(h.mode.describeHudPills(), row, "an unchanged omp row keeps the decorated row");
+		h.mode.ompSegments = [jobs];
+		assert.deepEqual(pillChildren(h.mode.describeHudPills()), [jobs, segment], "the same component follows omp's new row");
+		const other = new FakeInteractiveMode();
+		const otherSegment = pillChildren(other.describeHudPills())[0];
+		assert.ok(isComponent(otherSegment));
+		assert.notStrictEqual(otherSegment, segment, "omp skips a component described twice in one frame");
+	});
+
+	it("keeps the segment until the last stored session is removed, asking omp to describe again on each change", async (t) => {
+		const h = makeHarness(t, true);
+		await h.emit("session_start");
+		h.mode.describeHudPills();
+		const before = h.mode.renders;
 		const first = h.spawn();
+		assert.ok(h.mode.renders > before, "a new session asks omp to render");
 		const second = h.spawn();
 		assert.equal(h.mounted, true);
 		h.store.remove(second.id);
 		assert.equal(h.store.size, 1);
-		assert.equal(h.mounted, true);
-		assert.equal(terminalCount(h.component.describe()), 1);
+		assert.equal(terminalCount(h.segment.describe()), 1);
+		const removing = h.mode.renders;
 		h.store.remove(first.id);
+		assert.ok(h.mode.renders > removing, "removal asks omp to render");
 		assert.equal(h.mounted, false);
-		assert.equal(h.calls.at(-1)?.content, undefined);
-		assert.equal(h.calls.at(-1)?.key, "unified-exec-terminals");
+		assert.equal(pillChildren(h.mode.describeHudPills()).length, 0, "omp's empty row is left hidden");
 	});
 
-	it("unmounts when native rendering stops and remounts when it resumes", async (t) => {
+	it("removes the segment when native rendering stops and adds a new one when it resumes", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
 		h.spawn();
-		const first = h.component;
+		const first = h.segment;
+		const before = h.mode.renders;
 		h.setNative(false);
+		assert.ok(h.mode.renders > before, "deactivation asks omp to render its own row");
 		assert.equal(h.mounted, false);
-		assert.equal(h.calls.at(-1)?.content, undefined);
 		h.setNative(true);
 		assert.equal(h.mounted, true);
-		assert.notEqual(h.component, first);
+		assert.notEqual(h.segment, first);
 	});
 
-	it("unmounts on session_shutdown and stays unmounted until another session starts", async (t) => {
+	it("removes the segment on session_shutdown and keeps it out until another session starts", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
 		h.spawn();
 		await h.emit("session_shutdown");
 		assert.equal(h.mounted, false);
-		assert.equal(h.calls.at(-1)?.content, undefined);
-		const callCount = h.calls.length;
 		h.setNative(false);
 		h.setNative(true);
 		h.spawn();
-		assert.equal(h.calls.length, callCount);
+		assert.equal(h.mounted, false);
 		await h.emit("session_start");
 		assert.equal(h.mounted, true);
 	});
 
-	it("refreshes the pill count for every stored session", async (t) => {
+	it("lets a later activation own the pill wrapper without wrapping twice or being withdrawn by the earlier one", async (t) => {
+		const earlier = makeHarness(t, true);
+		await earlier.emit("session_start");
+		earlier.spawn();
+		assert.equal(earlier.mounted, true);
+		const later = makeHarness(t, true);
+		await later.emit("session_start");
+		assert.equal(earlier.mounted, false, "the later activation's empty store now decides the segment");
+		await earlier.emit("session_shutdown");
+		later.spawn();
+		assert.equal(later.mounted, true, "the earlier shutdown does not withdraw the later decorator");
+		assert.equal(terminalCount(later.segment.describe()), 1, "one wrapper, one segment");
+	});
+
+	it("fails with a requalify error when omp's pill describer returns another shape", async (t) => {
+		class ReshapedMode extends FakeInteractiveMode {
+			override describeHudPills(): unknown {
+				return { k: "col" };
+			}
+		}
+		const h = makeHarness(t, true, ReshapedMode);
+		await h.emit("session_start");
+		assert.deepEqual(h.mode.describeHudPills(), { k: "col" }, "without a session omp's value passes through");
+		h.spawn();
+		assert.throws(() => h.mode.describeHudPills(), { message: /requalify fork-features\/tern-terminal-hud\.ts/ });
+	});
+
+	it("refreshes the segment's stored and running counts for every stored session", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
 		const first = h.spawn();
-		const component = h.component;
-		const initial = component.describe();
+		const segment = h.segment;
+		const initial = segment.describe();
 		assert.equal(terminalCount(initial), 1);
-		assert.strictEqual(component.describe(), initial);
+		assert.strictEqual(segment.describe(), initial);
 		h.spawn();
-		assert.strictEqual(h.component, component);
-		assert.equal(terminalCount(component.describe()), 2);
+		assert.strictEqual(h.segment, segment);
+		assert.equal(terminalCount(segment.describe()), 2);
 		h.spawn();
-		assert.equal(terminalCount(component.describe()), 3);
+		assert.equal(terminalCount(segment.describe()), 3);
 		h.store.remove(first.id);
-		assert.strictEqual(h.component, component);
-		assert.equal(terminalCount(component.describe()), 2);
-		assert.equal(segmentOf(component.describe()).p?.title, "2 terminals");
+		assert.strictEqual(h.segment, segment);
+		assert.equal(terminalCount(segment.describe()), 2);
+		assert.equal(segment.describe().p?.title, "2 terminals · 2 running");
 	});
 
-	it("opens exactly one native sheet from the pill and closes, disposes, and reopens it on Close or esc", async (t) => {
+	it("opens exactly one native sheet from the segment and closes, disposes, and reopens it on Close or esc", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
 		h.spawn();
-		const component = h.component;
+		const segment = h.segment;
 		for (const event of [null, {}, { type: "action", act: "unrelated" }, { type: "other", act: OPEN_ACTION }]) {
-			component.handleNativeEvent(event);
+			segment.handleNativeEvent(event);
 		}
 		assert.equal(h.customCalls.length, 0);
-		component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
+		segment.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		assert.equal(h.customCalls.length, 1);
 		assert.deepEqual(h.customCalls[0]?.options, { overlay: true });
 		assert.equal(h.sheet.nativeSheet?.(), true);
-		component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
+		segment.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		assert.equal(h.customCalls.length, 1, "a second click while open does nothing");
 		const first = h.customCalls[0]!;
 		const disposed = t.mock.method(first.component, "dispose");
@@ -655,7 +795,7 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		assert.equal(h.sheetOpen, false);
 		assert.equal(first.disposed, true);
 		assert.equal(disposed.mock.callCount(), 1);
-		component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
+		segment.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		assert.equal(h.customCalls.length, 2, "settling the custom promise allows another sheet");
 		const second = h.customCalls[1]!;
 		assert.notEqual(second.component, first.component);
@@ -665,8 +805,7 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		assert.equal(h.sheetOpen, false);
 		assert.equal(second.disposed, true);
 		assert.equal(escaped.mock.callCount(), 1);
-		assert.equal(h.mounted, true, "closing the sheet does not dismiss the pill");
-		assert.equal(h.calls.length, 1, "sheet interactions reuse the mounted widget");
+		assert.strictEqual(h.segment, segment, "closing the sheet keeps the segment");
 	});
 
 	it("lists sessions in id order and changes the plain recent-output preview through select and arrow keys", async (t) => {
@@ -681,7 +820,7 @@ describe("terminal HUD lifecycle with real sessions", () => {
 			await waitFor(() => session.styledScreen()?.text.includes(marker) === true,
 				(listener) => session.onScreenChange(listener), "real PTY output reaches the terminal screen");
 		}
-		h.component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
+		h.segment.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		const sheet = h.sheet;
 		const initial = sheet.describe();
 		assert.deepEqual(pickerItems(initial).map((item) => item.id), [`s${first.id}`, `s${second.id}`, `s${third.id}`]);
@@ -730,7 +869,7 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		const session = h.spawn([process.execPath, "-e", "process.stdout.write('ready\\n'); process.stdin.once('data', () => process.exit(0))"]);
 		await waitFor(() => session.styledScreen()?.text.includes("ready") === true,
 			(listener) => session.onScreenChange(listener), "real child is ready for stdin");
-		h.component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
+		h.segment.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		const sheet = h.sheet;
 		const initial = sheet.describe();
 		assert.deepEqual(pickerItems(initial), [{ id: `s${session.id}`, dot: "accent" }]);
@@ -743,7 +882,8 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		assert.deepEqual(pickerItems(exitedView), [{ id: `s${session.id}`, dot: "success" }]);
 		assert.equal(exitedView.p?.subtitle, "0 running · 1 stored");
 		assert.equal(h.mounted, true);
-		assert.equal(terminalCount(h.component.describe()), 1, "exited sessions remain in the pill count");
+		assert.equal(terminalCount(h.segment.describe()), 1, "exited sessions remain in the pill count");
+		assert.equal(h.segment.describe().p?.title, "1 terminal · 0 running", "the segment re-describes on a real exit");
 	});
 
 	it("never reads a released removed session when describing the remaining pill or sheet", async (t) => {
@@ -751,17 +891,17 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		await h.emit("session_start");
 		const removed = h.spawn();
 		const remaining = h.spawn();
-		h.component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
+		h.segment.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		assert.equal(h.sheet.describe().p?.selected, `s${removed.id}`);
 		removed.terminate();
 		h.store.remove(removed.id);
 		await removed.release();
 		const forbiddenRead = t.mock.method(removed, "styledScreen", () => { throw new Error("removed screen read after release"); });
-		assert.equal(terminalCount(h.component.describe()), 1);
+		assert.equal(terminalCount(h.segment.describe()), 1);
 		assert.equal(h.sheet.describe().p?.selected, `s${remaining.id}`);
-		h.component.invalidate();
+		h.segment.invalidate();
 		h.sheet.invalidate();
-		assert.doesNotThrow(() => h.component.describe());
+		assert.doesNotThrow(() => h.segment.describe());
 		assert.doesNotThrow(() => h.sheet.describe());
 		assert.equal(forbiddenRead.mock.callCount(), 0);
 	});
@@ -772,7 +912,7 @@ describe("terminal HUD lifecycle with real sessions", () => {
 			await h.emit("session_start");
 			h.spawn();
 			const selected = h.spawn();
-			h.component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
+			h.segment.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 			h.sheet.handleNativeEvent({ type: "select", item: `s${selected.id}` });
 			const sheetCall = h.customCalls[0]!;
 			if (openWith === "activate") h.sheet.handleNativeEvent({ type: "activate", item: `s${selected.id}` });
@@ -802,7 +942,7 @@ describe("terminal HUD lifecycle with real sessions", () => {
 			assert.equal(ansiText(view), selected.styledScreen()?.text);
 			assert.deepEqual(nodesOfKind(view, "row").filter((node) => node.p?.role === "omp.btn").map((node) => node.p?.actions),
 				[{ click: KILL_ACTION }, { click: BACK_ACTION }]);
-			h.component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
+			h.segment.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 			assert.equal(h.customCalls.length, 2, "a pill click cannot open another sheet over the page");
 			if (backWith === "esc") page.handleInput("\x1b");
 			else page.handleNativeEvent({ type: "action", act: backWith === "back" ? BACK_ACTION : CLOSE_ACTION });
@@ -819,7 +959,7 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		await h.emit("session_start");
 		const finished = h.spawn([process.execPath, "-e", "process.exit(0)"]);
 		await waitFor(() => finished.hasExited, (listener) => finished.onExit(listener), "finished session exits");
-		h.component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
+		h.segment.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		h.sheet.handleNativeEvent({ type: "action", act: KILL_ACTION });
 		h.sheet.handleInput("x");
 		assert.deepEqual(h.killCalls, [], "an exited selection cannot be killed");
@@ -847,7 +987,7 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		].join("; ")]);
 		await waitFor(() => session.styledScreen()?.text.includes("input-ready") === true,
 			(listener) => session.onScreenChange(listener), "stdin terminal is ready with echo disabled");
-		h.component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
+		h.segment.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		h.sheet.handleInput("\r");
 		await h.waitForCustom(2);
 		const page = h.page;
@@ -874,7 +1014,7 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		const session = h.spawn([process.execPath, "-e", "process.stdout.write('ready\\n'); process.stdin.once('data', () => process.exit(0))"]);
 		await waitFor(() => session.styledScreen()?.text.includes("ready") === true,
 			(listener) => session.onScreenChange(listener), "page child is ready");
-		h.component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
+		h.segment.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		h.sheet.handleInput("\r");
 		await h.waitForCustom(2);
 		const page = h.page;
@@ -895,7 +1035,7 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
 		const session = h.spawn();
-		const pill = h.component;
+		const pill = h.segment;
 		pill.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		h.sheet.handleInput("\r");
 		await h.waitForCustom(2);

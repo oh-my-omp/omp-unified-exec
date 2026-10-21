@@ -1,24 +1,4 @@
 /*
- * omp-unified-exec's terminals pill sits above omp's pill line.
- *
- * omp's dock ends with the shared `belowEditor` widget container. Move that
- * container above omp's counter line; each terminal row uses native `omp.hud`
- * styling for its margins and Reader, Spine or Console geometry.
- *
- * Clear only the container spacing, background and inset shadow that Spine
- * otherwise adds around the native HUD row. Other belowEditor widgets share
- * this placement and reset. With no widgets the selector still matches the
- * empty, zero-size container, not the editor.
- */
-html .sf-region.sf-dock > .sf-col.gap-none:last-child {
-	order: -1;
-	margin: 0;
-	padding: 0;
-	background: none;
-	box-shadow: none;
-}
-
-/*
  * The Terminals sheet's Recent output: Tern draws a `code` block inside a
  * picker preview in the UI face, which misaligns a terminal's columns. Its
  * rows take the mono face and size of the preview's facts instead. Without
