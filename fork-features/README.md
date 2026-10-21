@@ -196,7 +196,10 @@ light and a dark appearance (`palette "Dark appearance"`; `theme dark NAME`
 only picks the dark theme), both with no Tern plugin and with omp-todo-more's
 extension and Tern plugin. The terminals segment must be the last
 `omp.hud.seg` of omp's single `omp.hud.pill`, with the same height and font as
-the agents and jobs segments and the same divider as between them, and no
+the agents and jobs segments and Tern's segment divider at its left edge (Tern
+drops that 1px line at some sub-pixel boundary positions, native boundaries
+included; compare the boundary x with a native-only pill before blaming the
+segment), and no
 second `omp.hud` row. The Terminals sheet
 must open like the Agents sheet and pick a session by click and ↑/↓. Kill and
 `x` must end only the selected running session after confirmed exit; Open /

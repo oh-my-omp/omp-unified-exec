@@ -221,47 +221,51 @@ whose GitHub issues are intentionally disabled:
 
 ## Evidence and reproduction
 
-Tern theme qualification starts from a real window, not `tern serve` (which
-does not load plugins), with isolated state and screenshots under
-`/tmp/tern-pill-theme-check/`. Preserve the operator's fonts and dimensions;
-use the existing OS account and omp credential paths, never fixture secrets.
-Tern 0.8.3 requires `-e` as its first argument; a controlled window may instead
-start a shell and run the checkout explicitly in its dedicated test pane:
+Tern qualification starts from a real window, not `tern serve` (which does
+not load plugins), with isolated state. Copy the operator's `settings.json`
+into an isolated `TERN_CONFIG_DIR`, keep a separate `TERN_DAEMON_SOCKET`
+(plugin `list`/`install`/`remove` read the operator's daemon unless both are
+set), and launch the window from a directory under `/tmp` (screenshots land in
+`target/shots/tern/live/` under the window process's cwd):
 
 ```bash
-tern --control /tmp/tern-pill-theme-check/control.sock
-# In that isolated pane:
-omp --no-extensions -e /ABSOLUTE/CHECKOUT/src/index.ts --no-session --no-title
+TERN_CONFIG_DIR=$D/config TERN_DAEMON_SOCKET=$D/daemon.sock \
+  /Applications/Tern.app/Contents/MacOS/tern --control $D/control.sock $D
+# scenario command in that window's pane:
+run "omp --no-extensions -e /ABSOLUTE/CHECKOUT/src/index.ts --no-session --no-title"
 ```
 
-Set `TERN_CONFIG_DIR` and `TERN_DAEMON_SOCKET` to the isolated config and
-daemon socket when addressing that daemon from outside its pane. The window
-control socket is separate. Factory initialization must complete before the
-extension activates: confirm the exact normal three-file copy and Tern's ready
-catalog match the checkout, with no `.path` registration. Package-update
-qualification uses normal `omp plugin install URL --force`, not `-e`, and
-checks that copy immediately after the command returns, before any session.
+Factory initialization must complete before the extension activates: confirm
+the exact normal three-file copy and Tern's ready catalog match the checkout,
+with no `.path` registration. Package-update qualification uses normal
+`omp plugin install URL --force`, not `-e`, and checks that copy immediately
+after the command returns, before any session. For a plugin-free run, remove
+the auto-installed copy after the extension initialized
+(`tern plugin remove omp-unified-exec --json`) and confirm `list` is empty;
+for the operator's setup, also install omp-todo-more's Tern plugin and load
+its extension with a second `-e`. Switch chat styles with `palette "Chat
+style: Reader"` (Spine, Console) and appearance with `palette "Dark
+appearance"` / `"Light appearance"`, each followed by `key Enter`;
+`theme dark NAME` only picks the dark theme, so confirm the dump header's
+`theme`. A tiling window manager can pin the window size: float the test
+window before `resize`, and read the real viewport from `tern ctl stats`.
 
 Use the real omp input to start `cat` and `sleep 600` with
-`yield_time_ms: 1000`, plus a read-only background agent. The terminal count
-must be 2 while the native agent counter is visible. Before editing, capture
-the same theme/style combination, rectangles and screenshot. After editing,
-repeat the full entry path; switch Reader, Spine and Console and a light/dark
-theme without replacing those sessions. At 1280×800 and 700px width,
-compare row/pill right edges (within 1px), font, height, radius, border and
-hover against the agent counter in the same pane. Check Spine focus/unfocus,
-no outer ✕ or empty button, no double inset/plate/spacing, and no Console
-full-width mismatch. `tern ctl dump` reports runtime rectangles and fonts;
-identify the two rows by their terminal/users icon descendants.
-
-Click the terminal counter; Close and Esc must leave both processes alive.
-Kill sleep from the list: only its confirmed exit removes its row and changes
-2 to 1. Open cat, type `hello-from-tern` and Enter, observe the actual echo,
-then Kill from its page: await exit/removal, the list empties and the counter
-unmounts. Starting another session must immediately show 1. With no session or other
-widget, compare composer/meter/activity/todo rectangles against a plugin-free
-baseline in every style; the selected empty container must occupy no height.
-List `x` remains Kill and is also covered by the real-session automated tests.
+`yield_time_ms: 1000`, an async `bash` `sleep 900` and a background subagent.
+`tern ctl dump '[data-role^="omp.hud"]'` reports runtime rectangles and
+fonts; identify segments by their users/job/terminal icons. Check one
+`omp.hud` row and one `omp.hud.pill` whose last `omp.hud.seg` is the terminal
+count, equal segment heights and fonts, and Tern's divider at the terminal
+segment's left edge (scan ±3 px of each boundary in a 2x crop; the dump does
+not expose radius, border or `::before`). Click the terminal segment; Close
+and Esc must leave both processes alive. Kill sleep from the list: only its
+confirmed exit removes its row and changes 2 to 1. Open cat, type
+`hello-from-tern` and Enter, observe the actual echo, then Kill from its page:
+await exit/removal, and once exited sessions are drained the segment leaves
+while agents and jobs still open their sheets. Starting another session must
+immediately show 1, with only that segment in a shown pill when omp has no
+agents or jobs. List `x` remains Kill and is also covered by the real-session
+automated tests.
 
 OSC 10/11 qualification, 2026-10-12, macOS arm64 / omp 18.10.1, isolated real
 window: an omp started in a tty session and opened on the terminal page drew
@@ -291,60 +295,33 @@ running and no credential copies. Commands, owner replies, byte hashes,
 before/after state and results are under
 `/tmp/tern-auto-install-check/acceptance/` (`matrix-summary.json`).
 
-Before-change reproduction, 2026-10-13, macOS arm64, Tern 0.8.3 / omp 18.10.3,
-operator fonts at 12px, light-dawn, 1280×800: the checkout extension started
-cat (#1), sleep (#2) and a background agent in the isolated real window.
-Console's native agent pill ended at x1259 while the terminal pill ended at
-x1233.69; the outer ✕ occupied the remaining space. After switching through
-the real Chat style control, Spine's shared widget container had a
-44.31px height and `rgba(255, 255, 255, 0.55)` background, and pill right edges
-were x1027.69 (agent) and x1002.64 (terminal). The pre-change window screenshot
-is `/tmp/tern-pill-theme-check/before-spine.png`. This establishes the original
-layout defect, not post-change qualification.
-
-Post-change theme qualification, same environment: a fresh omp process loaded
-the modified checkout, started cat (#1, PID 1910), sleep (#2, PID 1912) and a
-native background agent (PID 2050). The same two tty sessions stayed stored
-while the real settings UI selected Reader, Spine and Console at 1280×800 and
-700×800, with light-dawn and titanium selected from the available picker.
-All 12 focused combinations had identical native/terminal row and pill right
-edges, fonts and pill heights; the terminal row remained above the agent row
-and the count stayed 2. Four additional Spine combinations used a real
-split-down shell to take focus: the tested surface had `sf-unfocused`, kept
-its width and transparent container, and still matched both right edges.
-The split changed pane height, which the geometry records include.
-
-The real hover comparisons in all six style/theme combinations also matched:
-light segments used `rgba(45, 52, 64, 0.06)` and dark segments used
-`rgba(232, 236, 244, 0.06)`. Same-pane screenshots show matching border/radius
-appearance, no outer ✕ or empty button and no Spine plate; the native dump
-does not expose numeric border/radius values. Close and Esc retained the
-two terminal counters and the live native agent. Geometry, accessibility,
-hover observations and screenshots are under `/tmp/tern-pill-theme-check/`
-(`matrix-*.json/png`, `matrix-summary.json`, `hover-matrix.json`,
-`after-close-escape.json`).
-
-The same real interaction path killed sleep from the list (only cat remained,
-count 1), opened cat and showed `hello-from-tern` twice (terminal echo and
-cat output), then killed cat from its page. The empty sheet reported
-`0 running · 0 stored`; its counter unmounted and the selected widget
-container was an invisible `sf-void` at `[0, 0, 0, 0]`. A new tty (#5) mounted
-count 1 immediately and was killed through the list afterward. The captured
-sequence is in `list-kill-sleep.json`, `cat-echo.png`, `page-kill-cat.json`,
-`empty-list-unmounted.json` and `new-tty-remount.json` in that directory.
-
-No-tty geometry qualification used a fresh checkout omp with a per-run
-`--config=/tmp/tern-pill-theme-check/todo-startup.yml` overlay containing
-`todo: { enabled: true }`, so real working and native todo HUD rows were
-visible during a pipe wait. Across eight same-process
-linked/plugin-free pairs (three styles at both widths, plus Spine unfocused
-at both widths), actual `tern plugin unlink` / `link` changed only the
-isolated daemon's stylesheet. The dock, working, todo, Message and context
-meter rectangles were identical, as were all visible descendant backgrounds.
-The selector always matched the invisible zero-size `sf-void`, never the
-editor. Its computed Spine background changed, but with no paint area.
-Evidence: `final-baseline-summary.json`, `final-plugin-*.json/png`,
-`final-pluginfree-*.json/png` and `plugin-lifecycle-comparison.json`.
+Pill-group qualification, 2026-10-22, macOS arm64, Tern 0.9.5 / omp 18.12.5,
+operator fonts, `issue-76-pill-segment@03a1742`
+([#76](https://github.com/oh-my-omp/omp-unified-exec/issues/76)). Before the
+change, survey runs in Reader, Spine and Console with light-dawn and dark-nord
+found the terminal counter a separate capsule on another `omp.hud` row in
+every case; without Tern plugins and with omp-todo-more it sat below the
+composer (Reader with omp-todo-more at 1100×850: native pill y 648, terminal
+pill y 801), because omp-todo-more's dock grid made the moved container
+`display: contents`. After the change, two isolated real windows (no Tern
+plugin; omp-todo-more extension and plugin) each covered Reader, Spine and
+Console × light-dawn/dark-nord at 1100×850 and each style at 700×850 with an
+agent, background jobs and two sessions. All 18 cells had one `omp.hud` row
+and one pill ordered agents 1, jobs 2, terminals 2, with equal segment heights
+and fonts (Reader/Spine 18.47 px, 10.6154 px weight 500; Console 16 px, 12 px
+weight 400) and the pill above the composer, omp-todo-more's own HUD still in
+its activity track. The terminal boundary painted Tern's divider in every
+cell (RGB delta 18 light, 15 dark). In Reader light at 700 px, both windows
+showed no painted line at the native agents|jobs boundary (x 588.984, device
+fraction 0.969); draining the terminals moved that boundary to x 625.688
+(fraction 0.375), where it painted. Tern's 1px divider therefore depends on
+the boundary's sub-pixel position, not on the terminal segment. Clicking the
+segment opened the Terminals sheet, Esc kept the sessions, list `x` changed 2
+to 1, draining the last session removed the segment while Agents and
+Background jobs still opened, and a lone new session showed a visible pill
+holding only its segment. Evidence is under `/tmp/tern-76-verify/`
+(`*/shots/*.png`, `*.dump.json`, `divider-pixel-evidence.json`,
+`narrow-native-control.json`).
 
 Current automated qualification runs strict types and the full suite through
 `npm test` (Bun's native runner). Real PTY suites are mandatory, including:
