@@ -36,6 +36,8 @@ import { type AgentToolResult, type AgentToolUpdateCallback, type ExtensionAPI, 
 import { Type, type TUnsafe } from "typebox";
 
 import { type ActivatedExtension, withHostPresentation } from "../fork-features/omp-presentation.ts";
+import { approvalCommand, approveBoundCommand, type CommandApprovalHost } from "../fork-features/command-approval.ts";
+import { bindingContext, bindSession, type HostBindingState, recheckBinding } from "../fork-features/session-binding.ts";
 import { MonitorError } from "../fork-features/monitor-subscription.ts";
 import { type CollectResult, NO_OUTPUT } from "./collect.ts";
 import { CompletionCoordinator, type OnExitPolicy, sanitizeMeta } from "./completion.ts";
@@ -912,7 +914,9 @@ export function activate(
 	pi: ExtensionAPI,
 	appearance: () => TerminalAppearance = () => "dark",
 	shellPath?: () => string | undefined,
+	approvalHost?: CommandApprovalHost,
 ): ActivatedExtension {
+	let binding: HostBindingState = { kind: "pending" };
 	const coordinator = new CompletionCoordinator({
 		send: (message) => {
 			// If pi is idle this starts a model turn; if a run is active it is
@@ -969,11 +973,23 @@ export function activate(
 	});
 
 	pi.on("session_start", async (_event, eventCtx) => {
+		if (approvalHost && binding.kind === "pending") binding = bindSession(approvalHost, bindingContext(eventCtx));
 		ctx.ui = eventCtx.ui;
 		ctx.shuttingDown = false; // reload/new/resume re-arms the extension
 		ctx.coordinator.reset(); // never resurrect wakes from a previous session
 		updateRunningSessionsUi(ctx);
 	});
+
+	// omp lifecycle events absent from the Pi dependency's public declarations.
+	const onSessionChange = (pi as ExtensionAPI & {
+		on(event: "session_switch" | "session_branch",
+			handler: (event: unknown, context: unknown) => Promise<void>): void;
+	}).on;
+	for (const event of ["session_switch", "session_branch"] as const) {
+		onSessionChange.call(pi, event, async (_event, eventCtx) => {
+			binding = recheckBinding(binding, bindingContext(eventCtx));
+		});
+	}
 
 	pi.on("session_tree", async (_event, eventCtx) => {
 		ctx.ui = eventCtx.ui;
@@ -1074,6 +1090,10 @@ export function activate(
 	pi.registerTool({
 		name: "exec_command",
 		label: "exec_command",
+		...(approvalHost ? {
+			approval: (args: unknown) => approveBoundCommand(approvalHost, binding, args),
+			formatApprovalDetails: (args: unknown) => [`Command: ${approvalHost.helpers.truncateForPrompt(approvalCommand(args, "(missing)"))}`],
+		} : {}),
 		description:
 			'Run a command in a PTY session for long-running, interactive (REPLs, TUIs, ssh, sudo), concurrent or dev-daemon work; use bash for short one-shot commands. There is no command deadline and nothing restarts a process that exits. Returns `session_id` if still running (drive with write_stdin, observe with monitor or read terminal_url) or `exit_code` if it finished within yield_time_ms. on_exit defaults to "none". Only pass on_exit: "wake" when the human explicitly wants auto-resume on unobserved exit — stale wakes interrupt later work. Use set_on_exit to disarm or re-arm a running session.',
 		promptSnippet: "Run a long-running or interactive command in a PTY session",

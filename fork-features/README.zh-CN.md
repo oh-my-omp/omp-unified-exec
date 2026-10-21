@@ -21,6 +21,7 @@
 | 后续输出 monitor 与多次后续唤醒 | `fork-features/monitor-subscription.ts`、`src/completion.ts`、`src/session.ts`、`src/terminal-screen.ts`、`src/index.ts`、`src/script-result.ts`、`tests/monitor.test.ts` | 源头建立不消费输出的后续观察边界；完成协调器拥有实际订阅，并合并 End 与普通唤醒。现有 `pi.sendMessage` 接口以 `display:true`、`triggerTurn:true`、`deliverAs:"followUp"` 投递 `unified-exec-monitor`；工具和消息都沿用宿主默认呈现。 | 仅 fork |
 | 仅 PTY 的 `exec_command`：每个会话都在 PTY 中运行；删除管道后端、`tty` 参数/结果字段、内存原始输出保留、管道 monitor 解码，以及移除宿主 `bash` 的参数 | `src/pty.ts`、`src/session.ts`、`src/collect.ts`、`src/long-wait.ts`、`src/output-safety.ts`、`src/index.ts`、`src/shell.ts`、`src/tool-result.ts`、`src/script-result.ts`、`src/terminal-screen.ts`、`fork-features/monitor-subscription.ts`、`fork-features/terminal-resource.ts`、`fork-features/tern-terminal-hud.ts`、`fork-features/omp-presentation.ts` | 管道会话无限保持 stdin 打开，与宿主 `bash` 重复，却缺少其审批、direnv、Git Guard、自动后台与输出整形（[#61](https://github.com/oh-my-omp/omp-unified-exec/issues/61)）。PTY 把每次读取限制为渲染后的屏幕状态，及时刷新交互输出，并把 Ctrl-C 交给前台进程组。短命令留给宿主 `bash`；写入不追加内容，PowerShell 使用 `-NoProfile -NoLogo -Command`，缺少 PTY 后端时明确报错，退出的进程不会重启。 | 仅 fork |
 | Shell 选择跟随宿主：显式 `shell`，然后是 omp 实时的 `shellPath`，然后是 `SHELL`，最后是平台默认值；结果、流式更新、kill 结果和会话列表写明实际启动的可执行文件 | `fork-features/omp-presentation.ts`（`loadOmpShellPath`，由 `withHostPresentation` 传给 `activate`）、`fork-features/omp-tools.d.ts`；`src/shell.ts` 中的 `resolveDefaultShell`；`src/index.ts` 中 `runExecCommand` 的 shell 解析和 `activate`；`src/session.ts` 中的 `ExecSession.shell`；`src/tool-result.ts` 和 `src/script-result.ts` 中的 `shell`；`tests/shell.test.ts`、`tests/e2e.test.ts` | 上游在 POSIX 上固定使用 `bash`，在 Windows 上自行探测，所以 omp 配置的 shell 或登录 shell 可能与实际执行命令的 shell 不同，而结果也不说明用的是哪个（[#63](https://github.com/oh-my-omp/omp-unified-exec/issues/63)）。`shellPath` 归 omp 所有：`@oh-my-pi/pi-coding-agent/config/registry` 提供 `lookup("shellPath").get(host.pi.settings)`。通过准入的 factory 与其他 omp 模块一起加载它；每个新进程都通过该 getter 读取有效设置，从不使用激活时的副本。注册表形状改变时让插件加载失败。shell 解析先于 argv 构造，失败后绝不换用优先级更低的 shell。`ExecSession.shell` 读取 `command[0]`，所以后续结果沿用实际启动的可执行文件。命令文本不做转换：cmd 和 PowerShell 保留各自的 argv；其他 shell 一律使用 `-c`。 | 仅 fork |
+| 命令审批与宿主会话绑定（[#29](https://github.com/oh-my-omp/omp-unified-exec/issues/29)） | `fork-features/command-approval.ts`、`fork-features/session-binding.ts`、`fork-features/omp-presentation.ts`、`fork-features/omp-tools.d.ts`、`src/index.ts`、`tests/command-approval.test.ts` | `exec_command` 在执行之前用内置 bash 的决定逻辑检查原始 `cmd`。第一次 `session_start` 经 `AgentRegistry.global().get(ctx.agent.id)?.session` 取得会话并核对 `sessionManager` 身份；switch/branch 只复核身份。每次审批读取实际会话的实时 settings，不用全局 settings 或 cwd。Unbound 不读 settings，返回裸 `exec`，不禁用执行。其他工具保留宿主默认审批。 | 仅 fork |
 
 环境变量（`PI_UNIFIED_EXEC_*`）和原有工具名保持不变。其余 `src/*` 模块路径不变；仅用于管道和 Pi 的模块直接删除，不保留兼容 shim。
 
@@ -64,6 +65,29 @@ omp 升级后，要重新验证 `@oh-my-pi/pi-coding-agent/internal-urls`：
 与重绘，以及 ANSI/Tern 的默认工具卡片和消息样式保持一致。
 
 omp 升级后要重新验证 shell 桥接：`@oh-my-pi/pi-coding-agent/config/registry` 必须仍然导出 `lookup`，`lookup("shellPath").get(host.pi.settings)` 必须仍以字符串或 undefined 返回 omp 的有效设置。通过真实的交互式 omp 验证：`shellPath` overlay 优先于 `SHELL`，显式 `shell` 优先于两者；不存在的显式 `shell` 必须返回 `spawn … ENOENT` 且没有输出，而不是改用其他 shell（omp 自己会在启动时、扩展加载之前拒绝不存在的 `shellPath`）；之后的轮询、kill 和列表必须沿用会话的 shell；默认 `workdir` 必须仍然跟随 omp 的 cwd。
+
+命令审批移植自
+[`can1357/oh-my-pi@57b56631ee009098a78d9badf91afc3a48eef32e`](https://github.com/can1357/oh-my-pi/blob/57b56631ee009098a78d9badf91afc3a48eef32e/packages/coding-agent/src/tools/bash.ts)
+的 `packages/coding-agent/src/tools/bash.ts`（内部规则辅助函数、
+`BashTool.approval` / `formatApprovalDetails`）。差异是参数名 `cmd`、
+显式的绑定会话 settings、注入的宿主辅助函数和带类型的边界解析；
+保留规则顺序以及全部 compound/critical 分支。
+POSIX shell 判据复制自 `packages/utils/src/procmgr.ts`。
+factory 加载根导出 `AgentRegistry` / `CRITICAL_BASH_PATTERNS`、
+`exec/settings` 的 `cfgBashPatterns` / `cfgBashAllowCompoundCommands`、
+`tools/shell-tokenize` 的 `tokenizeShellSegments` /
+`extractLiteralAndChainSegments`，以及 `tools/approval` 的 `truncateForPrompt`。
+缺少导出就拒绝插件加载；同步审批不做 import。
+
+omp 升级后，先对照当前内置函数检查移植，再在真实 omp 中分别关闭与开启复合审批，
+逐项比较有序 first-match、整链限制、全部段 allow、deny/prompt/critical 优先级和显示截断。
+重新验证内部会话接口：注册表在 `session_start` 前完成注册、`ctx.agent.id`、
+精确的 `sessionManager` 身份、实时 `session.settings` 和 `getShellConfig().shell`；
+switch/branch 必须沿用同一会话而不查注册表。创建带不同 settings overlay 的真实子 agent，
+以及使用私有注册表的 Unbound 子会话，确认 pending/Unbound 不读 settings 且返回裸 `exec`。
+确认宿主工具代理和本插件的呈现 spread 保留 `approval` 与 `formatApprovalDetails`，
+deny 不启动进程，真实 TUI 确认框显示危险原因与 `Command: …`。
+只有审批使用此绑定；PTY shell 选择保持已有宿主桥接。
 
 跟随宿主的 shell 选择同样是要长期保留的 fork 定制。
 

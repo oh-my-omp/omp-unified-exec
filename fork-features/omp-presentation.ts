@@ -13,6 +13,7 @@ import { requireBunRuntime } from "../src/pty.ts";
 import type { SessionStore } from "../src/session-store.ts";
 import type { TerminalAppearance } from "../src/terminal-screen.ts";
 import { truncationMarker } from "../src/tool-result.ts";
+import { type CommandApprovalHost, loadCommandApprovalHost } from "./command-approval.ts";
 import { loadNativeRenderingState, mountTerminalHud } from "./tern-terminal-hud.ts";
 import { initializeTernPlugin } from "./tern-plugin-install.ts";
 import { initializeTerminalUrls } from "./terminal-url.ts";
@@ -437,7 +438,7 @@ async function loadOmpShellPath(host: ExtensionAPI): Promise<() => string | unde
  * factory during package install/force-reinstall validation.
  */
 export function withHostPresentation(
-	activate: (pi: ExtensionAPI, appearance?: () => TerminalAppearance, shellPath?: () => string | undefined) => ActivatedExtension,
+	activate: (pi: ExtensionAPI, appearance?: () => TerminalAppearance, shellPath?: () => string | undefined, approvalHost?: CommandApprovalHost) => ActivatedExtension,
 ): (host: ExtensionAPI) => void | Promise<void> {
 	return (host) => {
 		if (!("arktype" in host)) {
@@ -445,10 +446,10 @@ export function withHostPresentation(
 		}
 		requireBunRuntime();
 		// The omp modules load before activating, so a reshaped omp fails plugin loading with nothing registered.
-		return Promise.all([presentOnOmp(host), loadNativeRenderingState(), loadOmpAppearance(), loadOmpShellPath(host)]).then(async ([pi, native, appearance, shellPath]) => {
+		return Promise.all([presentOnOmp(host), loadNativeRenderingState(), loadOmpAppearance(), loadOmpShellPath(host), loadCommandApprovalHost()]).then(async ([pi, native, appearance, shellPath, approvalHost]) => {
 			await initializeTernPlugin();
 			await initializeTerminalUrls();
-			const activated = activate(pi, appearance, shellPath);
+			const activated = activate(pi, appearance, shellPath, approvalHost);
 			mountTerminalHud(pi, activated.store, native, activated.kill);
 		});
 	};

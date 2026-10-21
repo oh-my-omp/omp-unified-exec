@@ -26,6 +26,7 @@ both register `exec_command` and the other unified-exec tools.
 | Future-output monitors and repeated follow-up wakes | `fork-features/monitor-subscription.ts`, `src/completion.ts`, `src/session.ts`, `src/terminal-screen.ts`, `src/index.ts`, `src/script-result.ts`, `tests/monitor.test.ts` | The source establishes a non-consuming future boundary; the completion coordinator owns actual subscriptions and merges End with ordinary wake. The existing `pi.sendMessage` seam delivers `unified-exec-monitor` with `display:true`, `triggerTurn:true`, `deliverAs:"followUp"`; the tool and messages retain host-default presentation. | Fork-only |
 | PTY-only `exec_command`: every session runs in a PTY; the pipe backend, `tty` parameter/result field, in-memory raw-output retention, pipe monitor decoding and the flag removing host `bash` are deleted | `src/pty.ts`, `src/session.ts`, `src/collect.ts`, `src/long-wait.ts`, `src/output-safety.ts`, `src/index.ts`, `src/shell.ts`, `src/tool-result.ts`, `src/script-result.ts`, `src/terminal-screen.ts`, `fork-features/monitor-subscription.ts`, `fork-features/terminal-resource.ts`, `fork-features/tern-terminal-hud.ts`, `fork-features/omp-presentation.ts` | A pipe session kept stdin open indefinitely and duplicated host `bash` without its approval, direnv, Git Guard, auto-backgrounding and output shaping ([#61](https://github.com/oh-my-omp/omp-unified-exec/issues/61)). PTYs bound each read to rendered screen state, flush interactive output promptly and route Ctrl-C through the foreground process group. Short commands stay with host `bash`; writes append nothing, PowerShell uses `-NoProfile -NoLogo -Command`, missing PTY backends fail explicitly, and exited processes never restart. | Fork-only |
 | Shell selection follows the host: an explicit `shell`, then omp's live `shellPath`, then `SHELL`, then the platform default; results, streaming updates, kill results and session listings name the executable actually spawned | `fork-features/omp-presentation.ts` (`loadOmpShellPath`, passed to `activate` by `withHostPresentation`), `fork-features/omp-tools.d.ts`; `resolveDefaultShell` in `src/shell.ts`; shell resolution in `runExecCommand` and `activate` in `src/index.ts`; `ExecSession.shell` in `src/session.ts`; `shell` in `src/tool-result.ts` and `src/script-result.ts`; `tests/shell.test.ts`, `tests/e2e.test.ts` | Upstream hard-wired `bash` on POSIX and probed Windows itself, so omp's configured or login shell could differ from the shell that ran a command, and results did not say which one ran ([#63](https://github.com/oh-my-omp/omp-unified-exec/issues/63)). omp owns `shellPath`: `@oh-my-pi/pi-coding-agent/config/registry` exposes `lookup("shellPath").get(host.pi.settings)`. The admitted factory loads it with the other omp modules; each new process reads the effective setting through that getter, never an activation-time copy. A reshaped registry fails plugin loading. Shell resolution precedes argv construction, with no lower-priority fallback after failure. `ExecSession.shell` reads `command[0]`, so later results retain the spawned executable. Command text is not translated: cmd and PowerShell keep their argv; every other shell gets `-c`. | Fork-only |
+| Command approval and host session binding ([#29](https://github.com/oh-my-omp/omp-unified-exec/issues/29)) | `fork-features/command-approval.ts`, `fork-features/session-binding.ts`, `fork-features/omp-presentation.ts`, `fork-features/omp-tools.d.ts`, `src/index.ts`, `tests/command-approval.test.ts` | `exec_command` checks raw `cmd` through the built-in bash decision logic before execution. Its first `session_start` binds `AgentRegistry.global().get(ctx.agent.id)?.session` with `sessionManager` identity; switches/branches only recheck. Every approval reads that actual session's live settings, never global settings or cwd. Unbound returns bare `exec` without settings access and does not disable execution. Other tools retain host-default approval. | Fork-only |
 
 Environment variables (`PI_UNIFIED_EXEC_*`) and existing tool names are unchanged.
 Remaining `src/*` module paths are unchanged; pipe-only and Pi-only modules are
@@ -119,6 +120,33 @@ interactive omp, a `shellPath` overlay must outrank `SHELL` and an explicit
 return `spawn … ENOENT` and no output rather than another shell (omp itself
 rejects a missing `shellPath` at startup, before the extension loads); later polls, kills and listings must repeat the session's shell;
 and the default `workdir` must still follow omp's cwd.
+
+Command approval is ported from
+[`can1357/oh-my-pi@57b56631ee009098a78d9badf91afc3a48eef32e`](https://github.com/can1357/oh-my-pi/blob/57b56631ee009098a78d9badf91afc3a48eef32e/packages/coding-agent/src/tools/bash.ts),
+`packages/coding-agent/src/tools/bash.ts` (internal rule helpers and
+`BashTool.approval` / `formatApprovalDetails`). Differences are argument name
+`cmd`, explicit bound-session settings, injected host helpers, and typed
+boundary parsing; rule ordering and every compound/critical branch are retained.
+The POSIX-shell predicate is copied from `packages/utils/src/procmgr.ts`.
+Factory loading imports root `AgentRegistry` / `CRITICAL_BASH_PATTERNS`,
+`exec/settings`'s `cfgBashPatterns` / `cfgBashAllowCompoundCommands`,
+`tools/shell-tokenize`'s `tokenizeShellSegments` /
+`extractLiteralAndChainSegments`, and `tools/approval`'s `truncateForPrompt`.
+Missing exports reject plugin loading; synchronous approval imports nothing.
+
+On omp upgrades, compare the port with the current built-in functions, then
+run real omp comparisons with compound approval both off and on: ordered
+first-match, whole-chain restrictions, all-segments-allow, deny/prompt/critical
+precedence, and display truncation. Requalify the internal session interface:
+registry registration before `session_start`, `ctx.agent.id`, the exact
+`sessionManager` identity, live `session.settings` and `getShellConfig().shell`;
+switches/branches must retain the same session without registry lookup.
+Create real child agents with distinct settings overlays and a private-registry
+Unbound child; ensure pending/Unbound reads no settings and returns bare `exec`.
+Verify the host's tool proxy and our presentation spread retain `approval` and
+`formatApprovalDetails`, deny calls spawn nothing, and real TUI confirmation
+shows the critical reason and `Command: …`. Only approval uses this binding;
+PTY shell selection keeps its existing host bridge.
 
 
 Host shell selection is also a fork customization meant to stay.

@@ -103,6 +103,21 @@ history_lines: 2                   (running, optional: lines scrolled off above 
 [Showing lines 3900-4120 of 4500 (50.0KB limit). Full output: /tmp/pi-unified-exec-1-5cc5e104.log]
 ```
 
+#### 命令审批
+
+启动进程之前，omp 用与内置 `bash` 相同的审批逻辑检查原始 `cmd`：
+有序的 `bash.patterns`（`allow`、`deny`、`prompt`）、`bash.allowCompoundCommands`
+与危险命令模式。deny 阻止执行；确认详情显示 `Command: <命令>`（只为显示而截断）。
+允许 `true` 不会顺带允许 `true && echo x`，除非启用复合命令审批且每一段都被允许。
+omp 的审批模式仍然生效：在 `yolo` 下，显式 deny/prompt 策略生效，
+但仅有危险模式 override 不会要求确认。
+
+每次审批实时读取调用方会话的规则，包括子 agent 自己的 settings overlay。
+第一次 `session_start` 按 agent id 和 session-manager 身份绑定会话；
+switch 与 branch 只复核身份。绑定不可用或失败时，审批返回宿主默认的 `exec`
+级别，不读取其他会话的 settings，也不因此禁用执行。只有 `exec_command`
+增加这套逻辑；之后经 `write_stdin` 写入的输入不会被重新解释为待审批的新命令。
+
 <a id="shell-selection"></a>
 
 #### Shell 选择
@@ -398,6 +413,8 @@ src/
 └── unescape.ts           # C-style escape decoder for `chars`
 fork-features/
 ├── omp-presentation.ts   # omp host detection, bash-renderer delegation, theme appearance, shellPath setting
+├── command-approval.ts   # built-in bash approval port and factory-loaded host helpers
+├── session-binding.ts    # activation-local AgentSession identity for approval settings
 ├── omp-tools.d.ts        # types of the omp modules loaded at runtime
 ├── tern-terminal-hud.ts  # counter pill, Terminals sheet, terminal page
 ├── terminal-resource.ts  # process-global terminal keys, live/frozen projections

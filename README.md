@@ -180,6 +180,25 @@ When output exceeds the caps (50 KiB / 2000 lines), a footer is appended:
 [Showing lines 3900-4120 of 4500 (50.0KB limit). Full output: /tmp/pi-unified-exec-1-5cc5e104.log]
 ```
 
+#### Command approval
+
+Before starting a process, omp evaluates the original `cmd` with the same
+approval logic as its built-in `bash`: ordered `bash.patterns` rules
+(`allow`, `deny`, `prompt`), `bash.allowCompoundCommands`, and critical-command
+patterns. A deny prevents execution; confirmation details show
+`Command: <command>` (truncated only for display). An allow for `true` does
+not allow `true && echo x` unless compound approval is enabled and every
+segment is allowed. omp's approval mode still applies: in `yolo`, explicit
+deny/prompt policies apply, but critical-pattern overrides alone do not ask.
+
+Rules are read live from the calling session, including a child agent's
+own settings overlay. The first `session_start` binds that session by agent
+id and session-manager identity; switches and branches only recheck identity.
+If binding is unavailable or fails, approval returns the host's default
+`exec` tier without reading another session's settings; execution itself is
+not disabled. Only `exec_command` adds this approval logic: input written
+later with `write_stdin` is not reinterpreted as a new command for approval.
+
 #### Shell selection
 
 Each new process uses the first of these that is set; a blank `shellPath` or
@@ -599,6 +618,8 @@ src/
 └── unescape.ts           # C-style escape decoder for `chars`
 fork-features/
 ├── omp-presentation.ts   # omp host detection, bash-renderer delegation, theme appearance, shellPath setting
+├── command-approval.ts   # built-in bash approval port and factory-loaded host helpers
+├── session-binding.ts    # activation-local AgentSession identity for approval settings
 ├── omp-tools.d.ts        # types of the omp modules loaded at runtime
 ├── tern-terminal-hud.ts  # counter pill, Terminals sheet, terminal page
 ├── terminal-resource.ts  # process-global terminal keys, live/frozen projections
