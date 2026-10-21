@@ -170,6 +170,8 @@ interface ExtensionCtx {
 	appearance: () => TerminalAppearance;
 	/** Live omp-owned setting. Called for each new process. */
 	shellPath?: () => string | undefined;
+	/** omp's shared GitHub view-cache invalidation for `gh` mutations, as the host bash calls it. */
+	invalidateGithubCache?: (command: string) => void;
 }
 
 type ExecCommandArgs = {
@@ -305,6 +307,10 @@ async function runExecCommand(
 			yieldTimeMs,
 		});
 	}
+
+	// Like the host bash: a `gh` mutation clears issue:// / pr:// cache rows
+	// before it runs; a failed command still pays only one extra fetch.
+	ctx.invalidateGithubCache?.(args.cmd);
 
 	const id = ctx.store.allocateId();
 	const session = ExecSession.spawn(id, {
@@ -945,6 +951,7 @@ export function activate(
 	appearance: () => TerminalAppearance = () => "dark",
 	shellPath?: () => string | undefined,
 	approvalHost?: CommandApprovalHost,
+	invalidateGithubCache?: (command: string) => void,
 ): ActivatedExtension {
 	let binding: HostBindingState = { kind: "pending" };
 	const coordinator = new CompletionCoordinator({
@@ -991,6 +998,7 @@ export function activate(
 		shuttingDown: false,
 		appearance,
 		shellPath,
+		invalidateGithubCache,
 	};
 
 	// Observation finalization: "observed" is committed at pi's finalized
