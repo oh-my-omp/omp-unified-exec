@@ -19,7 +19,6 @@ import {
 	type TerminalEntry,
 	type TerminalState,
 } from "../fork-features/tern-terminal-hud.ts";
-import { getPtyLoadError, isPtyAvailable } from "../src/pty.ts";
 import { ExecSession } from "../src/session.ts";
 import { SessionStore } from "../src/session-store.ts";
 
@@ -543,11 +542,7 @@ function makeHarness(t: TestContext, initiallyNative = false) {
 	};
 }
 
-it("requires a PTY provider when EXPECT_PTY=1", { skip: process.env.EXPECT_PTY !== "1" }, () => {
-	assert.equal(isPtyAvailable(), true, `PTY module failed to load: ${getPtyLoadError()}`);
-});
-
-describe("terminal HUD lifecycle with real sessions", { skip: !isPtyAvailable() }, () => {
+describe("terminal HUD lifecycle with real sessions", () => {
 	it("mounts only after UI, native rendering, and a session are all present", async (t) => {
 		const h = makeHarness(t);
 		h.spawn();

@@ -5,14 +5,14 @@ and tool reference, see [../README.md](../README.md).
 
 ## Prerequisites
 
-- **Node ≥ 22.19** (see `package.json` `engines`; we use `AbortSignal`,
-  `fetch`, native ESM with `.ts` imports via
-  [tsx](https://github.com/privatenumber/tsx)).
+- **Bun 1.4+**, providing native TypeScript imports, the `bun test` runner
+  and `Bun.Terminal` (see `package.json` `engines`).
+- **Node and npm** for the npm lockfile/install workflow, ordinary `node`
+  children in `tests/bun-pty-runtime.mjs`, and the unsupported-host rejection
+  regression. Node is not a supported plugin host.
 - **Linux, macOS, or Windows.** On Windows, Git Bash is strongly
   recommended (it's the default shell when on PATH; otherwise commands
-  fall back to `powershell`). Node PTY tests use the optional
-  `@homebridge/node-pty-prebuilt-multiarch` ConPTY backend; Bun 1.4+ uses
-  its native `Bun.Terminal` backend.
+  fall back to `powershell`). Every PTY uses Bun's native `Bun.Terminal`.
 - **omp** installed and runnable (`omp --version`). Only omp is supported;
   Pi and other non-omp hosts fail at the extension factory before tool registration.
 
@@ -35,10 +35,10 @@ omp --no-extensions -e "$PWD/src/index.ts" --no-session
 The package declares its extension under `omp.extensions`. To exercise package
 installation rather than a checkout, use `omp plugin install` with a Git URL.
 
-`npm install` fetches `@homebridge/node-pty-prebuilt-multiarch` for the Node
-runtime tests. Bun 1.4+ does not load that optional package; its PTY path uses
-`Bun.Terminal`. Every session needs a PTY: if the Node package has no usable
-prebuild, Node-hosted `exec_command` reports the load error at call time.
+Every session needs Bun's native PTY. The extension factory checks for
+`Bun.spawn` and `Bun.Terminal` after identifying omp, before loading omp
+modules or registering tools. A non-Bun host or a Bun build lacking those
+capabilities fails immediately with the runtime reason.
 
 Verify the install:
 
@@ -47,8 +47,14 @@ npm run check                       # clean strict typecheck
 npm test                            # typecheck + all tests
 ```
 
-Expect `fail 0`. Some suites skip on unsupported platforms, when no usable
-Node PTY backend is installed, or when their explicit runtime gate is unset.
+Expect zero failures on Linux/macOS. Platform-specific cases and the explicit
+omp install gate may skip; PTY availability never does. Windows fixture
+portability remains tracked in [#46](https://github.com/oh-my-omp/omp-unified-exec/issues/46).
+Tests that intentionally complete a real five-second empty poll declare a
+15-second per-test timeout, rather than shortening the poll to fit Bun's
+five-second default. The Node admission regression compiles the actual
+TypeScript entry before executing it in Node, whose strip-only loader cannot
+parse the HUD's parameter properties.
 
 ## Repo layout
 
@@ -69,7 +75,7 @@ sibling view, indexed by concern:
 | Terminal-inert result/partial text | `src/output-safety.ts` |
 | Bounded process/kill details + LLM-visible text | `src/tool-result.ts` (host-compatible `truncateTail`) |
 | C-style escape decoding for `chars` | `src/unescape.ts` |
-| PTY backends (Bun.Terminal / Node node-pty), spawn preflight, Windows tree-kill | `src/pty.ts` |
+| Bun.Terminal backend, runtime admission, spawn preflight, Windows tree-kill | `src/pty.ts` |
 | Shell selection & argv construction | `src/shell.ts` |
 | omp-only host admission, bash delegation, argument/result display adapters | `fork-features/omp-presentation.ts` |
 | Structured output schemas and projections | `src/script-result.ts` |
@@ -80,7 +86,7 @@ sibling view, indexed by concern:
 
 1. Edit files under `src/`.
 2. `npm run check` (catch type errors early).
-3. `npx tsx --test tests/<relevant>.test.ts` (fast inner loop).
+3. `bun test ./tests/<relevant>.test.ts` (fast inner loop).
 4. `npm test` before committing.
 5. In a running omp: `/reload` to pick up changes.
 
@@ -121,17 +127,17 @@ omp --no-extensions -e "$PWD/src/index.ts" --mode json --no-session \
 
 ```bash
 # Pure units (fast, no subprocesses)
-npx tsx --test tests/notify.test.ts \
-                tests/truncate.test.ts \
-                tests/unescape.test.ts \
-                tests/session-store.test.ts
+bun test ./tests/notify.test.ts \
+         ./tests/truncate.test.ts \
+         ./tests/unescape.test.ts \
+         ./tests/session-store.test.ts
 
 # End-to-end against real bash / cat in a PTY (seconds)
-npx tsx --test tests/e2e.test.ts
-npx tsx --test tests/chars-encoding.test.ts
+bun test ./tests/e2e.test.ts
+bun test ./tests/chars-encoding.test.ts
 
-# Node PTY backend (requires @homebridge/node-pty-prebuilt-multiarch)
-npx tsx --test tests/e2e-pty.test.ts
+# Real Bun PTY sessions
+bun test ./tests/e2e-pty.test.ts
 
 # Bun PTY backend, directly and from a compiled executable
 bun tests/bun-pty-runtime.mjs
@@ -139,19 +145,19 @@ bun build --compile tests/bun-pty-runtime.mjs --outfile /tmp/bun-pty-runtime
 /tmp/bun-pty-runtime
 
 # Empty-poll duration policy, shared waits and wake delivery
-npx tsx --test tests/time.test.ts tests/long-wait.test.ts tests/wake-e2e.test.ts
+bun test ./tests/time.test.ts ./tests/long-wait.test.ts ./tests/wake-e2e.test.ts
 
 # Display adapters and direct host-admission checks
-npx tsx --test tests/omp-presentation.test.ts
+bun test ./tests/omp-presentation.test.ts
 
 # Native Bun PTY-backed HUD lifecycle
-EXPECT_PTY=1 bun test ./tests/tern-terminal-hud.test.ts ./tests/omp-presentation.test.ts
+bun test ./tests/tern-terminal-hud.test.ts ./tests/omp-presentation.test.ts
 ```
 
 ## Writing new tests
 
-We use Node's built-in `node:test` runner loaded via `tsx` (no jest,
-no vitest). Pattern:
+We use Bun's native `bun test` runner with its supported `node:test` API
+(no jest, no vitest). Pattern:
 
 ```ts
 import { strict as assert } from "node:assert";

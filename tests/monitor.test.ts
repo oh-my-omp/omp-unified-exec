@@ -113,9 +113,7 @@ describe("monitor source and delivery", () => {
 		assert.match(output.observation.text, /MATCH one/);
 	});
 
-	// Windows: node-pty closes output 1000 ms after exit, past the 250 ms
-	// coalescing window, so final output arrives as a match before End.
-	it("merges final partial terminal output with End and consumes exactly the matching ordinary wake", { skip: IS_WINDOWS }, async (t) => {
+	it("merges final partial terminal output with End and consumes exactly the matching ordinary wake", async (t) => {
 		const session = await terminalSession(9102);
 		const delivered = Promise.withResolvers<MonitorMessage>();
 		let ordinary = 0;

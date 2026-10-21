@@ -42,7 +42,7 @@ import { formatElapsed } from "./format-time.ts";
 import { type LongWaitOutcome, startRateLimitedStream, waitForExitOrDeadline } from "./long-wait.ts";
 import { sleep } from "./notify.ts";
 import { sanitizeOutputText } from "./output-safety.ts";
-import { DEFAULT_PTY_ROWS, getPtyLoadError, isPtyAvailable } from "./pty.ts";
+import { DEFAULT_PTY_ROWS } from "./pty.ts";
 import {
 	killNotFoundScriptResult,
 	killScriptResult,
@@ -236,9 +236,6 @@ async function runExecCommand(
 		finalizeProcessResult({ ...input, operation: "exec_command" });
 	if (ctx.shuttingDown) {
 		throw new Error("unified-exec: session is shutting down; not starting new commands.");
-	}
-	if (!isPtyAvailable()) {
-		throw new Error(`exec_command needs a PTY, but none is available: ${getPtyLoadError() ?? "no supported PTY backend"}.`);
 	}
 
 	let shellBin = args.shell;
@@ -960,12 +957,6 @@ export function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance 
 		ctx.shuttingDown = false; // reload/new/resume re-arms the extension
 		ctx.coordinator.reset(); // never resurrect wakes from a previous session
 		updateRunningSessionsUi(ctx);
-		if (!isPtyAvailable() && eventCtx.hasUI) {
-			eventCtx.ui.notify(
-				`unified-exec: PTY backend unavailable (${getPtyLoadError() ?? "unknown error"}); exec_command will fail. Use bash.`,
-				"warning",
-			);
-		}
 	});
 
 	pi.on("session_tree", async (_event, eventCtx) => {

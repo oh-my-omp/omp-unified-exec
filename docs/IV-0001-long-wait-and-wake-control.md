@@ -84,11 +84,6 @@ shutdown are also silent. Human HUD/slash termination and LRU termination
 retain the monitor until actual closure. Direct write/listing observations
 do not cancel it. A source acceptance before model kill is cancelled; a new
 parallel acceptance after the kill request may still observe a running source.
-On Windows, node-pty closes the output about 1 s after the process ends (it
-waits 1000 ms for trailing output, `FLUSH_DATA_INTERVAL` in its
-`windowsPtyAgent`), and reports the exit only then. Matches printed just
-before exit fall outside the 250 ms coalescing window and arrive as a match
-message ahead of End.
 
 The completion coordinator owns both distinct objects: optional wake intent
 and actual monitor subscription. An active/closing monitor blocks ordinary
@@ -213,20 +208,13 @@ merged automatically at End.
 exit reliably suppressed wake. `list_sessions` after exit is a race against the
 ~250 ms debounce.
 
-**Observed (post-fix):**
+Current regression commands use Bun's native runner:
 
 ```bash
-npx tsx --test tests/time.test.ts tests/long-wait.test.ts tests/completion.test.ts
-# 53 pass
-
-npx tsx --test tests/wake-e2e.test.ts
-# 26+ pass — set_on_exit disarm/re-arm, unknown sid, list wake_armed, …
-
-npx tsx --test tests/e2e.test.ts
-# 42 pass, 2 skip
-
-npx tsx --test tests/*.test.ts
-# 250+ pass, a few skip; occasional flaky notify sleep timing under load (unrelated)
+bun test ./tests/time.test.ts ./tests/long-wait.test.ts ./tests/completion.test.ts
+bun test ./tests/wake-e2e.test.ts
+bun test ./tests/e2e.test.ts
+npm test
 ```
 
 ### Related pre-fix diagnosis

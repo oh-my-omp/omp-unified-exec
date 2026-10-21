@@ -1,13 +1,12 @@
 /**
- * Node-hosted PTY end-to-end tests. Require the optional node-pty provider.
- * Bun's native backend has a separate source/compiled runtime fixture.
+ * Native Bun PTY end-to-end tests. PTY support is mandatory.
+ * Source/compiled runtime fixtures additionally cover the compiled host.
  */
 
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 import { activate } from "../src/index.ts";
-import { isPtyAvailable } from "../src/pty.ts";
 import { IS_WINDOWS } from "../src/shell.ts";
 
 
@@ -55,7 +54,7 @@ function makeHarness() {
 	};
 }
 
-describe("unified-exec PTY mode", { skip: !isPtyAvailable() }, () => {
+describe("unified-exec PTY mode", () => {
 	// NOTE: every test runs its body in try/finally with session_shutdown in
 	// the finally. A failed assertion mid-test must not leak a live PTY
 	// session: on Windows, ConPTY's conout worker keeps the event loop alive
@@ -166,10 +165,8 @@ describe("unified-exec PTY mode", { skip: !isPtyAvailable() }, () => {
 	});
 
 	it("Windows: shell=cmd with a PTY works (verbatim /c payload)", { skip: !IS_WINDOWS }, async () => {
-		// Regression: node-pty's argsToCommandLine re-escapes embedded quotes,
-		// so array-args mangled the pre-quoted /s /c payload into
-		// `\"echo ...\"` — guaranteed "not recognized" failure. The PTY path
-		// must pass the args as a raw command-line string instead.
+		// Keep cmd.exe's pre-quoted /s /c payload intact through Bun's
+		// windowsVerbatimArguments handling.
 		const h = makeHarness();
 		await h.emit("session_start");
 		try {

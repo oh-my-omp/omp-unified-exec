@@ -333,8 +333,7 @@ describe("unified-exec e2e", () => {
 		assert.ok(r2.details.output.includes("hello from stdin"), `got ${JSON.stringify(r2.details)}`);
 		assert.ok(typeof r2.details.session_id === "number");
 
-		// Send EOF so cat exits. The call returns as soon as the exit is
-		// observed; on Windows node-pty reports it ~1 s after the process ends.
+		// Send EOF so cat exits. The call returns as soon as the exit is observed.
 		const r3 = await h.call("write_stdin", {
 			session_id: sid,
 			chars: "\x04",
@@ -580,9 +579,17 @@ describe("unified-exec e2e", () => {
 		await new Promise((r) => setTimeout(r, 40)); // inside the grace window
 		await h.emit("session_shutdown");
 		const r = await inflight;
-		// Shutdown owns the pending session: the call reports its end, never a session_id.
+		// Shutdown owns the pending session: the call never returns a session_id. It
+		// reports the exit, or — where exit reporting outlasts shutdown's wait (Bun
+		// Terminal on Windows after taskkill) — an explicit unconfirmed exit.
 		assert.equal(r.details.session_id, undefined, JSON.stringify(r.details));
-		assert.ok(r.details.exit_code != null || r.details.signal, JSON.stringify(r.details));
+		const reportedExit = r.details.exit_code != null || Boolean(r.details.signal);
+		const unconfirmed = r.details.running === true && /exit not confirmed/.test(r.details.failure_message ?? "");
+		assert.ok(reportedExit || unconfirmed, JSON.stringify(r.details));
+		await h.emit("session_start");
+		const l = await h.call("list_sessions", {});
+		assert.deepEqual(l.details.sessions, [], JSON.stringify(l.details));
+		await h.emit("session_shutdown");
 	});
 
 	it("a session in the grace window at shutdown never reaches the next session period", { skip: IS_WINDOWS }, async () => {
@@ -819,8 +826,7 @@ describe("unified-exec e2e", () => {
 		const r1 = await h.call("exec_command", { cmd: "sleep 0.3", yield_time_ms: 250 });
 		const sid = r1.details.session_id;
 		assert.ok(typeof sid === "number", JSON.stringify(r1.details));
-		// Wait for the observed exit (the running-sessions status clears), not a
-		// fixed delay: on Windows node-pty reports exits ~1 s late.
+		// Wait for the observed exit (the running-sessions status clears), not a fixed delay.
 		assert.ok(await waitFor(() => h.uiEvents.statuses.get("unified-exec.sessions") === undefined), "exit was not observed");
 
 		const l1 = await h.call("list_sessions", {});

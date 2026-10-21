@@ -1,19 +1,8 @@
-/**
- * Guards for the PTY provider package:
- *
- * 1. When EXPECT_PTY=1 (set in CI for all matrix platforms), assert the
- *    @homebridge/node-pty-prebuilt-multiarch module actually loads. Without
- *    this, a prebuild/load failure silently skips the whole PTY e2e suite
- *    and CI stays green while PTY spawning is broken.
- *
- * 2. disposeWindowsConpty pokes undocumented node-pty internals
- *    (_agent._conoutSocketWorker etc.); a mock-agent test locks the calls
- *    it must make and its tolerance for missing fields.
- */
+/** Bun host admission and native PTY callback lifecycle guards. */
 
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
-import { disposeWindowsConpty, getPtyLoadError, isPtyAvailable, spawnChild } from "../src/pty.ts";
+import { requireBunRuntime, spawnBunPty } from "../src/pty.ts";
 
 type FakeTerminal = {
 	closed: boolean;
@@ -45,193 +34,99 @@ type FakeBunSpawnOptions = {
 	): void;
 };
 
-describe("PTY module loading", () => {
-	it("loads when EXPECT_PTY=1", { skip: process.env.EXPECT_PTY !== "1" }, () => {
-		assert.equal(isPtyAvailable(), true, `PTY module failed to load: ${getPtyLoadError()}`);
+const spawnOptions = {
+	command: [process.execPath],
+	cwd: process.cwd(),
+	env: process.env,
+};
+
+describe("Bun host admission", () => {
+	it("requires the real host to provide native PTY support", () => {
+		assert.ok(requireBunRuntime());
 	});
 
-	it("reports a load error message when unavailable", () => {
-		if (isPtyAvailable()) {
-			assert.equal(getPtyLoadError(), undefined);
-		} else {
-			assert.match(getPtyLoadError() ?? "", /node-pty-prebuilt-multiarch/);
-		}
+	it("rejects a non-Bun runtime with an explicit host requirement", () => {
+		assert.throws(
+			() => requireBunRuntime(null),
+			/requires a Bun host with Bun\.Terminal; the current runtime is not Bun/,
+		);
 	});
 
-	it("never falls back to node-pty when Bun lacks Terminal support", () => {
-		const original = Object.getOwnPropertyDescriptor(globalThis, "Bun");
-		Object.defineProperty(globalThis, "Bun", {
-			configurable: true,
-			value: { version: "1.3.3", spawn() {} },
-		});
-		try {
-			assert.equal(isPtyAvailable(), false);
-			assert.match(getPtyLoadError() ?? "", /Bun 1\.3\.3.*Bun\.Terminal/);
-			assert.throws(
-				() =>
-					spawnChild({
-						command: [process.execPath],
-						cwd: process.cwd(),
-						env: process.env,
-					}),
-				/exec_command needs a PTY.*Upgrade Bun.*Bun\.Terminal/,
-			);
-		} finally {
-			if (original) Object.defineProperty(globalThis, "Bun", original);
-			else Reflect.deleteProperty(globalThis, "Bun");
-		}
+	it("rejects Bun without Terminal support and names its version", () => {
+		assert.throws(
+			() => requireBunRuntime({ version: "1.3.3", spawn() {} }),
+			/requires a Bun host with Bun\.Terminal; Bun 1\.3\.3 does not provide Bun\.spawn with Bun\.Terminal support/,
+		);
 	});
 
-	it("replays data and exit when Bun invokes callbacks before spawn returns", () => {
-		const original = Object.getOwnPropertyDescriptor(globalThis, "Bun");
-		const terminal = {
-			closed: true,
-			write: () => 0,
-			close() {},
-		};
-		const subprocess = {
-			pid: 123,
-			terminal,
-			kill() {},
-		};
-		Object.defineProperty(globalThis, "Bun", {
-			configurable: true,
-			value: {
-				version: "test",
-				Terminal: function Terminal() {},
-				spawn(_command: string[], options: FakeBunSpawnOptions) {
-					options.terminal.data(terminal, new TextEncoder().encode("EARLY_DATA"));
-					options.terminal.exit(terminal, 0, null);
-					options.onExit(subprocess, 0, null);
-					return subprocess;
-				},
-			},
-		});
-		try {
-			const child = spawnChild({
-				command: [process.execPath],
-				cwd: process.cwd(),
-				env: process.env,
-			});
-			let output = "";
-			child.onData((chunk) => {
-				output += new TextDecoder().decode(chunk);
-			});
-			let exit: [number | null, NodeJS.Signals | null, string?] | undefined;
-			child.onExit((...args) => {
-				exit = args;
-			});
-			assert.equal(output, "EARLY_DATA");
-			assert.deepEqual(exit, [0, null, undefined]);
-			assert.equal(child.processExited, true);
-		} finally {
-			if (original) Object.defineProperty(globalThis, "Bun", original);
-			else Reflect.deleteProperty(globalThis, "Bun");
-		}
-	});
-
-	it("waits for terminal closure after an early Bun process exit", (context) => {
-		context.mock.timers.enable({ apis: ["setTimeout"] });
-		const original = Object.getOwnPropertyDescriptor(globalThis, "Bun");
-		const terminal = {
-			closed: false,
-			write: () => 0,
-			close() {
-				this.closed = true;
-			},
-		};
-		const subprocess = {
-			pid: 123,
-			terminal,
-			kill() {},
-		};
-		let emitData: ((value: string) => void) | undefined;
-		let closeTerminal: (() => void) | undefined;
-		Object.defineProperty(globalThis, "Bun", {
-			configurable: true,
-			value: {
-				version: "test",
-				Terminal: function Terminal() {},
-				spawn(_command: string[], options: FakeBunSpawnOptions) {
-					emitData = (value) =>
-						options.terminal.data(terminal, new TextEncoder().encode(value));
-					closeTerminal = () => {
-						terminal.closed = true;
-						options.terminal.exit(terminal, 0, null);
-					};
-					options.onExit(subprocess, 0, null);
-					return subprocess;
-				},
-			},
-		});
-		try {
-			const child = spawnChild({
-				command: [process.execPath],
-				cwd: process.cwd(),
-				env: process.env,
-			});
-			let output = "";
-			const unsubscribe = child.onData((chunk) => {
-				output += new TextDecoder().decode(chunk);
-			});
-			let exit: [number | null, NodeJS.Signals | null, string?] | undefined;
-			child.onExit((...args) => {
-				exit = args;
-			});
-			context.mock.timers.tick(300);
-			assert.equal(exit, undefined);
-			assert.ok(emitData);
-			emitData("FIRST");
-			assert.equal(output, "FIRST");
-			unsubscribe();
-			emitData("UNSUBSCRIBED");
-			let resubscribedOutput = "";
-			child.onData((chunk) => {
-				resubscribedOutput += new TextDecoder().decode(chunk);
-			});
-			assert.equal(resubscribedOutput, "");
-			emitData("LATE_DATA");
-			assert.equal(resubscribedOutput, "LATE_DATA");
-			assert.ok(closeTerminal);
-			closeTerminal();
-			assert.deepEqual(exit, [0, null, undefined]);
-		} finally {
-			if (original) Object.defineProperty(globalThis, "Bun", original);
-			else Reflect.deleteProperty(globalThis, "Bun");
-		}
+	it("rejects Bun without spawn support", () => {
+		assert.throws(
+			() => requireBunRuntime({ version: "test", Terminal() {} }),
+			/requires a Bun host with Bun\.Terminal; Bun test does not provide Bun\.spawn/,
+		);
 	});
 });
 
-describe("disposeWindowsConpty", () => {
-	it("destroys both sockets and disposes the conout worker", () => {
-		const calls: string[] = [];
-		const child = {
-			_agent: {
-				_inSocket: { destroy: () => calls.push("in") },
-				_outSocket: { destroy: () => calls.push("out") },
-				_conoutSocketWorker: { dispose: () => calls.push("worker") },
+describe("Bun PTY lifecycle", () => {
+	it("replays data and exit when Bun invokes callbacks before spawn returns", () => {
+		const terminal: FakeTerminal = { closed: true, write: () => 0, close() {} };
+		const subprocess: FakeSubprocess = { pid: 123, terminal, kill() {} };
+		const runtime = {
+			spawn(_command: string[], options: FakeBunSpawnOptions) {
+				options.terminal.data(terminal, new TextEncoder().encode("EARLY_DATA"));
+				options.terminal.exit(terminal, 0, null);
+				options.onExit(subprocess, 0, null);
+				return subprocess;
 			},
 		};
-		disposeWindowsConpty(child);
-		assert.deepEqual(calls.sort(), ["in", "out", "worker"]);
+		const child = spawnBunPty(runtime, spawnOptions);
+		let output = "";
+		child.onData((chunk) => { output += new TextDecoder().decode(chunk); });
+		let exit: [number | null, NodeJS.Signals | null, string?] | undefined;
+		child.onExit((...args) => { exit = args; });
+		assert.equal(output, "EARLY_DATA");
+		assert.deepEqual(exit, [0, null, undefined]);
+		assert.equal(child.processExited, true);
 	});
 
-	it("tolerates missing agent or fields (undocumented internals may change)", () => {
-		disposeWindowsConpty(undefined);
-		disposeWindowsConpty({});
-		disposeWindowsConpty({ _agent: {} });
-		disposeWindowsConpty({ _agent: { _inSocket: {}, _outSocket: null } });
-	});
-
-	it("swallows exceptions from the internals", () => {
-		disposeWindowsConpty({
-			_agent: {
-				_inSocket: {
-					destroy: () => {
-						throw new Error("boom");
-					},
-				},
+	it("waits for terminal closure after an early Bun process exit", () => {
+		const terminal: FakeTerminal = {
+			closed: false,
+			write: () => 0,
+			close() { this.closed = true; },
+		};
+		const subprocess: FakeSubprocess = { pid: 123, terminal, kill() {} };
+		let emitData: ((value: string) => void) | undefined;
+		let closeTerminal: (() => void) | undefined;
+		const runtime = {
+			spawn(_command: string[], options: FakeBunSpawnOptions) {
+				emitData = (value) => options.terminal.data(terminal, new TextEncoder().encode(value));
+				closeTerminal = () => {
+					terminal.closed = true;
+					options.terminal.exit(terminal, 0, null);
+				};
+				options.onExit(subprocess, 0, null);
+				return subprocess;
 			},
-		});
+		};
+		const child = spawnBunPty(runtime, spawnOptions);
+		let output = "";
+		const unsubscribe = child.onData((chunk) => { output += new TextDecoder().decode(chunk); });
+		let exit: [number | null, NodeJS.Signals | null, string?] | undefined;
+		child.onExit((...args) => { exit = args; });
+		assert.equal(exit, undefined);
+		assert.ok(emitData);
+		emitData("FIRST");
+		assert.equal(output, "FIRST");
+		unsubscribe();
+		emitData("UNSUBSCRIBED");
+		let resubscribedOutput = "";
+		child.onData((chunk) => { resubscribedOutput += new TextDecoder().decode(chunk); });
+		assert.equal(resubscribedOutput, "");
+		emitData("LATE_DATA");
+		assert.equal(resubscribedOutput, "LATE_DATA");
+		assert.ok(closeTerminal);
+		closeTerminal();
+		assert.deepEqual(exit, [0, null, undefined]);
 	});
 });
