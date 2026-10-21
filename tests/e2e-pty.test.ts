@@ -6,12 +6,10 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
-import extensionFactory from "../src/index.ts";
+import { activate } from "../src/index.ts";
 import { isPtyAvailable } from "../src/pty.ts";
 import { IS_WINDOWS } from "../src/shell.ts";
 
-// Process-tool harness: the fake API has no codemode surfaces (see codemode-render tests).
-process.env.PI_UNIFIED_EXEC_COMPACT_CODEMODE = "0";
 
 /**
  * True when a real python3 exists. On Windows the "python3" on PATH may be
@@ -44,7 +42,9 @@ function makeHarness() {
 		getActiveTools: () => ["bash"],
 		setActiveTools: () => {},
 	};
-	(extensionFactory as any)(pi);
+	// The fake supplies only the ExtensionAPI surfaces consumed by the tool core.
+	const api = pi as unknown as Parameters<typeof activate>[0];
+	activate(api);
 	return {
 		async call(toolName: string, params: any, signal?: AbortSignal) {
 			return tools[toolName].execute("id", params, signal, undefined, stubCtx);

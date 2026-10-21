@@ -13,32 +13,27 @@ and tool reference, see [../README.md](../README.md).
   fall back to `powershell`). Node PTY tests use the optional
   `@homebridge/node-pty-prebuilt-multiarch` ConPTY backend; Bun 1.4+ uses
   its native `Bun.Terminal` backend.
-- **pi** installed and runnable (`pi --version`). End users install with
-  `pi install npm:pi-unified-exec`; for development you want a local clone
-  of this repo (see below).
+- **omp** installed and runnable (`omp --version`). Only omp is supported;
+  Pi and other non-omp hosts fail at the extension factory before tool registration.
 
 ## First-time setup
 
 Clone the repo and install dev dependencies:
 
 ```bash
-git clone https://github.com/iamwrm/pi-unified-exec
-cd pi-unified-exec
+git clone https://github.com/oh-my-omp/omp-unified-exec
+cd omp-unified-exec
 npm install
 ```
 
-To have pi load your working copy for interactive testing, either symlink it
-into pi's auto-discovery path:
+Load the working copy directly for interactive testing:
 
 ```bash
-ln -s "$PWD" .pi/extensions/unified-exec      # from the project you want it in
+omp --no-extensions -e "$PWD/src/index.ts" --no-session
 ```
 
-or install directly from the local path (writes into pi's settings):
-
-```bash
-pi install -l ./path/to/pi-unified-exec
-```
+The package declares its extension under `omp.extensions`. To exercise package
+installation rather than a checkout, use `omp plugin install` with a Git URL.
 
 `npm install` fetches `@homebridge/node-pty-prebuilt-multiarch` for the Node
 runtime tests. Bun 1.4+ does not load that optional package; its PTY path uses
@@ -52,9 +47,8 @@ npm run check                       # clean strict typecheck
 npm test                            # typecheck + all tests
 ```
 
-You should see on the order of **250+** tests with `fail 0` (a few skipped on
-non-Windows or when no real `python3` is installed — e.g. on Windows, where
-the Store stub doesn't count).
+Expect `fail 0`. Some suites skip on unsupported platforms, when no usable
+Node PTY backend is installed, or when their explicit runtime gate is unset.
 
 ## Repo layout
 
@@ -73,12 +67,12 @@ sibling view, indexed by concern:
 | Rendered terminal screen: emulator, history + screen observations, snapshots | `src/terminal-screen.ts` (owned by `ExecSession`) |
 | On-disk raw log file mirroring | `src/session.ts` (`logStream`) |
 | Terminal-inert result/partial text | `src/output-safety.ts` |
-| Bounded process/kill details + LLM-visible text | `src/tool-result.ts` (`truncateTail` from Pi) |
+| Bounded process/kill details + LLM-visible text | `src/tool-result.ts` (host-compatible `truncateTail`) |
 | C-style escape decoding for `chars` | `src/unescape.ts` |
 | PTY backends (Bun.Terminal / Node node-pty), spawn preflight, Windows tree-kill | `src/pty.ts` |
 | Shell selection & argv construction | `src/shell.ts` |
-| Explicit call/result renderers for all five tools | `src/render.ts` |
-| Default-on native codemode preview wrapper | `src/codemode-render.ts` |
+| omp-only host admission, bash delegation, argument/result display adapters | `fork-features/omp-presentation.ts` |
+| Structured output schemas and projections | `src/script-result.ts` |
 | Initiative / doctrine docs | `docs/IV-*.md`, `docs/DC-*.md` |
 | Constants mirroring codex | top of `src/index.ts` |
 
@@ -88,41 +82,39 @@ sibling view, indexed by concern:
 2. `npm run check` (catch type errors early).
 3. `npx tsx --test tests/<relevant>.test.ts` (fast inner loop).
 4. `npm test` before committing.
-5. In a running pi: `/reload` to pick up changes.
+5. In a running omp: `/reload` to pick up changes.
 
 ### Important gotchas for the dev loop
 
 - **`/reload` does NOT affect tool calls already in flight.** Finish or
-  kill the call (`kill_session` tool, or Esc on the pi prompt) before
+  kill the call (`kill_session` tool, or Esc on the omp prompt) before
   reloading, otherwise you'll mix old and new code.
-- **If you're driving this extension's own tools from the pi session
+- **If you're driving this extension's own tools from the omp session
   you're editing,** you're working against a snapshot: your edits take
-  effect *after* `/reload` (or after full pi restart). Symptom: you
+  effect *after* `/reload` (or after full omp restart). Symptom: you
   change `src/unescape.ts`, save, call `write_stdin chars="\x03"` —
   still see the old behavior. Run `/reload` and retry.
-- **`pi -p` (print mode) loads extensions fresh per invocation.** No
+- **`omp -p` (print mode) loads extensions fresh per invocation.** No
   `/reload` needed, but each run is a new process.
 
-### Live testing via tmux (no LLM in the loop)
+### Live testing on omp
 
 ```bash
-tmux kill-session -t pi-test 2>/dev/null
-tmux new-session -d -s pi-test -x 180 -y 50 "pi --provider anthropic --model claude-sonnet-4"
-sleep 4
-tmux send-keys -t pi-test "Run exec_command on: echo hello" Enter
-sleep 6
-tmux capture-pane -t pi-test -p | tail -20
-tmux kill-session -t pi-test
+omp --no-extensions -e "$PWD/src/index.ts" --no-session
 ```
 
-Useful for verifying the TUI renderer (`renderCall` / `renderResult`)
-changes that don't show up in unit tests.
+Ask the model to start a long-running command through `exec_command`, drive
+input with `write_stdin`, and terminate it with `kill_session`. Exec/write/kill
+must use omp's bash cards; monitor/set-on-exit/list use its default cards.
+For Tern, exercise the counter, session picker, typed input and Kill in a real
+window; the procedure is in
+[fork-features/README.md](../fork-features/README.md).
 
-### Live testing via pi -p + jq
+For a fresh non-interactive tool execution:
 
 ```bash
-pi -p --mode json --provider anthropic --model claude-sonnet-4 \
-  "Use exec_command to run 'seq 1 3'" | jq -r 'select(.type=="message_end").message.content[]?.text?'
+omp --no-extensions -e "$PWD/src/index.ts" --mode json --no-session \
+  -p 'Call exec_command with {"cmd":"echo omp-only-ok"}. Reply done.'
 ```
 
 ## Running specific test files
@@ -149,13 +141,11 @@ bun build --compile tests/bun-pty-runtime.mjs --outfile /tmp/bun-pty-runtime
 # Empty-poll duration policy, shared waits and wake delivery
 npx tsx --test tests/time.test.ts tests/long-wait.test.ts tests/wake-e2e.test.ts
 
-# Actual Pi CLI with a local scripted provider; no model traffic
-npx tsx --test tests/cli-wait.test.ts
-# Optionally set PI_UNIFIED_EXEC_TEST_CLI to another published dist/cli.js.
-npm run test:tui  # isolated tmux: waits/Esc plus codemode A/B/C, widths/themes/expansion
+# Display adapters and direct host-admission checks
+npx tsx --test tests/omp-presentation.test.ts
 
-# Native codemode display-only factory, renderer, opt-out and actual-CLI parity
-npx tsx --test tests/codemode-render.test.ts tests/codemode-cli.test.ts
+# Native Bun PTY-backed HUD lifecycle
+EXPECT_PTY=1 bun test ./tests/tern-terminal-hud.test.ts ./tests/omp-presentation.test.ts
 ```
 
 ## Writing new tests
@@ -176,10 +166,11 @@ describe("my-module", () => {
 ```
 
 For end-to-end tests that need the full tool pipeline, use the
-`makeHarness()` pattern from `tests/e2e.test.ts` — it instantiates the
-extension with a stub `ExtensionAPI` and exposes `call(toolName, args)`
-and `emit(event)` so you can drive tools directly without a running
-LLM.
+`makeHarness()` pattern from `tests/e2e.test.ts` — it calls the named
+`activate` export with a stub `ExtensionAPI` and exposes `call(toolName, args)`
+and `emit(event)` so you can drive tools directly without a running LLM.
+The default factory is the omp admission boundary; never use a fake host there
+to test generic tool behavior.
 
 ## Common tasks
 
@@ -212,13 +203,13 @@ stating whether they mirror codex or diverge. When you touch one:
 2. Populate it in `finalizeProcessResult()` / `finalizeKillResult()`.
 3. Add it to `renderProcessResultText()` / `renderKillResultText()` only when
    the model needs the field in textual content (details are TUI/session data).
-4. If the TUI should show it, update the appropriate status/list renderer in
-   `src/render.ts`.
+4. If the TUI should show it, update the display adapter in
+   `fork-features/omp-presentation.ts`.
 5. Add a pure assertion in `tests/tool-result.test.ts` and an end-to-end
    assertion in `tests/e2e.test.ts` when process lifecycle matters.
 
 Never put an unbounded value in `content` or details and expect
-`renderResult` to hide it: Pi falls back to raw content if a renderer throws.
+`renderResult` to hide it: model bounds must hold independently of display.
 Child bytes go through the session's `TerminalScreen` first; pass its rendered
 text through `sanitizeOutputText()` before model/session/TUI use. Only the
 on-disk log owns the exact raw stream. Keep renderer-side sanitization as
@@ -226,21 +217,12 @@ defense for legacy results and fallback content.
 
 ### Tune TUI rendering
 
-`src/render.ts` owns the process-tool renderers. `src/codemode-render.ts` wraps
-Pi's native codemode result renderer, default-on, without changing its executor,
-schema identity, loadout or persistence. It registers at the first
-`session_start`, never during loading: a load-time `codemode` makes Pi skip
-`builtin:codemode` and warn every user. Add or update the corresponding
-`tests/{render,codemode-render,codemode-cli}.test.ts`; run `npm run test:tui`
-for actual CLI rendering. `PI_UNIFIED_EXEC_COMPACT_CODEMODE=0` opts out and
-leaves the still-loaded built-in in use.
-
-Never pass the collapsed wrapper as native `context.lastComponent`: Pi's
-renderer expects its own component, a `Container` using `.clear()` in Pi
-0.99.2, previously a `Text` using `.setText()`. Unwrap the cached `inner`
-component before delegation, preserve invalidation and return native expanded
-output. Keep spill-path recovery and configured expansion hints visible within
-the row cap; do not claim a hidden-row count after native preview truncation.
+`fork-features/omp-presentation.ts` adapts exec/write/kill to omp's exported
+bash renderer, including Tern's describe hooks. Other tools use omp's default
+cards. Keep model content and persisted details unchanged by display adapters.
+Update `tests/omp-presentation.test.ts`, then exercise the actual omp ANSI TUI
+and Tern path. A missing or reshaped required omp module must fail factory
+loading before tools register, not fall back to another host's rendering.
 
 ## Debugging aids
 
@@ -251,240 +233,48 @@ the row cap; do not claim a hidden-row count after native preview truncation.
   `content[0].text` (structured); the TUI renderer reads
   `details.output` (clean body). If the TUI shows a header like
   `[still running]\nsession_id: …` verbatim, the renderer is failing
-  and falling back to pi's default. Check `src/render.ts`.
+  and falling back to omp's default. Check `fork-features/omp-presentation.ts`.
 - **`list_sessions` tool** (invokable from the LLM side) is the
   quickest way to audit what's live.
-- **Pi's `/reload` output** echoes the extensions it loaded — check
+- **omp's `/reload` output** echoes the extensions it loaded — check
   that `unified-exec` (or `src/index.ts` under it) is listed.
 
-## Checking upstream compatibility
+## Checking omp compatibility
 
-Every time `@earendil-works/pi-coding-agent` (the host "pi" CLI) cuts a
-release, our extension might break silently. The 6-step recipe below
-turns a version bump into a 5-minute audit instead of a "why did my
-tools stop rendering" debugging session. Record the result in
-[`Changelog.md`](../Changelog.md) so the next person doesn't redo the
-work.
+Review [oh-my-pi](https://github.com/can1357/oh-my-pi) release notes and the
+extension API, bash renderer, theme, native rendering and internal-URL seams
+listed in [fork-features/README.md](../fork-features/README.md).
+The host must continue to identify itself through `ExtensionAPI.arktype`.
 
-### 1. Read the upstream changelog
+The retained `@earendil-works/*` imports are compatibility-layer types and
+helpers, not a Pi support promise:
 
-Source of truth:
-[`packages/coding-agent/CHANGELOG.md`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/CHANGELOG.md).
-(The repo moved from `badlogic/pi-mono` to `earendil-works/pi`; old URLs
-redirect but prefer the new ones. Package scope moved from
-`@mariozechner/*` to `@earendil-works/*` in 0.74.0 — the old npm scope is
-frozen at 0.73.1.)
+- `pi-coding-agent`: `ExtensionAPI`, `ExtensionContext`, `AgentToolResult`,
+  `AgentToolUpdateCallback`, `ToolDefinition`, `TruncationResult`;
+  `DEFAULT_MAX_BYTES`, `DEFAULT_MAX_LINES`, `formatSize`, `truncateTail`.
+- `pi-tui`: `matchesKey` and `Component` for the Tern HUD's ANSI input/component
+  boundary.
 
-Fetch it and stop at the version we're pinned to so you only see
-entries that are newer than ours:
+Run `npm run check` and `npm test`, then validate the actual installed omp
+runtime. Stub-host tests alone do not qualify host compatibility. Confirm
+checkout loading, `omp plugin install` loading through `omp.extensions`,
+exec/write/kill cards, and Tern terminal interactions; required host modules
+must fail loading rather than silently degrade. Record observed qualification
+in `Changelog.md` with environment and evidence.
 
-```bash
-CURRENT=$(npm pkg get devDependencies.'@earendil-works/pi-coding-agent' | tr -d '"')
-echo "pinned to $CURRENT"
 
-curl -sL https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/CHANGELOG.md \
-  | awk -v v="$CURRENT" '/^## \[/ { if (index($0, "[" v "]")) exit } { print }'
-```
+## Package delivery
 
-For each release entry, focus on three kinds of items:
-
-- **Breaking Changes** — must be read in full; assume they affect us
-  until step 2 proves otherwise.
-- **Removed** / **Changed** entries mentioning named exports, event
-  shapes, or `ExtensionAPI` / `ExtensionContext` methods.
-- **Added** entries touching the same surface — safe to skip at first,
-  but worth knowing when we later want to adopt them (new hook
-  arguments, new `ctx.ui` primitives, etc.).
-
-Prioritize changes touching our actual import/lifecycle surface. Codemode now
-uses the public native factory and its renderer cache, loadout/settings, MCP
-schema-identity recognition and branch-local store. Review those release notes
-and sources even when the change is described as TUI or MCP behavior.
-
-### 2. Cross-check against our import surface
-
-Confirm what we actually consume:
+This fork does not publish to npm; its publish workflow is disabled.
+Users install the Git source with:
 
 ```bash
-grep -rh 'from "@earendil-works/pi-coding-agent' src/ | sort -u
+omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
 ```
 
-As of 2026-10-17 the surface is:
-
-- **Types**: `ExtensionAPI`, `ExtensionContext`, `AgentToolResult`,
-  `AgentToolUpdateCallback`, `ToolDefinition`, `ToolRenderResultOptions`,
-  `Theme`, `TruncationResult`
-- **Helpers**: `formatSize`, `keyHint`, `truncateTail`, `truncateToVisualLines`
-- **Constants**: `DEFAULT_MAX_BYTES`, `DEFAULT_MAX_LINES`
-- **`ExtensionAPI` methods**: `on("session_start" | "session_tree" |
-  "tool_execution_end" | "agent_settled" | "session_shutdown")`,
-  `registerTool`, `registerCommand`, `sendMessage`
-- **`ExtensionContext` fields** (via the `ctx` / `eventCtx` argument):
-  `ui.notify`, `ui.select`, `ui.setStatus`, `ui.setWidget`, `cwd`, `hasUI`
-
-The codemode wrapper additionally consumes `createCodemodeExtension`,
-`CodemodeToolDetails`, `ToolDefinition`, `Component`, `truncateToWidth`,
-`getActiveTools`/`setActiveTools`, `SourceInfo.path`, and the native factory's
-API forwarding (`getSettings`, `getAllTools`, `appendEntry`). On each Pi
-upgrade verify that session-start registration still shadows the loaded
-`builtin:codemode` without a warning (first extension in load order wins;
-configured packages precede built-ins), the legacy-exclusion `defaultTools`
-activation, exact parameter-schema identity, inactive default, mode/budget
-loadout, nested/model helpers, store persistence and cached renderer shape.
-Run both codemode test files and actual tmux expansion/collapse; a silent
-generic fallback is a failure, not acceptable compatibility.
-
-If an upstream changelog entry mentions **none** of the symbols above,
-it cannot affect us. If it mentions one, read it carefully and run
-step 3 to confirm.
-
-### 3. Probe the installed `.d.ts`
-
-The surest test is to bump locally and let TypeScript tell us:
-
-```bash
-npm install --save-dev @earendil-works/pi-coding-agent@<new-version> \
-                         @earendil-works/pi-tui@<new-version>
-npm run check
-```
-
-A clean typecheck means the API surface we import is unchanged. If it
-errors, grep the installed declarations to find the new shape:
-
-```bash
-grep -rn 'getActiveTools\|setActiveTools\|SessionShutdownEvent' \
-  node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts
-```
-
-### 4. Run the full test suite
-
-```bash
-npm test
-```
-
-`tests/e2e.test.ts` stubs `ExtensionAPI` ourselves, so a clean
-typecheck plus passing tests is strong evidence of compatibility. For
-TUI-rendering changes (rare), additionally sanity-check via the tmux
-recipe in [Dev loop → Live testing via tmux](#live-testing-via-tmux-no-llm-in-the-loop).
-
-### 5. Record the result in `Changelog.md`
-
-Add an entry under today's date even when nothing had to change:
-
-```markdown
-## YYYY-MM-DD
-
-### Verified
-
-- **Upstream compatibility with `@earendil-works/pi-coding-agent` X.Y.Z**:
-  <one sentence summary of what changed upstream and why it doesn't
-  affect us, or what we had to change if it did>.
-```
-
-This is the audit trail — without it the next upgrade starts from
-zero.
-
-### 6. Bump the pin
-
-If steps 1–4 pass, bump both dev pins in `package.json` and commit:
-
-```bash
-npm install --save-dev @earendil-works/pi-coding-agent@<new-version> \
-                         @earendil-works/pi-tui@<new-version>
-npm test
-git add package.json package-lock.json Changelog.md
-git commit -m "unified-exec: verify compat with pi-coding-agent <new-version>"
-```
-
-The coding-agent peer minimum stays at the oldest version whose lifecycle and
-renderer and structured-result APIs are actually supported (`>=0.99.1` today);
-exact dev pins govern
-the host version we typecheck and test against.
-
-## Releasing to npm
-
-Every `v*` tag push publishes to
-[npm](https://www.npmjs.com/package/pi-unified-exec) via
-[`.github/workflows/publish.yml`](../.github/workflows/publish.yml).
-Fully automatic — no clicks, no secrets, no OTP prompts.
-
-### Authentication model
-
-The workflow uses **npm Trusted Publisher (OIDC)**. The job declares
-`id-token: write`, GitHub Actions mints a short-lived token tied to
-the run's identity, and npm validates it against the Trusted Publisher
-config at
-[npmjs.com/package/pi-unified-exec/access](https://www.npmjs.com/package/pi-unified-exec/access).
-No `NPM_TOKEN` secret exists in this repo and none should be created.
-
-Publishes include a [sigstore provenance
-attestation](https://docs.npmjs.com/generating-provenance-statements)
-(`--provenance` in the workflow) that gives each version a verified
-badge on npm linking back to the exact commit and CI run that produced
-the tarball.
-
-### Release flow
-
-```bash
-npm version patch                  # 0.1.0 → 0.1.1, commits + creates v0.1.1 tag
-git push && git push --tags
-```
-
-That's the whole thing. The tag push triggers the workflow; ~2 minutes
-later the new version is live on npm. Use `patch` / `minor` / `major`
-as appropriate for semver.
-
-### What CI does on tag push
-
-1. `npm ci` — reproducible install from `package-lock.json`
-2. `npm test` — strict typecheck + full test suite
-4. **Version-vs-tag guard**: fails CI if `package.json` version doesn't
-   match the git tag. Catches the "forgot to bump" footgun.
-   `npm version` does both atomically so this normally passes.
-5. `npm publish --provenance` — publishes the tarball.
-
-Tarball contents are controlled by `files` in `package.json`:
-`src/`, `README.md`, `LICENSE`. Tests, `local_data/`, `tsconfig.json`,
-`.github/`, `AGENTS.md` are all excluded. Verify with
-`npm pack --dry-run`.
-
-### Troubleshooting
-
-- **Tag pushed but workflow didn't fire**: confirm the tag starts with
-  `v` (trigger is `tags: ["v*"]`). `v0.1.1` ✓, `0.1.1` ✗,
-  `release-0.1.1` ✗.
-- **Publish failed, tag is now "wasted"**: fix-forward with another
-  `npm version patch && git push --tags` is usually simplest. To
-  recycle the same version: `git tag -d v0.1.1 && git push origin
-  :refs/tags/v0.1.1`, fix, retag, push.
-- **OIDC auth error** (e.g. `Unable to authenticate, your
-  authentication token seems to be invalid`): verify the Trusted
-  Publisher config on npmjs.com matches exactly:
-  - Provider: GitHub Actions
-  - Organization/user: `iamwrm`
-  - Repository: `pi-unified-exec`
-  - Workflow filename: `publish.yml`
-- **Provenance badge missing on new version**: confirm
-  `permissions: id-token: write` is still present in
-  `.github/workflows/publish.yml`.
-
-### Escape hatches
-
-- **`workflow_dispatch`**: the workflow also accepts manual triggers
-  from [Actions → Publish to
-  npm](https://github.com/iamwrm/pi-unified-exec/actions/workflows/publish.yml)
-  → **Run workflow**. Useful for re-runs after a transient npm outage.
-  Note: the publish step still tries to ship whatever version is in
-  `package.json`, so only use this if that version isn't already on
-  npm.
-- **Local publish** (fallback, requires 2FA OTP from your npm account):
-  ```bash
-  npm login
-  npm publish --no-provenance
-  ```
-  `--no-provenance` is needed because provenance only works inside a
-  recognized CI provider. Only use this if CI is broken; every CI
-  publish is better.
+`files` in `package.json` includes `src`, the fork's TypeScript modules and
+bundled Tern plugin, `README.md`, and `LICENSE`. Keep required runtime files
+inside that package set.
 
 ## Commit conventions
 
@@ -509,10 +299,8 @@ prior commits gives a sense of scope.
 - Codex's `unified_exec` implementation is the reference for session
   semantics:
   [`codex-rs/core/src/unified_exec/`](https://github.com/openai/codex/tree/main/codex-rs/core/src/unified_exec)
-- Pi's built-in `bash` tool is the reference for output retention:
-  `@earendil-works/pi-coding-agent/dist/core/tools/bash.js` (locally
-  installed in `node_modules/`).
-- Pi's extension API docs:
-  `@earendil-works/pi-coding-agent/docs/extensions.md`.
+- omp's built-in `bash` renderer and extension APIs:
+  [oh-my-pi source](https://github.com/can1357/oh-my-pi), especially
+  `packages/tui/src/tools` and `packages/coding-agent/src/extensibility`.
 
 Both source trees are worth keeping open in split panes while you work.

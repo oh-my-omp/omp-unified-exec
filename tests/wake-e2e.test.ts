@@ -10,10 +10,8 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, it } from "node:test";
-import extensionFactory from "../src/index.ts";
+import { activate } from "../src/index.ts";
 
-// Process-tool harness: the fake API has no codemode surfaces (see codemode-render tests).
-process.env.PI_UNIFIED_EXEC_COMPACT_CODEMODE = "0";
 
 interface ToolDef {
 	name: string;
@@ -71,7 +69,9 @@ function makeHarness() {
 		},
 	};
 
-	(extensionFactory as any)(pi);
+	// The fake supplies only the ExtensionAPI surfaces consumed by the tool core.
+	const api = pi as unknown as Parameters<typeof activate>[0];
+	activate(api);
 
 	let nextCallId = 1;
 	let shutDown = false;

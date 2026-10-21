@@ -23,7 +23,7 @@ omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
 
 Tern 更新会在这条命令成功返回前完成，无需单独执行 Tern 命令，也不使用开发链接。
 
-本包在 Pi 上照常加载（使用 Pi 的渲染器，没有 HUD）。每个会话都在 PTY 中运行：Bun 1.4+ 下使用 Bun 原生的 `Bun.Terminal`（omp 是编译后的 Bun 可执行文件），Node 下使用可选依赖 `@homebridge/node-pty-prebuilt-multiarch`。两者都没有时，`exec_command` 在调用时报错并给出加载原因，会话开始时显示一条警告；宿主的 `bash` 照常可用。
+本插件只支持 omp。Pi 等非 omp 宿主会在扩展 factory 阶段立即收到明确的“only supports omp”错误，不会注册任何工具。每个会话都在 PTY 中运行：Bun 1.4+ 下使用 Bun 原生的 `Bun.Terminal`（omp 是编译后的 Bun 可执行文件），Node 运行时测试使用可选依赖 `@homebridge/node-pty-prebuilt-multiarch`。没有 PTY 后端时，`exec_command` 在调用时报错并给出加载原因，会话开始时显示一条警告；宿主的 `bash` 照常可用。
 
 ## 功能
 
@@ -112,7 +112,7 @@ history_lines: 2                   (running, optional: lines scrolled off above 
 - **退出只返回一屏。** 每一种退出结果（包括短命令和确认终止）都返回冻结的最终活动屏，即使屏幕没有变化。`terminal_url` 保留在结果根层；`terminal.retained_rows`、`terminal.rows` 与 `terminal.history_may_be_truncated` 描述正常屏的保留投影，最终元数据不含 `screen_changed` 或 `history_lines`。结果仍受 50 KiB / 2000 行上限约束；通过 URL 的 `/screen` 读取完整屏幕，通过 `/page/N` 读取更早的保留行。
 - **全屏程序**（备用屏幕，比如 `top`、编辑器）报告为 `terminal: alternate screen …`；退出后恢复普通屏幕。
 - **工具结果只有纯文本和光标。** exec/write/kill 文本里没有颜色；Tern 的终端页和显式 `read term://…/screen.png` 会显示颜色。
-- **终端查询会被回应**，回应写到子进程的输入上：光标位置、设备属性，以及默认前景色/背景色（OSC 10/11）。在 omp 上颜色跟随 omp 的主题（浅色或深色，在 Tern 里跟随 Tern 的外观）；在 Pi 上为深色。
+- **终端查询会被回应**，回应写到子进程的输入上：光标位置、设备属性，以及默认前景色/背景色（OSC 10/11）。颜色跟随 omp 的主题（浅色或深色，在 Tern 里跟随 Tern 的外观）。
 - 两次调用之间的历史受单元格预算限制（`TERMINAL_HISTORY_CELLS` 除以 `cols` 得到行数）。在被报告之前就超出预算的行会使结果带上 `history_may_be_truncated: true`；这些行只存在于日志中。
 
 #### 在 omp 中读取保留终端
@@ -268,23 +268,6 @@ Windows 上 node-pty 在进程结束后再等 1000 ms 尾部输出，输出关�
 
 **在 omp 上，**`exec_command`、`write_stdin` 和 `kill_session` 通过 omp 导出的 bash 渲染器渲染，ANSI TUI 和 Tern 都一样：`$ cmd`，可用 omp 的展开快捷键展开的折叠输出，失败时的退出码标签和错误配色，运行中会话显示 `Backgrounded: session N`，最后一行是带日志路径的截断标记。`write_stdin` 和 `kill_session` 以 bash 注释的形式显示所做的动作（`# poll session N`、`# stdin → session N: "…"`、`# kill session N (SIGTERM)`）。`monitor`、`set_on_exit` 和 `list_sessions` 使用 omp 的默认卡片。如果 omp 的 bash 渲染器缺失或接口变了，插件会直接加载失败，而不是显示原始的结果包装。
 
-**在 Pi 上，**原有五个工具都有各自的渲染器，提供命令标题、默认显示五个可视行的输出尾部（用 `app.tools.expand` 展开）、实时计时、`⟳ poll` / `» input` 标题，以及 kill/list 摘要。有进程存活时，底栏显示 `unified-exec: N sessions running`。
-
-两种宿主下，模型可见的内容和持久化的 details 相同。
-
-## Codemode 脚本（Pi）
-
-每个工具都声明了 `outputSchema` 并返回对应的 `structuredContent`，因此 Pi 的 codemode 脚本拿到的是对象：
-
-```js
-const r = await tools.exec_command({ cmd: "npm test", yield_time_ms: 30000 });
-if (r.running) text(`still running as session ${r.session_id}`);
-else text(`exit ${r.exit_code}`);
-text(r.output); // print the output, not the whole object
-```
-
-结构定义在 `src/script-result.ts`。在 Pi 上，本包还会把折叠状态下的 codemode 结果限制在十个可视行（对所有嵌套工具生效，仅影响显示）；`PI_UNIFIED_EXEC_COMPACT_CODEMODE=0` 可关闭。omp 没有 codemode，所以在 omp 上不生效。
-
 ## 常量
 
 ```
@@ -393,9 +376,7 @@ src/
 ├── output-safety.ts      # terminal-control stripping
 ├── terminal-screen.ts    # headless terminal: observations, styled screens, query answers
 ├── tool-result.ts        # bounded envelopes + model-visible text
-├── script-result.ts      # codemode outputSchema / structuredContent
-├── render.ts             # Pi renderers for all five tools
-├── codemode-render.ts    # Pi codemode preview cap
+├── script-result.ts      # tool outputSchema / structuredContent
 └── unescape.ts           # C-style escape decoder for `chars`
 fork-features/
 ├── omp-presentation.ts   # omp host detection, bash-renderer delegation, theme appearance
@@ -412,7 +393,7 @@ docs/
 ├── IV-0001-long-wait-and-wake-control.md
 ├── IV-0002-output-lifecycle-and-rendering.md
 ├── DC-0001-agentic-workspace.md
-└── DEV.md                # upstream's maintainer guide
+└── DEV.md                # maintainer guide
 ```
 
 ## 测试
@@ -421,13 +402,12 @@ docs/
 npm install
 npm test                                   # strict typecheck + unit/integration suites
 EXPECT_PTY=1 bun test ./tests/tern-terminal-hud.test.ts ./tests/omp-presentation.test.ts
-npm run test:tui                           # Pi tmux acceptance (skips without tmux)
 ```
 
 在 Node 下加载不到预编译包时，Node PTY 测试会跳过；Bun 那条命令会用真实的 PTY 会话跑 HUD 生命周期测试。Tern 上的行为在真实的 Tern 窗口里验证，做法见 [fork-features/README.zh-CN.md](fork-features/README.zh-CN.md)。
 
 ## 开发与上游
 
-[docs/DEV.md](docs/DEV.md) 是上游的维护者指南（开发流程、测试方法、codex 源码对照）；其中的 npm 发布部分不适用于本 fork，因为 fork 的发布 workflow 已停用。上游改动通过每日的 `Sync upstream` workflow 合入；fork 改动如何与上游隔离、同步冲突如何处理，见 [fork-features/README.zh-CN.md](fork-features/README.zh-CN.md)。
+[docs/DEV.md](docs/DEV.md) 介绍开发流程、测试方法和 codex 源码对照。fork 的发布 workflow 已停用。上游改动通过每日的 `Sync upstream` workflow 合入；fork 改动如何与上游隔离、同步冲突如何处理，见 [fork-features/README.zh-CN.md](fork-features/README.zh-CN.md)。
 
 与上游一样采用 [MIT](./LICENSE) 许可。

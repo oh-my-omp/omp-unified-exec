@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import activate from "../src/index.ts";
+import { activate } from "../src/index.ts";
 
-// This minimal fake API has no codemode surfaces; codemode-render tests cover them.
-process.env.PI_UNIFIED_EXEC_COMPACT_CODEMODE = "0";
 
 test("session startup preserves builtin bash without a keep-builtin-bash flag", async () => {
 	type Handler = (event: unknown, ctx: ExtensionContext) => Promise<void>;

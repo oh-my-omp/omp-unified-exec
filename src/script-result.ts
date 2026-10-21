@@ -1,13 +1,7 @@
 /**
- * Script-facing results for Pi codemode.
+ * Structured tool results matching each tool's `outputSchema`.
  *
- * Pi 0.99 codemode hands a nested tool call's `structuredContent` to the script
- * when the tool declares an `outputSchema`; otherwise the script receives the
- * whole text envelope as one string. Printing that string inside an object
- * (`text({ ...r })`) serializes every newline as `\n`, producing one logical
- * line that codemode's five-line collapsed preview cannot bound.
- *
- * These projections give scripts `output` as a real multi-line string plus
+ * `structuredContent` exposes `output` as a real multi-line string plus
  * typed state (`exit_code`, `session_id`, …). They derive only from the
  * already-bounded, sanitized result details, so they add no new size or
  * terminal-safety surface. Model-visible `content` and persisted `details`

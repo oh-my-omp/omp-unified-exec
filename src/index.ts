@@ -1,5 +1,5 @@
 /**
- * unified-exec — pi extension that ports codex's unified_exec session model,
+ * unified-exec — omp extension that ports codex's unified_exec session model,
  * with pi's built-in `bash` tool's on-disk retention layered on top.
  *
  * Tools exposed to the LLM (the host's `bash` stays active for short one-shot
@@ -37,24 +37,12 @@ import { Type, type TUnsafe } from "typebox";
 import { type ActivatedExtension, withHostPresentation } from "../fork-features/omp-presentation.ts";
 import { MonitorError } from "../fork-features/monitor-subscription.ts";
 import { type CollectResult, NO_OUTPUT } from "./collect.ts";
-import { registerCompactCodemode } from "./codemode-render.ts";
 import { CompletionCoordinator, type OnExitPolicy, sanitizeMeta } from "./completion.ts";
 import { formatElapsed } from "./format-time.ts";
 import { type LongWaitOutcome, startRateLimitedStream, waitForExitOrDeadline } from "./long-wait.ts";
 import { sleep } from "./notify.ts";
 import { sanitizeOutputText } from "./output-safety.ts";
 import { DEFAULT_PTY_ROWS, getPtyLoadError, isPtyAvailable } from "./pty.ts";
-import {
-	renderExecCommandCall,
-	renderKillSessionCall,
-	renderKillSessionResult,
-	renderListSessionsCall,
-	renderListSessionsResult,
-	renderProcessResult,
-	renderSetOnExitCall,
-	renderSetOnExitResult,
-	renderWriteStdinCall,
-} from "./render.ts";
 import {
 	killNotFoundScriptResult,
 	killScriptResult,
@@ -911,11 +899,8 @@ function startStreaming(
 	};
 }
 
-/**
- * @param appearance the host's light/dark appearance; hosts that cannot tell
- *   (Pi) leave the default dark, as omp's own Console answers.
- */
-function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () => "dark"): ActivatedExtension {
+/** Activate the tool core; the default factory supplies omp's theme appearance. */
+export function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () => "dark"): ActivatedExtension {
 	const coordinator = new CompletionCoordinator({
 		send: (message) => {
 			// If pi is idle this starts a model turn; if a run is active it is
@@ -1088,9 +1073,8 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 		promptGuidelines: [
 			"Use bash for short one-shot commands. Use exec_command for long-running commands, interactive programs (REPLs, TUIs, ssh, sudo), concurrent computation and dev-time daemons: it runs in a PTY, has no command deadline, and never restarts a process that exits.",
 			"The 10s default yield suits most starts; interactive processes return a session_id you then drive with write_stdin.",
-			"For a long non-interactive command, start with a short yield to obtain a session_id, then use a monitor (with a condition for progress lines, or without one to await completion) or an empty write_stdin poll with a finite yield_time_ms suited to its expected duration. There is no built-in empty-poll maximum; an operator may configure one. Keep waits short for interactive or indefinite processes. Pi manages cache warming independently.",
+			"For a long non-interactive command, start with a short yield to obtain a session_id, then use a monitor (with a condition for progress lines, or without one to await completion) or an empty write_stdin poll with a finite yield_time_ms suited to its expected duration. There is no built-in empty-poll maximum; an operator may configure one. Keep waits short for interactive or indefinite processes. omp manages cache warming independently.",
 			'on_exit defaults to "none". Prefer polling or human follow-up. Use on_exit: "wake" ONLY when the human explicitly wants auto-resume on unobserved completion — not for indefinite processes (dev servers, watchers). If you armed wake by mistake or the job is wrong/abandoned, call set_on_exit(session_id, on_exit: "none") promptly (does not kill the process). kill_session still kills and suppresses wake. Combining wake with an observing write_stdin is safe: direct completion consumes the wake.',
-			"In codemode scripts, exec_command and write_stdin resolve to objects: print r.output with text(r.output) and check r.exit_code / r.session_id, instead of printing the whole result object.",
 			"Output is rendered terminal state, not raw bytes. Running results show unseen history plus the current screen and cursor; unchanged running screens report screen_changed:false. Completed results show only the frozen final active screen. Read terminal_url for retained history, /screen for active text, or /screen.png for cell colours and styling; raw bytes remain in log_path.",
 		],
 		outputSchema: processScriptResultSchema,
@@ -1135,8 +1119,6 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 				structuredContent: processScriptResult(shape),
 			};
 		},
-		renderCall: renderExecCommandCall,
-		renderResult: renderProcessResult,
 	});
 
 	pi.registerTool({
@@ -1189,8 +1171,6 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 				structuredContent: processScriptResult(shape),
 			};
 		},
-		renderCall: renderWriteStdinCall,
-		renderResult: renderProcessResult,
 	});
 
 	pi.registerTool({
@@ -1262,8 +1242,6 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 				},
 			};
 		},
-		renderCall: renderSetOnExitCall,
-		renderResult: renderSetOnExitResult,
 	});
 
 	pi.registerTool({
@@ -1371,14 +1349,12 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 				structuredContent: killScriptResult(details),
 			};
 		},
-		renderCall: renderKillSessionCall,
-		renderResult: renderKillSessionResult,
 	});
 
 	pi.registerTool({
 		name: "list_sessions",
 		label: "list_sessions",
-		description: "List all live unified-exec sessions in this pi run.",
+		description: "List all live unified-exec sessions in this omp run.",
 		promptSnippet: "List live sessions",
 		outputSchema: listSessionsScriptResultSchema,
 		parameters: Type.Object({}),
@@ -1449,13 +1425,8 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 				}),
 			};
 		},
-		renderCall: renderListSessionsCall,
-		renderResult: renderListSessionsResult,
 	});
 
-	// Shadows native codemode at session start without replacing
-	// builtin:codemode. Presentation only, for every nested tool.
-	registerCompactCodemode(pi);
 	return {
 		store: ctx.store,
 		// A human kill from the Tern HUD: same path as the slash command.

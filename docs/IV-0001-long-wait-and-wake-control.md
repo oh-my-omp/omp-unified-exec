@@ -19,26 +19,15 @@ waiting. Cancellation leaves the unobserved screen and the live process intact. 
 still commits at `tool_execution_end`; failed/cancelled delivery leaves an
 armed wake eligible. Long polls use output-driven, rate-limited updates.
 
-Pi owns cache warming, with no provider-specific polling rules here. Warming
+omp owns cache warming, with no provider-specific polling rules here. Warming
 is not a prerequisite for long waits and this extension never overrides its
 cost policy or another extension's veto. Human-explicit absolute deadlines and
 completion wakes remain unchanged.
 
-Validation uses `npm test`, including the actual Pi CLI with a scripted local
-provider in `tests/cli-wait.test.ts`. Its synthetic 12-second cache lifetime
-schedules a refresh after two seconds while a 900,000 ms relative wait remains
-attached to a short real child process. Cases cover streaming/idle/off modes,
-an extension veto, missing cache lifetime and unavailable cost economics.
-No live provider requests are made. `PI_UNIFIED_EXEC_TEST_CLI` selects another
-published Pi CLI for the same acceptance test.
-
-Observed on macOS, 2026-09-23: `EXPECT_PTY=1 npm test` passes strict types and
-301 tests with three Windows-only skips on Pi 0.86.1. The six actual-CLI cases
-also pass on installed Pi 0.87.1. `npm run test:tui` on 0.87.1 passes both
-isolated tmux cases: a long relative wait renders and completes, and Esc
-returns while the child remains alive until session shutdown. Package dry-run
-passes and the production dependency audit reports zero vulnerabilities.
-No Windows-native revalidation or live cache-provider probe was run.
+Validation uses `npm test`, including shared wait-engine and direct tool-core
+tests in `tests/long-wait.test.ts`, `tests/e2e.test.ts` and
+`tests/wake-e2e.test.ts`. Real host qualification uses omp; the direct-core
+harness is not a second supported host.
 
 Archive quotas, output-delivery acknowledgement, per-job concurrency changes,
 and registry eviction redesign are not part of this wait-path release. They
@@ -170,12 +159,12 @@ attached waits should work (with safe `setTimeout` chunking).
 | Area | Location | Notes |
 |---|---|---|
 | Remaining / elapsed labels | `src/format-time.ts` | `formatRemainingLater`, `formatElapsed`, etc. Remaining re-exported from `time.ts`. |
-| TUI call/footer | `src/render.ts` | Banner + streaming status use remaining label; 1 s invalidate re-runs call+result. |
+| TUI presentation | `fork-features/omp-presentation.ts` | Exec/write/kill delegate to omp's native bash renderer; other tools use omp's default card. |
 | Horizon removal | `src/time.ts` | `parseYieldUntil(raw, nowMs)` — no max arg. Dropped env/constants. |
 | Long timer arms | `src/long-wait.ts` | `MAX_TIMER_ARM_MS`; re-arm loop. |
 | Policy change | `src/completion.ts` → `setOnExit(id, policy, session?)` | By-id disarm (tombstones); status tokens; flushPending deliver filter. |
 | Wake audit | `list_sessions` / widget / slash picker | `wake_armed` / `[wake]`. |
-| Tool surface | `src/index.ts` | `set_on_exit` tool + renderer; rewritten `promptGuidelines`. |
+| Tool surface | `src/index.ts` | `set_on_exit` tool and human-explicit `promptGuidelines`. |
 | Monitor source and bounded delivery | `fork-features/monitor-subscription.ts`, `sanitizeOutputText`, `ExecSession.subscribeMonitor`, `TerminalScreen.subscribeLines`, `Gate.subscribe` | Source-owned future boundary; sanitized, bounded rendered lines before matching; physically cancellable source listeners. |
 | Monitor lifecycle and tools | `CompletionCoordinator.startMonitor` / `cancelMonitor`, `src/index.ts`, `src/script-result.ts` | One actual subscription map, End/wake routing, typed errors and list state. |
 | Docs | `README.md`, `Changelog.md`, this IV, `DC-0001` | Rules + API tables + workspace doctrine. |
@@ -247,8 +236,7 @@ guidance over-promotes wake + no undo path + `triggerTurn: true` on late exit.
 
 ## Consumers
 
-- Pi agents loading this extension (`exec_command` / `write_stdin` / new
-  `set_on_exit`).
+- omp agents loading this extension's tools.
 - Humans watching TUI remaining labels during absolute waits.
 - Any skill/prompt that previously told models to use `yield_until` freely or
   arm wake “just in case” — should be aligned with human-explicit rules.
@@ -259,7 +247,6 @@ guidance over-promotes wake + no undo path + `triggerTurn: true` on late exit.
 - Human slash-command action for `set_on_exit` (picker currently kill-only;
   wake is now visible as `[wake]`).
 - Soften `triggerTurn` for very old completions (product choice).
-- liveTicker cleanup if TUI drops a streaming component mid-wait (P3).
 
 ## Revision notes
 

@@ -15,7 +15,6 @@ import {
 	withHostPresentation,
 	writeStdinShellArgs,
 } from "../fork-features/omp-presentation.ts";
-import { renderExecCommandCall, renderProcessResult } from "../src/render.ts";
 import { SessionStore } from "../src/session-store.ts";
 import {
 	finalizeKillResult,
@@ -350,33 +349,26 @@ describe("host presentation activation", () => {
 		description: "Test registration",
 		parameters,
 		execute: async () => { throw new Error("This registration test must not execute a tool"); },
-		renderCall: renderExecCommandCall,
-		renderResult: renderProcessResult,
 	};
 
-	it("activates Pi synchronously and preserves the definition and renderer identities", () => {
+	it("rejects a non-omp host at factory invocation without activating or registering tools", () => {
 		const registered: Array<typeof definition> = [];
 		const api = { registerTool: (tool: typeof definition) => registered.push(tool) } as unknown as ExtensionAPI;
 		let activations = 0;
-		let returned = false;
-		const activate = withHostPresentation((host): ActivatedExtension => {
-			assert.equal(returned, false);
-			assert.equal(host, api);
+		const factory = withHostPresentation((host): ActivatedExtension => {
 			activations++;
 			host.registerTool(definition);
 			return { store: new SessionStore({ maxSessions: 10, lruProtectedCount: 2 }), kill: async () => false };
 		});
-		const result = activate(api);
-		returned = true;
-		assert.equal(result, undefined);
-		assert.equal(activations, 1);
-		assert.deepEqual(registered, [definition]);
-		assert.equal(registered[0], definition);
-		assert.equal(registered[0].renderCall, renderExecCommandCall);
-		assert.equal(registered[0].renderResult, renderProcessResult);
+		assert.throws(() => factory(api), {
+			name: "Error",
+			message: /^omp-unified-exec only supports omp \(oh-my-pi\).*current host is not omp/,
+		});
+		assert.equal(activations, 0);
+		assert.deepEqual(registered, []);
 	});
 
-	it("rejects omp activation when its required renderer module is absent, without Pi fallback", async () => {
+	it("rejects omp activation when its required renderer module is absent, without fallback", async () => {
 		const registered: Array<typeof definition> = [];
 		const api = {
 			arktype: {},
