@@ -1,7 +1,5 @@
 /**
  * Held-open result rendering and foreground shell lifecycle.
- * Node-pty reports process and terminal completion together, so live terminal
- * holders are verified separately against Bun.Terminal rather than here.
  */
 
 import { strict as assert } from "node:assert";

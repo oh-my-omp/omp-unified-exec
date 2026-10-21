@@ -218,11 +218,13 @@ export function probeWindowsDefaultShell(
 let cachedDefaultShell: DefaultShell | undefined;
 
 /**
- * Default shell when the caller didn't pass one: `bash` everywhere. On
- * Windows the probe result (absolute path) is cached for the process
- * lifetime; passing an explicit `env` bypasses the cache (test hook).
+ * No explicit tool argument: read the host setting, then SHELL, then the
+ * platform default. Only the last-resort Windows probe is cached; settings
+ * and environment are read for each new process.
  */
-export function resolveDefaultShell(env?: NodeJS.ProcessEnv): DefaultShell {
+export function resolveDefaultShell(env?: NodeJS.ProcessEnv, hostShell?: string): DefaultShell {
+	const preferred = hostShell?.trim() || (env ?? process.env).SHELL?.trim();
+	if (preferred) return { shell: preferred, fellBack: false };
 	if (!IS_WINDOWS) return { shell: "bash", fellBack: false };
 	if (env) return probeWindowsDefaultShell(env);
 	if (!cachedDefaultShell) cachedDefaultShell = probeWindowsDefaultShell(process.env);

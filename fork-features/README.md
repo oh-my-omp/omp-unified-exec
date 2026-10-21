@@ -25,6 +25,7 @@ both register `exec_command` and the other unified-exec tools.
 | Terminal screenshots through `read term://…/screen.png` | `fork-features/terminal-image.ts`, `fork-features/terminal-url.ts`, `fork-features/omp-tools.d.ts` | The host's `@oh-my-pi/pi-natives` root `rasterizeSvg(Uint8Array, maxWidthPx, maxHeightPx)` supplies system-font SVG rasterization without install scripts. A file-backed scheme's `locate()` hands the private PNG to production `read`; text paths return null and still resolve normally. Only copied emulator cells reach SVG. Live appearance/cursor and frozen appearance/no-cursor share K1's projection. | Fork-only |
 | Future-output monitors and repeated follow-up wakes | `fork-features/monitor-subscription.ts`, `src/completion.ts`, `src/session.ts`, `src/terminal-screen.ts`, `src/index.ts`, `src/script-result.ts`, `tests/monitor.test.ts` | The source establishes a non-consuming future boundary; the completion coordinator owns actual subscriptions and merges End with ordinary wake. The existing `pi.sendMessage` seam delivers `unified-exec-monitor` with `display:true`, `triggerTurn:true`, `deliverAs:"followUp"`; the tool and messages retain host-default presentation. | Fork-only |
 | PTY-only `exec_command`: every session runs in a PTY; the pipe backend, `tty` parameter/result field, in-memory raw-output retention, pipe monitor decoding and the flag removing host `bash` are deleted | `src/pty.ts`, `src/session.ts`, `src/collect.ts`, `src/long-wait.ts`, `src/output-safety.ts`, `src/index.ts`, `src/shell.ts`, `src/tool-result.ts`, `src/script-result.ts`, `src/terminal-screen.ts`, `fork-features/monitor-subscription.ts`, `fork-features/terminal-resource.ts`, `fork-features/tern-terminal-hud.ts`, `fork-features/omp-presentation.ts` | A pipe session kept stdin open indefinitely and duplicated host `bash` without its approval, direnv, Git Guard, auto-backgrounding and output shaping ([#61](https://github.com/oh-my-omp/omp-unified-exec/issues/61)). PTYs bound each read to rendered screen state, flush interactive output promptly and route Ctrl-C through the foreground process group. Short commands stay with host `bash`; writes append nothing, PowerShell uses `-NoProfile -NoLogo -Command`, missing PTY backends fail explicitly, and exited processes never restart. | Fork-only |
+| Shell selection follows the host: an explicit `shell`, then omp's live `shellPath`, then `SHELL`, then the platform default; results, streaming updates, kill results and session listings name the executable actually spawned | `fork-features/omp-presentation.ts` (`loadOmpShellPath`, passed to `activate` by `withHostPresentation`), `fork-features/omp-tools.d.ts`; `resolveDefaultShell` in `src/shell.ts`; shell resolution in `runExecCommand` and `activate` in `src/index.ts`; `ExecSession.shell` in `src/session.ts`; `shell` in `src/tool-result.ts` and `src/script-result.ts`; `tests/shell.test.ts`, `tests/e2e.test.ts` | Upstream hard-wired `bash` on POSIX and probed Windows itself, so omp's configured or login shell could differ from the shell that ran a command, and results did not say which one ran ([#63](https://github.com/oh-my-omp/omp-unified-exec/issues/63)). omp owns `shellPath`: `@oh-my-pi/pi-coding-agent/config/registry` exposes `lookup("shellPath").get(host.pi.settings)`. The admitted factory loads it with the other omp modules; each new process reads the effective setting through that getter, never an activation-time copy. A reshaped registry fails plugin loading. Shell resolution precedes argv construction, with no lower-priority fallback after failure. `ExecSession.shell` reads `command[0]`, so later results retain the spawned executable. Command text is not translated: cmd and PowerShell keep their argv; every other shell gets `-c`. | Fork-only |
 
 Environment variables (`PI_UNIFIED_EXEC_*`) and existing tool names are unchanged.
 Remaining `src/*` module paths are unchanged; pipe-only and Pi-only modules are
@@ -71,6 +72,16 @@ no steering signal, and replaces empty polls with `read term://` and `monitor`
 ([#44](https://github.com/oh-my-omp/omp-unified-exec/issues/44)). Upstream
 changes to the steer gate arrive as modify/delete conflicts; keep the deletion.
 
+Shell selection follows the host here ([#63](https://github.com/oh-my-omp/omp-unified-exec/issues/63)):
+upstream's `resolveDefaultShell` returns `bash` on POSIX, its `shell`
+parameter text says so, and its spawn options record the raw `shell`
+argument. Upstream changes there arrive as content conflicts in
+`src/shell.ts`, `src/index.ts` and `src/session.ts`. Keep the precedence
+(explicit `shell`, omp `shellPath`, `SHELL`, platform default), resolution
+before `buildShellCommand`, and `ExecSession.shell` as `command[0]`; port
+upstream fixes to the Windows Git Bash/PowerShell probe into the platform
+default branch only, and never add a fallback after a selected shell fails.
+
 `README.md` and `README.zh-CN.md` are fork-owned. When a sync touches the
 README, keep the fork's and carry over only upstream facts that still hold here
 (tool parameters, limits, semantics), written into the fork's sections of both
@@ -100,6 +111,17 @@ an additional user prompt. Verify default/custom limits, batching, advisory,
 last partial output, human/model termination, End/wake merging, rendered
 prompts and redraws, and unchanged default-card/message styling in ANSI/Tern.
 
+On omp upgrades, requalify the shell bridge: `@oh-my-pi/pi-coding-agent/config/registry`
+must still export `lookup`, and `lookup("shellPath").get(host.pi.settings)` must
+still return omp's effective setting as a string or undefined. Through real
+interactive omp, a `shellPath` overlay must outrank `SHELL` and an explicit
+`shell` must outrank both; an explicit `shell` that does not exist must
+return `spawn … ENOENT` and no output rather than another shell (omp itself
+rejects a missing `shellPath` at startup, before the extension loads); later polls, kills and listings must repeat the session's shell;
+and the default `workdir` must still follow omp's cwd.
+
+
+Host shell selection is also a fork customization meant to stay.
 
 The package rename, fork README, omp-only host admission, native Bun PTY backend,
 PTY-only `exec_command`, omp presentation and Tern terminal HUD are the fork customizations meant to stay. On

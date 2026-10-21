@@ -30,7 +30,6 @@ export interface SessionSpawnOptions {
 	cols?: number;
 	rows?: number;
 	displayCommand?: string; // human-readable command for list_sessions/UI
-	shell?: string; // raw `shell` arg recorded for introspection
 	windowsVerbatimArguments?: boolean; // Windows cmd.exe quoting (see shell.ts)
 	/** The background the session's screen is shown on (default dark), answered to OSC 10/11. */
 	appearance?: () => TerminalAppearance;
@@ -46,6 +45,10 @@ export interface SessionState {
 export class ExecSession {
 	readonly id: number;
 	readonly command: string[];
+	/** Executable actually passed to spawn, not a later host-setting lookup. */
+	get shell(): string | undefined {
+		return this.command[0];
+	}
 	readonly displayCommand: string;
 	readonly cwd: string;
 	readonly startedAt: number;

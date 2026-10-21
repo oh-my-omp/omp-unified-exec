@@ -11,8 +11,10 @@ and tool reference, see [../README.md](../README.md).
   children in `tests/bun-pty-runtime.mjs`, and the unsupported-host rejection
   regression. Node is not a supported plugin host.
 - **Linux, macOS, or Windows.** On Windows, Git Bash is strongly
-  recommended (it's the default shell when on PATH; otherwise commands
-  fall back to `powershell`). Every PTY uses Bun's native `Bun.Terminal`.
+  recommended: with no `shell` argument, omp `shellPath` or `SHELL`, it is
+  the platform default when found, otherwise commands run in `powershell`
+  (see [Shell selection](../README.md#shell-selection)).
+  Every PTY uses Bun's native `Bun.Terminal`.
 - **omp** installed and runnable (`omp --version`). Only omp is supported;
   Pi and other non-omp hosts fail at the extension factory before tool registration.
 
@@ -77,7 +79,7 @@ sibling view, indexed by concern:
 | C-style escape decoding for `chars` | `src/unescape.ts` |
 | Bun.Terminal backend, runtime admission, spawn preflight, Windows tree-kill | `src/pty.ts` |
 | Shell selection & argv construction | `src/shell.ts` |
-| omp-only host admission, bash delegation, argument/result display adapters | `fork-features/omp-presentation.ts` |
+| omp-only host admission, bash delegation, argument/result display adapters, live `shellPath` registry lookup | `fork-features/omp-presentation.ts` |
 | Structured output schemas and projections | `src/script-result.ts` |
 | Initiative / doctrine docs | `docs/IV-*.md`, `docs/DC-*.md` |
 | Constants mirroring codex | top of `src/index.ts` |

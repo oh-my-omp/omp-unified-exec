@@ -692,7 +692,7 @@ class TerminalPage implements Component {
 
 /** Load omp's native rendering flag; fails when omp no longer provides it. */
 export async function loadNativeRenderingState(): Promise<NativeRenderingState> {
-	// Dynamic: this module exists only inside omp, so a static import would break Pi hosts.
+	// Dynamic: omp supplies this module at extension load time.
 	return parseNativeRenderingState(await import("@oh-my-pi/pi-tui/native/state"));
 }
 

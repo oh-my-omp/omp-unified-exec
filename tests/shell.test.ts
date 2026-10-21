@@ -1,6 +1,6 @@
 /**
  * Unit tests for src/shell.ts: shell command construction, PATH lookup,
- * and the Windows bash→powershell default-shell fallback.
+ * live host/environment defaults, and the Windows bash→powershell fallback.
  *
  * PATH-lookup and probe tests build synthetic PATH directories under a temp
  * dir and inject them via the env parameter, so both probe branches run on
@@ -248,24 +248,93 @@ describe("resolveWindowsShell", () => {
 });
 
 describe("resolveDefaultShell", () => {
-	it("returns bash on POSIX without probing", () => {
-		if (IS_WINDOWS) return;
-		assert.deepEqual(resolveDefaultShell(), { shell: "bash", fellBack: false });
-		assert.deepEqual(resolveDefaultShell({ PATH: "" }), { shell: "bash", fellBack: false });
+	it("prefers a trimmed host setting over SHELL without validating or substituting it", () => {
+		assert.deepEqual(resolveDefaultShell({ SHELL: "env-shell" }, " \t host-shell \n"), {
+			shell: "host-shell",
+			fellBack: false,
+		});
+		assert.deepEqual(resolveDefaultShell({ SHELL: "bash" }, "nonexistent-host-shell-4711"), {
+			shell: "nonexistent-host-shell-4711",
+			fellBack: false,
+		});
 	});
 
-	it("Windows: explicit env bypasses the cache; default env is cached", () => {
-		if (!IS_WINDOWS) return;
+	it("uses trimmed SHELL when the host setting is absent or blank", () => {
+		for (const hostShell of [undefined, "", " \t\n"]) {
+			assert.deepEqual(resolveDefaultShell({ SHELL: " \t env-shell \n" }, hostShell), {
+				shell: "env-shell",
+				fellBack: false,
+			});
+		}
+		assert.deepEqual(resolveDefaultShell({ SHELL: "env-shell" }, "next-host-shell"), {
+			shell: "next-host-shell",
+			fellBack: false,
+		});
+	});
+
+	it("uses the platform fallback only when host and environment settings are empty", () => {
+		for (const SHELL of [undefined, "", " \t\n"]) {
+			const env = { PATH: "", SHELL };
+			const expected = IS_WINDOWS ? probeWindowsDefaultShell(env) : { shell: "bash", fellBack: false };
+			for (const hostShell of [undefined, "", " \t\n"]) {
+				assert.deepEqual(resolveDefaultShell(env, hostShell), expected);
+			}
+		}
+	});
+
+	it("reads each supplied environment without caching SHELL", () => {
+		const env: NodeJS.ProcessEnv = { SHELL: "first-env-shell" };
+		assert.equal(resolveDefaultShell(env).shell, "first-env-shell");
+		env.SHELL = "second-env-shell";
+		assert.equal(resolveDefaultShell(env).shell, "second-env-shell");
+		assert.equal(resolveDefaultShell({ SHELL: "third-env-shell" }).shell, "third-env-shell");
+	});
+
+	it("reads live process settings and does not inherit them into an explicit environment", () => {
+		const previous = process.env.SHELL;
+		try {
+			process.env.SHELL = "first-process-shell";
+			assert.equal(resolveDefaultShell().shell, "first-process-shell");
+			process.env.SHELL = " \t second-process-shell \n";
+			assert.equal(resolveDefaultShell().shell, "second-process-shell");
+			assert.equal(resolveDefaultShell(undefined, "first-host-shell").shell, "first-host-shell");
+			assert.equal(resolveDefaultShell(undefined, "second-host-shell").shell, "second-host-shell");
+			assert.equal(resolveDefaultShell(undefined, " \t").shell, "second-process-shell");
+			const env = { PATH: "" };
+			assert.deepEqual(
+				resolveDefaultShell(env),
+				IS_WINDOWS ? probeWindowsDefaultShell(env) : { shell: "bash", fellBack: false },
+			);
+		} finally {
+			if (previous === undefined) delete process.env.SHELL;
+			else process.env.SHELL = previous;
+		}
+	});
+
+	it("Windows: only the default fallback probe is cached, not host or SHELL settings", { skip: !IS_WINDOWS }, () => {
+		const previous = process.env.SHELL;
 		resetDefaultShellCache();
-		const bashDir = makePathDir("cache", ["bash.exe"]);
-		// env-injected calls see their own PATH...
-		assert.equal(resolveDefaultShell({ PATH: bashDir }).shell, join(bashDir, "bash.exe"));
-		assert.equal(resolveDefaultShell({ PATH: "" }).fellBack, true);
-		// ...and the cached default probe returns a stable object.
-		const a = resolveDefaultShell();
-		const b = resolveDefaultShell();
-		assert.deepEqual(a, b);
-		resetDefaultShellCache();
+		try {
+			delete process.env.SHELL;
+			const fallback = resolveDefaultShell();
+			assert.strictEqual(resolveDefaultShell(), fallback);
+			process.env.SHELL = "live-env-shell";
+			assert.deepEqual(resolveDefaultShell(), { shell: "live-env-shell", fellBack: false });
+			assert.deepEqual(resolveDefaultShell(undefined, "live-host-shell"), {
+				shell: "live-host-shell",
+				fellBack: false,
+			});
+			process.env.SHELL = " \t";
+			assert.strictEqual(resolveDefaultShell(), fallback);
+
+			const bashDir = makePathDir("cache", ["bash.exe"]);
+			assert.equal(resolveDefaultShell({ PATH: bashDir }).shell, join(bashDir, "bash.exe"));
+			assert.equal(resolveDefaultShell({ PATH: "" }).fellBack, true);
+		} finally {
+			if (previous === undefined) delete process.env.SHELL;
+			else process.env.SHELL = previous;
+			resetDefaultShellCache();
+		}
 	});
 });
 
