@@ -9,8 +9,9 @@
 
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { describe, it } from "node:test";
 import { DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
 import { activate, MAX_EMPTY_POLL_ENV_VAR, resolveMaxEmptyPollMs } from "../src/index.ts";
@@ -973,16 +974,31 @@ describe("unified-exec e2e", () => {
 		}
 	});
 
-	it("nonexistent workdir surfaces a failure_message", async () => {
-		const h = makeHarness();
-		await h.emit("session_start");
-		const r = await h.call("exec_command", { cmd: "echo hi", workdir: "/definitely/not/a/real/dir" });
-		assert.equal(r.details.session_id, undefined, JSON.stringify(r.details));
-		assert.ok(
-			typeof r.details.failure_message === "string" && /ENOENT/.test(r.details.failure_message),
-			`expected ENOENT failure_message; got ${JSON.stringify(r.details)}`,
-		);
-		await h.emit("session_shutdown");
+	it("a relative workdir resolves against the session cwd and an unusable one never spawns", async () => {
+		const root = mkdtempSync(join(tmpdir(), "uexec-workdir-"));
+		try {
+			mkdirSync(join(root, "sub"));
+			writeFileSync(join(root, "f"), "");
+			const h = makeHarness();
+			h.stubCtx.cwd = root;
+			await h.emit("session_start");
+			const ok = await h.call("exec_command", { cmd: "pwd", workdir: "sub" });
+			assert.equal(ok.details.cwd, join(root, "sub"), JSON.stringify(ok.details));
+			assert.equal(ok.details.exit_code, 0, JSON.stringify(ok.details));
+			for (const [workdir, message] of [
+				["nope", `Working directory does not exist: ${join(root, "nope")}`],
+				["f", `Working directory is not a directory: ${join(root, "f")}`],
+			] as const) {
+				const marker = join(root, `ran-${workdir}`);
+				const r = await h.call("exec_command", { cmd: `echo > "${marker}"`, workdir });
+				assert.equal(r.details.session_id, undefined, JSON.stringify(r.details));
+				assert.equal(r.details.failure_message, message, JSON.stringify(r.details));
+				assert.equal(existsSync(marker), false, "nothing may run for an unusable workdir");
+			}
+			await h.emit("session_shutdown");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 

@@ -143,7 +143,7 @@ rendered terminal screen (see [Terminal output](#terminal-output)).
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `cmd` | string | — | Shell command. Required. |
-| `workdir` | string | host session cwd | Working directory. The default is read from the host for each call; a `cd` inside a session never changes it. |
+| `workdir` | string | host session cwd | Working directory. The default is read from the host for each call; a `cd` inside a session never changes it. A relative path resolves against that session cwd. A missing path or a non-directory fails with `Working directory does not exist: <path>` / `Working directory is not a directory: <path>` (the host bash's wording) and starts nothing. |
 | `shell` | string | omp `shellPath`, else `SHELL`, else `bash` | Shell executable; see [Shell selection](#shell-selection). `cmd` / `powershell` / `pwsh` get shell-appropriate flags; every other shell gets `-c`. |
 | `cols` | number | `120` | PTY width. Clamped to [20, 500]. |
 | `rows` | number | `80` | PTY height. Clamped to [5, 300]. |

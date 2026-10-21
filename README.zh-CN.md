@@ -66,7 +66,7 @@ CLI 继承 omp 的环境，由 Tern 决定目标目录并负责重新加载。da
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `cmd` | string | — | Shell 命令。必填。 |
-| `workdir` | string | 宿主会话的 cwd | 工作目录。默认值在每次调用时从宿主读取；会话里的 `cd` 不会改变它。 |
+| `workdir` | string | 宿主会话的 cwd | 工作目录。默认值在每次调用时从宿主读取；会话里的 `cd` 不会改变它。相对路径按该会话 cwd 解析。路径不存在或不是目录时，以 `Working directory does not exist: <路径>` / `Working directory is not a directory: <路径>`（与宿主 bash 相同的文案）失败，不启动任何进程。 |
 | `shell` | string | omp `shellPath`，否则 `SHELL`，否则 `bash` | Shell 可执行文件，见 [Shell 选择](#shell-selection)。`cmd` / `powershell` / `pwsh` 会带上各自对应的参数；其他 shell 一律使用 `-c`。 |
 | `cols` | number | `120` | PTY 宽度。限制在 [20, 500]。 |
 | `rows` | number | `80` | PTY 高度。限制在 [5, 300]。 |

@@ -7,7 +7,6 @@
  */
 
 import { spawn as cpSpawn } from "node:child_process";
-import { statSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { resolve as resolvePath } from "node:path";
 
@@ -187,19 +186,13 @@ function killPosixProcessGroup(pid: number, signal: NodeJS.Signals): void {
 
 /**
  * Bun execs the child after the terminal exists, so a missing shell
- * binary or workdir surfaces only as a bare non-zero exit with no output.
- * Check both first so the caller gets a diagnosable failure.
+ * binary surfaces only as a bare non-zero exit with no output. Check it
+ * first so the caller gets a diagnosable failure. (exec_command validates
+ * the working directory before it gets here.)
  */
 function assertSpawnable(opts: SpawnOptions): void {
 	const file = opts.command[0];
 	if (!file) throw new Error("spawnChild: empty command");
-	let cwdIsDirectory = false;
-	try {
-		cwdIsDirectory = statSync(opts.cwd).isDirectory();
-	} catch {
-		// missing or unreadable: reported below
-	}
-	if (!cwdIsDirectory) throw new Error(`spawn ${file} ENOENT: workdir is not an existing directory: ${opts.cwd}`);
 	const found = /[\\/]/.test(file) ? isFile(resolvePath(opts.cwd, file)) : findOnPath(file, opts.env) !== undefined;
 	if (!found) throw new Error(`spawn ${file} ENOENT: shell binary not found (check shell binary and workdir: ${opts.cwd})`);
 }
