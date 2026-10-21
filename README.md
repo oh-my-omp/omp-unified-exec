@@ -478,9 +478,13 @@ DEFAULT_MAX_LINES            = 2000
 - **A closed terminal** never crashes the host; writes report `failure_message`.
 - **Esc** breaks the current wait but leaves the session running.
 - **Shutdown** sends SIGTERM to every session and SIGKILLs survivors after 1s.
-  An in-flight call whose terminal shutdown has already released returns empty
-  output and reports the process as it is: exited, or still running until the
-  SIGKILL lands.
+  An `exec_command` still inside its 150 ms start-up grace never gets a
+  `session_id`: it waits for the shutdown to end the process and reports that
+  exit (or `running: true` with `exit not confirmed` if the process outlives
+  the SIGKILL wait), so the session never appears after the next
+  `session_start`. Any other in-flight call whose terminal shutdown has already
+  released returns empty output and reports the process as it is: exited, or
+  still running until the SIGKILL lands.
 - **LRU eviction** at 64 sessions takes the oldest non-protected one, preferring
   exited sessions; the 8 most recent are never evicted.
 - **Observations** are serialized per session; streaming updates, `read term://`,

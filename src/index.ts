@@ -92,6 +92,10 @@ const MAX_YIELD_TIME_MS = 30_000;
 const DEFAULT_EXEC_YIELD_MS = 10_000;
 const DEFAULT_WRITE_STDIN_YIELD_MS = 250;
 const EARLY_EXIT_GRACE_PERIOD_MS = 150;
+// session_shutdown waits this long for SIGTERM to land, then SIGKILLs survivors
+// and waits SHUTDOWN_KILL_GRACE_MS for confirmation.
+const SHUTDOWN_TERM_GRACE_MS = 1000;
+const SHUTDOWN_KILL_GRACE_MS = 500;
 const MAX_SESSIONS = 64;
 const WARNING_SESSIONS = 60;
 const LRU_PROTECTED_COUNT = 8;
@@ -163,8 +167,9 @@ interface ExtensionCtx {
 	notifiedBashSource: boolean;
 	/**
 	 * Sessions spawned but not yet inserted into the store (inside the
-	 * early-exit grace window). session_shutdown must see these too —
-	 * otherwise a shutdown racing exec_command orphans the child.
+	 * early-exit grace window). Membership is ownership: session_shutdown
+	 * terminates these and removes them, so an exec_command whose session is
+	 * no longer here after the grace must not insert it into the store.
 	 */
 	pendingSessions: Set<ExecSession>;
 	/** Set on session_shutdown; new exec_commands are rejected. */
@@ -349,6 +354,30 @@ async function runExecCommand(
 					// satisfied directly without ever being armed.
 					...(wantsWake ? { completion_delivery: "direct" as const, tool_time_utc: nowUtcIso() } : {}),
 				},
+			});
+		}
+		// session_shutdown inside the grace took ownership of the session and is
+		// terminating it: the session belongs to an ended session period, so it
+		// never enters the store and the call reports the process's actual end.
+		if (!ctx.pendingSessions.has(session)) {
+			await waitForExitOrDeadline({ exited: session.exited, durationMs: SHUTDOWN_TERM_GRACE_MS + SHUTDOWN_KILL_GRACE_MS });
+			const exited = session.hasExited;
+			const collected = exited ? await session.collect({ deadlineMs: Date.now() + 500 }) : NO_OUTPUT;
+			return finalizeResponse({
+				wallTimeSec: (Date.now() - start) / 1000,
+				collected,
+				totalBytes: session.totalBytesSeen,
+				sessionId: undefined,
+				exitCode: session.exitCode,
+				signal: session.signal,
+				failure: exited ? session.failureMessage : "terminated by session_shutdown; exit not confirmed",
+				logPath: session.logPath,
+				cwd: effectiveCwd,
+				command: args.cmd,
+				yieldTimeMs,
+				// Without a session_id the result would default to exited; an
+				// unconfirmed exit is reported as the process still running.
+				extra: { on_exit: args.on_exit, ...(exited ? {} : { status: "running" as const, running: true }) },
 			});
 		}
 
@@ -975,6 +1004,9 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 				drained.push(s);
 			}
 		}
+		// Shutdown now owns these: their exec_command must not insert them into
+		// the store once its grace ends (the store belongs to this ended period).
+		ctx.pendingSessions.clear();
 		clearSessionExitWatchers(ctx);
 		updateRunningSessionsUi(ctx);
 		// Children run detached (own process groups), so anything that ignores
@@ -984,11 +1016,11 @@ function activate(pi: ExtensionAPI, appearance: () => TerminalAppearance = () =>
 		// byte-identical, so skip the escalation there (the grace wait above
 		// still confirms exits). Event-driven per session: each wait resolves
 		// the instant that session's exit fires.
-		await Promise.all(drained.map((s) => waitForExitOrDeadline({ exited: s.exited, durationMs: 1000 })));
+		await Promise.all(drained.map((s) => waitForExitOrDeadline({ exited: s.exited, durationMs: SHUTDOWN_TERM_GRACE_MS })));
 		if (!IS_WINDOWS) {
 			const survivors = drained.filter((s) => !s.hasExited);
 			for (const s of survivors) s.kill("SIGKILL");
-			await Promise.all(survivors.map((s) => waitForExitOrDeadline({ exited: s.exited, durationMs: 500 })));
+			await Promise.all(survivors.map((s) => waitForExitOrDeadline({ exited: s.exited, durationMs: SHUTDOWN_KILL_GRACE_MS })));
 		}
 		if (drained.length && ctx.ui) {
 			const leftover = drained.filter((s) => !s.hasExited).length;

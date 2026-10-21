@@ -8,6 +8,7 @@
  */
 
 import { strict as assert } from "node:assert";
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
@@ -579,18 +580,28 @@ describe("unified-exec e2e", () => {
 		await new Promise((r) => setTimeout(r, 40)); // inside the grace window
 		await h.emit("session_shutdown");
 		const r = await inflight;
-		// The pending session must have been terminated by the shutdown: the
-		// call resolves with exit info (or a dead session), never a live one.
-		if (r.details.session_id !== undefined) {
-			await new Promise((res) => setTimeout(res, 1000)); // let the tree-kill land
-			const l = await h.call("list_sessions", {});
-			assert.ok(
-				!l.details.sessions.some((s: any) => s.running),
-				`orphaned live session: ${JSON.stringify(l.details)}`,
-			);
-		} else {
-			assert.ok(r.details.exit_code != null || r.details.signal, JSON.stringify(r.details));
-		}
+		// Shutdown owns the pending session: the call reports its end, never a session_id.
+		assert.equal(r.details.session_id, undefined, JSON.stringify(r.details));
+		assert.ok(r.details.exit_code != null || r.details.signal, JSON.stringify(r.details));
+	});
+
+	it("a session in the grace window at shutdown never reaches the next session period", { skip: IS_WINDOWS }, async () => {
+		// #66: the grace ended after shutdown had already drained the store, and
+		// the session was inserted anyway, surviving into the next session_start.
+		const marker = `30.${process.pid}${Date.now() % 1000}`;
+		const h = makeHarness();
+		await h.emit("session_start");
+		const inflight = h.call("exec_command", { cmd: `trap '' TERM HUP; sleep ${marker}`, yield_time_ms: 500 });
+		await new Promise((r) => setTimeout(r, 40)); // inside the grace window
+		await h.emit("session_shutdown");
+		const r = await inflight;
+		assert.equal(r.details.session_id, undefined, JSON.stringify(r.details));
+		assert.equal(r.details.signal, "SIGKILL", JSON.stringify(r.details));
+		await h.emit("session_start");
+		const l = await h.call("list_sessions", {});
+		assert.deepEqual(l.details.sessions, [], JSON.stringify(l.details));
+		assert.throws(() => execFileSync("pgrep", ["-f", `slee[p] ${marker}`]), "trapping child must be dead");
+		await h.emit("session_shutdown");
 	});
 
 	it("an in-flight write_stdin whose terminal shutdown released before the child died returns empty output", { skip: IS_WINDOWS }, async () => {
