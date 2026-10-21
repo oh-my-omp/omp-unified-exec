@@ -361,7 +361,8 @@ async function runExecCommand(
 		// never enters the store and the call reports the process's actual end.
 		if (!ctx.pendingSessions.has(session)) {
 			await waitForExitOrDeadline({ exited: session.exited, durationMs: SHUTDOWN_TERM_GRACE_MS + SHUTDOWN_KILL_GRACE_MS });
-			const collected = session.hasExited ? await session.collect({ deadlineMs: Date.now() + 500 }) : NO_OUTPUT;
+			const exited = session.hasExited;
+			const collected = exited ? await session.collect({ deadlineMs: Date.now() + 500 }) : NO_OUTPUT;
 			return finalizeResponse({
 				wallTimeSec: (Date.now() - start) / 1000,
 				collected,
@@ -369,12 +370,14 @@ async function runExecCommand(
 				sessionId: undefined,
 				exitCode: session.exitCode,
 				signal: session.signal,
-				failure: session.hasExited ? session.failureMessage : "terminated by session_shutdown; exit not confirmed",
+				failure: exited ? session.failureMessage : "terminated by session_shutdown; exit not confirmed",
 				logPath: session.logPath,
 				cwd: effectiveCwd,
 				command: args.cmd,
 				yieldTimeMs,
-				extra: { on_exit: args.on_exit },
+				// Without a session_id the result would default to exited; an
+				// unconfirmed exit is reported as the process still running.
+				extra: { on_exit: args.on_exit, ...(exited ? {} : { status: "running" as const, running: true }) },
 			});
 		}
 
