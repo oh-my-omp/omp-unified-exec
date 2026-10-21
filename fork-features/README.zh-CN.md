@@ -34,6 +34,8 @@
 
 本仓库的 `exec_command` 只用 PTY（[#61](https://github.com/oh-my-omp/omp-unified-exec/issues/61)）：管道后端（`spawnPipes`、codex 首尾缓冲区的移植、`collectOutputUntilDeadline`、流式 `OutputTextSanitizer` 和管道 monitor 解码）、`tty` 参数与结果字段，以及移除宿主 `bash` 的参数都已删除，PowerShell 以 `-NoProfile -NoLogo -Command` 运行。上游对这些代码的改动会以 modify/delete 或内容冲突的形式到来。解决方法：保留删除，只把对 PTY 会话仍然成立的事实（shell 选择、信号、Windows 进程树、结果字段）搬进 PTY 代码；不要恢复管道路径、`tty` 参数、该参数或只为管道存在的 PowerShell 参数。
 
+上游 v0.13 的 steer gate（`src/steer-gate.ts`、`wait_status: "interrupted_by_steer"`、`PI_UNIFIED_EXEC_STEER_INTERRUPT`；上游 `d393051`、`f5e5d96`、`1baa416`）不采用，以 `ours` 策略合并（[PR #1](https://github.com/oh-my-omp/omp-unified-exec/pull/1)）。它监听 Pi 的 `input` 事件来提前结束附着等待，主要针对空 `write_stdin` 轮询；本 fork 面向 omp，其扩展上下文没有 steering 信号，空轮询由 `read term://` 与 `monitor` 取代（[#44](https://github.com/oh-my-omp/omp-unified-exec/issues/44)）。上游对 steer gate 的改动会以 modify/delete 冲突的形式到来，保留删除。
+
 `README.md` 和 `README.zh-CN.md` 归 fork 所有。同步改动到 README 时，保留 fork 的版本，只把在这里仍然成立的上游事实（工具参数、限制、语义）写进两个文件中 fork 对应的章节；两者保持逐节互译，`fork-features/README.md` 和 `fork-features/README.zh-CN.md` 也一样。
 
 omp 升级后，要重新验证 `@oh-my-pi/pi-coding-agent/internal-urls`：

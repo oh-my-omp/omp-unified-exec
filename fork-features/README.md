@@ -59,6 +59,16 @@ signals, Windows process trees, result fields) into the PTY code; do not
 restore the pipe path, the `tty` parameter, the flag or pipe-only PowerShell
 flags.
 
+Upstream's v0.13 steer gate (`src/steer-gate.ts`, `wait_status:
+"interrupted_by_steer"`, `PI_UNIFIED_EXEC_STEER_INTERRUPT`; upstream
+`d393051`, `f5e5d96`, `1baa416`) is not adopted: it was merged with the
+`ours` strategy ([PR #1](https://github.com/oh-my-omp/omp-unified-exec/pull/1)).
+It listens for Pi's `input` event to end attached waits, mostly empty
+`write_stdin` polls; this fork targets omp, whose extension context carries
+no steering signal, and replaces empty polls with `read term://` and `monitor`
+([#44](https://github.com/oh-my-omp/omp-unified-exec/issues/44)). Upstream
+changes to the steer gate arrive as modify/delete conflicts; keep the deletion.
+
 `README.md` and `README.zh-CN.md` are fork-owned. When a sync touches the
 README, keep the fork's and carry over only upstream facts that still hold here
 (tool parameters, limits, semantics), written into the fork's sections of both
