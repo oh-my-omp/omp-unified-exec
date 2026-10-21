@@ -29,14 +29,6 @@ tests in `tests/long-wait.test.ts`, `tests/e2e.test.ts` and
 `tests/wake-e2e.test.ts`. Real host qualification uses omp; the direct-core
 harness is not a second supported host.
 
-Observed on macOS, 2026-09-23: `EXPECT_PTY=1 npm test` passes strict types and
-301 tests with three Windows-only skips on Pi 0.86.1. The six actual-CLI cases
-also pass on installed Pi 0.87.1. `npm run test:tui` on 0.87.1 passes both
-isolated tmux cases: a long relative wait renders and completes, and Esc
-returns while the child remains alive until session shutdown. Package dry-run
-passes and the production dependency audit reports zero vulnerabilities.
-No Windows-native revalidation or live cache-provider probe was run.
-
 Archive quotas, output-delivery acknowledgement, per-job concurrency changes,
 and registry eviction redesign are not part of this wait-path release. They
 remain separate work; this release does not claim to implement the entire

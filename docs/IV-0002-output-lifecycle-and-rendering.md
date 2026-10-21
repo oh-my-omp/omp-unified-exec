@@ -371,19 +371,8 @@ while collapsed. In TSP frames from a real PTY handshake, the tool nodes carry
 the bash head (command target, `lang: bash`, exit chip), and failures have
 `tone: "error"`. Neither frontend showed envelope fields, and the logs had zero
 `Tool renderer failed` / `Tool describe failed` entries. The same day,
-`npm test` passed 371 tests with three Windows-only skips, and
-`npm run test:tui` passed 21. TSP evidence is wire-level; no Tern GUI
-screenshot was taken.
-
-Pi 1.0.0 qualification, 2026-10-02, macOS arm64/Node 24.21.0:
-exact development pins/locks updated, production renderer/executor unchanged.
-Native codemode now points to `docs/codemode.md`; tests no longer require its
-retired inline model declaration. `tests/codemode-models.test.ts` compares
-native/wrapped generated images and classifier/image usage, checks `in`
-probes and fail-fast unknown properties, with only fake model methods.
-`EXPECT_PTY=1 npm test`: strict types, 348 passes and three Windows-only skips.
-`npm run test:tui`: 21 passes, including regular/fullscreen and system/dark/light.
-No npm publication, installed replacement or live model qualification.
+`npm test` passed 371 tests with three Windows-only skips. TSP evidence is
+wire-level; no Tern GUI screenshot was taken.
 
 Automated gate:
 
