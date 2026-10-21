@@ -1357,8 +1357,7 @@ export function activate(
 				? `unified-exec sessions (${live.length} live, ${reaped.length} just exited):`
 				: `unified-exec sessions (${live.length}):`;
 			return {
-				// tool_time_utc lets the model compute a yield_until deadline from a
-				// trustworthy host clock without an extra probing call.
+				// Report the host clock alongside this inventory snapshot.
 				content: [{ type: "text", text: `${header}\n${lines.join("\n")}\ntool_time_utc: ${toolTimeUtc}` }],
 				details: { sessions, active_count: live.length, just_exited_count: reaped.length, tool_time_utc: toolTimeUtc },
 				structuredContent: listSessionsScriptResult({

@@ -387,8 +387,7 @@ describe("exec_command on_exit", () => {
 		const content = h.sentMessages[0].message.content;
 		assert.match(content, new RegExp(`session_id=${a.details.session_id}`));
 		assert.match(content, new RegExp(`session_id=${b.details.session_id}`));
-		await h.call("write_stdin", { session_id: a.details.session_id, yield_time_ms: 5000 });
-		await h.call("write_stdin", { session_id: b.details.session_id, yield_time_ms: 5000 });
+		await h.call("list_sessions", {});
 		await h.emit("session_shutdown");
 	});
 
@@ -412,6 +411,6 @@ describe("exec_command on_exit", () => {
 		assert.equal(h.sentMessages.length, 0);
 		await h.emit("agent_settled", { type: "agent_settled" });
 		assert.ok(await waitFor(() => h.sentMessages.length === 1), "retry at agent_settled");
-		await h.call("write_stdin", { session_id: r1.details.session_id, yield_time_ms: 5000 });
+		await h.call("list_sessions", {});
 	});
 });

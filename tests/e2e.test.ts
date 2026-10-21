@@ -432,7 +432,7 @@ describe("unified-exec e2e", () => {
 
 		const monitoring = await h.call("monitor", { session_id: sid });
 		assert.equal(monitoring.details.status, "started");
-		assert.ok(await waitFor(() => h.sentMessages.some((m) => m.customType === "unified-exec-monitor" && m.content.includes("End"))));
+		assert.ok(await waitFor(() => h.sentMessages.some((m) => m.customType === "unified-exec-monitor" && m.content.includes("ended:"))));
 		const projection = await readTerminal(r1.details.terminal_url.slice(7));
 		assert.ok(projection.screenLines.some((line) => line.includes("tick 5")));
 		const listed = await h.call("list_sessions", {});
