@@ -10,6 +10,10 @@ declare module "@oh-my-pi/pi-tui/native/state" {
 	export const onNativeRenderingChange: unknown;
 }
 
+declare module "@oh-my-pi/pi-coding-agent/modes/interactive-mode" {
+	export const InteractiveMode: unknown;
+}
+
 declare module "@oh-my-pi/pi-tui/theme" {
 	export const isLightTheme: unknown;
 	export const getCurrentThemeName: unknown;

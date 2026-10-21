@@ -2,6 +2,6 @@ schema = 1
 id = "omp-unified-exec"
 name = "omp-unified-exec terminals"
 version = "0.14.7"
-description = "Puts omp-unified-exec's terminals pill on its own line above omp's pill line and sets the Terminals sheet's output preview in the mono face."
+description = "Sets omp-unified-exec's Terminals sheet output preview in the mono face."
 window = "window.luau"
 styles = ["terminals.css"]

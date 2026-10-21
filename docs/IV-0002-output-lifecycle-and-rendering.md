@@ -39,13 +39,14 @@ The initiative establishes a durable output contract across these layers:
    plus the current screen and cursor; completed results report only the
    frozen final active screen, with a retained-terminal reading address.
 7. **Tern terminal HUD (fork):** a tool result shows a session's screen only as it
-   was when that call returned. On omp rendering natively in Tern, a counter
-   pill copied from omp's running-work counter (terminal icon and bare count,
-   words in its hover label) counts stored sessions on its own line above
-   omp's counter. Its row, pill and segment use native `omp.hud`,
-   `omp.hud.pill` and `omp.hud.seg` styling across Reader, Spine, Console and
-   color themes. There is no outer hide button or dismiss state. Clicking the
-   pill opens the Terminals sheet, built like omp's Agents sheet: the sessions
+   was when that call returned. On omp rendering natively in Tern, a terminals
+   segment (terminal icon and bare stored session count, words in its hover
+   label) joins omp's own running-work pill as its last segment, after agents
+   and jobs, so Tern draws one capsule with its dividers across Reader, Spine,
+   Console and color themes
+   ([#76](https://github.com/oh-my-omp/omp-unified-exec/issues/76)). There is
+   no outer hide button or dismiss state. Clicking the
+   segment opens the Terminals sheet, built like omp's Agents sheet: the sessions
    listed with a status dot, the selected session's facts and newest output
    rows as the preview, Kill, Close and Open. Open shows the
    session as a full-pane terminal page built like omp's Console sheet: its
@@ -122,13 +123,10 @@ The initiative establishes a durable output contract across these layers:
   Exec/write/kill delegate render and describe hooks to omp's bash renderer;
   monitor, set_on_exit and list_sessions use omp's bounded default card.
   Tool-core definitions carry no host renderer hooks.
-- On omp, mount the terminal HUD only while omp renders natively and the store
-  holds a session, so the ANSI TUI gains no row. In Tern the pill takes a
-  line of its own above omp's pill line. The stylesheet moves and resets the
-  shared belowEditor container; any co-located widgets share its placement and
-  loss of container padding/background/shadow. It does not restyle omp's
-  activity, todo, meter or composer rows. With no widgets, the selected empty
-  container must be zero-size and the dock match a plugin-free one.
+- On omp, add the terminals segment to omp's pill only while an interactive
+  session renders natively and the store holds a session, so the ANSI TUI's
+  pill line gains nothing. omp's own row is never mutated; the extension adds
+  no dock CSS, so omp-todo-more and other dock widgets keep their layout.
   Only the open Terminals sheet and terminal page take focus and keys, as
   omp's Agents and Console sheets do.
   The page writes typed keys to its running session (Esc goes back instead),
@@ -165,10 +163,10 @@ The initiative establishes a durable output contract across these layers:
 | One process-global terminal index and `term` handler | Child activations and reloads may reuse numeric session ids. A UUID suffix and a `Symbol.for` process registry keep keys distinct and old resources readable. The router is the registration authority: reload updates the same branded handler object's complete methods in place, without registering or unregistering again. |
 | Freeze at output closure plus ordered parser completion | A process-exit event may precede trailing output. The session owns the freeze promise; the registry stores only the derived live/frozen projection, not a second process state. Final results read that projection; the emulator is released when the session leaves ownership. Rejected: log replay and retaining live emulators as final resources. |
 | Retain frozen resources for the omp process lifetime | Frozen data keeps normal physical rows and only the active styled grid, never xterm cell references or the live session graph. Memory accumulates with completed sessions, as logs do. LRU still sends only its existing SIGTERM: a child that ignores it retains its live emulator until actual output closure; no new escalation mechanism is introduced. |
-| HUD logic inside the omp extension; a CSS-only Tern plugin places the pill and sets the preview's output in the mono face | The sessions and their emulators live in this process; a dock widget reads them directly. A Luau plugin block would need the screen pushed to it across processes (a second copy of state) and shows as a pane, not a floating panel (owner's choice, [#17](https://github.com/mouriya-s-lab/omp-unified-exec/issues/17)). The fork's Tern plugin (`fork-features/tern-plugin/`) only injects CSS (owner's choice): a stylesheet listed in its manifest `styles`, which Tern loads with the plugin; the window entry Tern requires of every plugin is empty. |
+| HUD logic inside the omp extension; a CSS-only Tern plugin sets the preview's output in the mono face | The sessions and their emulators live in this process; omp's dock reads them through the extension's components directly. A Luau plugin block would need the screen pushed to it across processes (a second copy of state) and shows as a pane, not a floating panel (owner's choice, [#17](https://github.com/mouriya-s-lab/omp-unified-exec/issues/17)). The fork's Tern plugin (`fork-features/tern-plugin/`) only injects CSS (owner's choice): a stylesheet listed in its manifest `styles`, which Tern loads with the plugin; the window entry Tern requires of every plugin is empty. |
 | Synchronize a normal Tern copy in the awaited omp factory | `omp plugin install URL --force` must update the bundled Tern plugin before success, not ask the operator to unlink/install or wait for a session. omp materializes the package then awaits extension factories during validation. `withHostPresentation` therefore awaits `initializeTernPlugin` before activation, both during installation and ordinary loading. The installed package owns source assets; Tern's CLI owns its directory, registration and reload. `plugin dir --json` and `list --json`, together with the exact regular three-file normal copy, determine whether work is needed. Missing/stale files use `plugin install DIR --force --json`; an exact ready copy is untouched. Only Tern's precise linked-target collision, a matching canonical regular `.path` file and a fresh catalog identifying this plugin allow official unlink followed by copy installation. Other failures never remove a registration. No developer link, session-start installation IO, toast, argv parsing, host patch, trust change or lifecycle script is used. Missing Tern skips this integration; an available but failing Tern rejects package validation and ordinary loading with bounded sanitized command diagnostics. Each CLI operation has a 75-second timeout for the documented 60-second reload wait. Offline Tern installs for next start. omp's package rollback does not roll back an already completed external Tern update. |
-| Pill = omp's native running-work counter | The widget describes an `omp.hud` root row with `justify: "end"`, holding `omp.hud.pill` with one `omp.hud.seg`: a terminal icon and the bare stored session count, words in its hover/aria label, and `unified-exec.terminals.open` as its click action (Tern handles built-in action names itself). The row has no plugin gap or alignment override, so Tern's native rules own its wrapping, spacing, column alignment and chat-style changes. The outer ✕ and complete dismiss lifecycle are removed; OPEN remains the only pill action. Naturally exited sessions still count while stored. `belowEditor` avoids the leading spacer of `aboveEditor`. |
-| Shared widget container above omp's pill line; native roles own appearance | An extension cannot add a segment to `HudPillsRow`, whose counter describes only agents and jobs. `html .sf-region.sf-dock > .sf-col.gap-none:last-child` selects the shared belowEditor container and retains `order: -1`, then sets only `margin: 0`, `padding: 0`, `background: none`, `box-shadow: none`. Native `omp.hud` rules match nested rows and supply general spacing, Reader's centered column, Spine's side margins/timeline inset and Console's gutter; do not copy them into plugin CSS or override pill/segment colors, fonts, dimensions, borders, radius, hover or animation. Resetting the container removes the proven Spine plate and double padding; the prefix wins over Spine's unfocused rule. Other belowEditor widgets share the move/reset. With no widgets the selector still matches a zero-size void, never the editor. No `:has()` or DOM manipulation: the current control selector parser rejects `:has()`. No theme listener, cache, reload flag or per-theme CSS is needed. |
+| Terminals = a segment of omp's own running-work pill | Tern 0.9.5 draws omp's running work as one capsule (`omp.hud.pill`) of sibling segments (`omp.hud.seg`), with a divider rule between adjacent segments; a separate pill on another `omp.hud` row is a second capsule, and with omp-todo-more's dock grid it landed below the composer ([#76](https://github.com/oh-my-omp/omp-unified-exec/issues/76)). The terminals segment is a `row` with role `omp.hud.seg`: a terminal icon (tone `success`, distinct from agents' accent and jobs' warning) and the bare stored session count, `N terminals · M running` as its hover/aria label, and `unified-exec.terminals.open` as its click action (Tern handles built-in action names itself). It is the pill's last segment, after omp's agents and jobs. Naturally exited sessions still count while stored. Tern's rules own the capsule, divider, spacing and chat-style geometry; the extension adds no CSS for it. |
+| Wrap `describeHudPills` once per process; append a component per interactive mode | omp has no extension API for pill segments; `InteractiveMode` (exported to extensions by `@oh-my-pi/pi-coding-agent/modes/interactive-mode`) describes the row in `describeHudPills`, and omp's reconciler describes a component child in place (no wrapper element) and routes its events to that component. The wrapper is installed once per prototype; a `Symbol.for` registry holds the current activation's decorator, which a reloaded activation replaces and only its own deactivation withdraws. The decorator parses omp's row (an `omp.hud` row with at most one `omp.hud.pill`), returns it untouched with no stored session, and otherwise returns a new row whose pill (omp's, or a new one with omp's key and props when omp has none) ends with this activation's segment component for that mode, with `hidden` cleared. omp returns the same row object while its own segments are unchanged, so the decorated row is memoized per mode on that object and omp's row is never mutated. Each mode gets its own component, since omp skips a component described twice in one frame. Store and exit changes call each describing mode's `ui.requestRender`, because omp does not watch the store. A reshaped omp fails loading or describing with a requalify error. Rejected: CSS that fuses a separate widget row into the capsule (it must take over omp-todo-more's dock grid, stylesheet order becomes the authority, and it fails without a plugin); keeping a separate pill and only fixing its placement; registering sessions as omp background jobs (the count would merge into jobs and drop exited sessions, omp would deliver job results to the agent beside this extension's wakes, sessions would take omp's job capacity, and that view cannot open a terminal page). |
 | Sheet = a `picker` like omp's Agents sheet | omp's Agents sheet is a `picker` (title with icon and subtitle, `lg`, rows with status dots and fact columns, the selected item as a side preview, an action bar Kill `x` … Close `esc`, Open transcript `enter`) that its component mounts as the modal sheet by answering `nativeSheet` (omp `packages/tui/src/native/backend.ts`); measured in Tern, its Kill ends the agent without confirmation and Enter replaces the sheet with a full-pane transcript page. The Terminals sheet is an extension custom overlay (`ctx.ui.custom(..., { overlay: true })`) whose component does the same: title Terminals with a `running · stored` subtitle, one row per session (command in mono, `#id · state`, dot accent while running, success after exit 0, error otherwise) with Size, PID and Time columns (elapsed while running, as the Agents roster's Time), and Kill (`x`, only while running), Close (`esc`) and Open (`enter`, also a row's `activate`). The preview follows the Agents preview (omp `agent-hub.ts` `#describePreview`): a title row with the command and a state badge, a `kv` facts grid (Session, Directory with the home directory as `~`, PID, Size, Started), the log path on its own line cut at its start so the file name stays, linked to the file, and a Recent output section. Picker `select` events and ↑/↓ pick the session. Kill runs `terminateSessionById` (SIGTERM, then SIGKILL after 2s), the path `kill_session` and `/unified-exec-sessions` use, handed to the HUD as `ActivatedExtension.kill`; a confirmed exit removes the session from the store, so its row leaves the list. Rejected: a non-modal `overlay` node with tabs, which matched no omp sheet (owner's choice); the below-list preview, whose fixed short region left the list area empty; the log path in the facts grid, where its value column wrapped it over several lines. |
 | Terminal page = a `full` sheet like omp's Console | omp's own terminal window is the Console sheet its bash tool opens with `pty: true`: `ui.custom` with `nativeOverlay { size: "full" }`, the PTY screen as `ansi`, keys forwarded to the process, and an action bar. Open closes the Terminals sheet and opens the page the same way (role `unified-exec.overlay.terminal`, head `Terminals · #id command state`); its body is a column filling the sheet (`min.h` 1) holding the session's history and screen as `ansi` at the session's own width, which grows into the height the action bar leaves (`grow` 1, `max.h` 1, a fraction of the available height) and follows the newest row, and the action bar with Kill (while running) and Back (`esc`) pinned at the bottom. Back, Esc and Tern's `close` reopen the Terminals sheet on the same session; at most one of the two is open. Typed keys go to the running session through `ExecSession.write`, as `write_stdin` writes, so the model's next observation sees their effect (owner's choice); Esc is kept for Back. The PTY keeps the size the model's session started with. Rejected: showing a session only in the sheet's side preview, which wrapped wide screens into a narrow column; a `max.h` in rows computed from the pane's rows less the sheet's chrome, which left the action bar floating above empty space. |
 | Page screen = `ansi`; preview output = plain `code` in the mono face | `ansi` keeps the colors and follows the newest row. Its text is the session's retained history plus the current screen (the alternate screen has no history), so its scrollbar scrolls back through the terminal's history. In the side preview Tern draws `ansi` as a mini terminal that reflows rows at the column's width, which shredded a 120-column `top` into fragments, so the preview shows only the newest 12 non-blank rows as a plain-text `code` block (`lang: "text"`, `wrap: false`, as omp sends its QR code), whose rows keep their spacing and scroll sideways. Tern draws a preview's `code` lines and `mono` spans in the UI face; the plugin's stylesheet sets the block (role `unified-exec.terminals.tail`) in the mono face and the facts' size, so columns align. Rejected: one `mono` text row per screen row, which Tern drew in the UI face with collapsed spacing and wide line gaps; restyling a truncated text's font, whose truncation Tern measures in the original face. |
@@ -176,8 +174,8 @@ The initiative establishes a durable output contract across these layers:
 | Answer OSC 10/11 with the host's appearance | xterm answers DSR and DA1 itself but not default-colour queries. The emulator answers `?` inside the parse, before a following DA1, with white on black for a dark host and black on white for a light one. Appearance is read at each query from omp's theme (`isLightTheme(getCurrentThemeName())` from `@oh-my-pi/pi-tui/theme`, loaded with the other omp modules so a reshaped omp fails plugin loading). Colour sets (`OSC 11;rgb:…`) are ignored. |
 | Screenshot cells through the host rasterizer and read pipeline | Each active grid becomes an in-memory SVG with XML-safe, individually positioned glyphs on an 8×16 logical cell grid, then `@oh-my-pi/pi-natives.rasterizeSvg` produces PNG bytes. Uniform scaling keeps the entire grid within 16,777,216 pixels. A file-backed handler locates a fresh private PNG; non-image targets still resolve as text. No image dependency with install scripts, second parser, screenshot cache or new tool-result option is introduced. |
 | Retain successful screenshot files for OS cleanup | The host opens a located file after the plugin returns and supplies no read-complete acknowledgement. Each read therefore writes an exclusive 0600 PNG in a private temporary directory; failed writes clean their directory, successful files remain for OS cleanup like logs. Repeated screenshots consume disk space; a timer or overwrite-per-key would race readers. |
-| Mount only while native and a session exists | omp's `isNativeRendering`/`onNativeRenderingChange` (`@oh-my-pi/pi-tui/native/state`) gate the widget, so the ANSI TUI never gets the widget container's spacer row. Store membership and native changes re-evaluate the gate; a missing module fails omp plugin loading before anything registers, like the bash renderer. |
-| Watch screens only while the sheet or page is open | The pill re-describes on store membership only; the open sheet or page watches every listed session's exit (its dot or state) and only the shown session's parsed-output notifications, and each re-description reads the current screens, so a closed HUD costs nothing per chunk. |
+| Decorate only while an interactive session renders natively | omp's `isNativeRendering`/`onNativeRenderingChange` (`@oh-my-pi/pi-tui/native/state`) and `session_start`/`session_shutdown` with a UI gate the decorator, so the ANSI TUI's pill line never gains a segment. A missing module fails omp plugin loading before anything registers, like the bash renderer. |
+| Watch screens only while the sheet or page is open | The segment re-describes on store membership and session exits only; the open sheet or page watches every listed session's exit (its dot or state) and only the shown session's parsed-output notifications, and each re-description reads the current screens, so a closed HUD costs nothing per chunk. |
 
 ## Implementation map
 
@@ -193,8 +191,8 @@ The initiative establishes a durable output contract across these layers:
 | Structured tool schemas and projections | `src/script-result.ts`, `tests/script-result.test.ts` |
 | Kill collection, partial sanitization, and tool registration | `src/index.ts` (`TerminateOutcome`, `buildStreamUpdate`, `kill_session`) |
 | omp/Bun host admission, bash-renderer delegation, result/args display adapters | `src/pty.ts` (`requireBunRuntime`), `fork-features/omp-presentation.ts`, `fork-features/omp-tools.d.ts`; wired by `withHostPresentation` in `src/index.ts`; tests `tests/pty-load.test.ts`, `tests/omp-presentation.test.ts` |
-| Tern terminal HUD: native counter pill, Terminals picker sheet, terminal page, session/native mount gate | `fork-features/tern-terminal-hud.ts`, mounted by `withHostPresentation` with the store and kill `activate` returns; tests `tests/tern-terminal-hud.test.ts` |
-| Tern plugin placing the pill above omp's pill line and setting the sheet preview's output rows in the mono face | `fork-features/tern-plugin/` (`plugin.toml`, `terminals.css`, empty `window.luau`), shipped in the package; `initializeTernPlugin` in `fork-features/tern-plugin-install.ts` awaited by `withHostPresentation` during omp factory initialization; state tests `tests/tern-plugin-install.test.ts`, real omp install-boundary regression `tests/tern-install-cli.test.ts` |
+| Tern terminal HUD: terminals segment in omp's pill (process-wide `describeHudPills` wrapper and activation decorator), Terminals picker sheet, terminal page, session/native gate | `fork-features/tern-terminal-hud.ts` (`loadTernHudHost`, `mountTerminalHud`), mounted by `withHostPresentation` with the store and kill `activate` returns; tests `tests/tern-terminal-hud.test.ts` |
+| Tern plugin setting the sheet preview's output rows in the mono face | `fork-features/tern-plugin/` (`plugin.toml`, `terminals.css`, empty `window.luau`), shipped in the package; `initializeTernPlugin` in `fork-features/tern-plugin-install.ts` awaited by `withHostPresentation` during omp factory initialization; state tests `tests/tern-plugin-install.test.ts`, real omp install-boundary regression `tests/tern-install-cli.test.ts` |
 | Pure output and terminal-safety tests | `tests/{tool-result,output-safety}.test.ts` |
 | Real delayed noisy-kill regression | `tests/e2e.test.ts` |
 | Package/runtime compatibility | `package.json`, `package-lock.json`, `.github/workflows/ci.yml` |
@@ -223,47 +221,51 @@ whose GitHub issues are intentionally disabled:
 
 ## Evidence and reproduction
 
-Tern theme qualification starts from a real window, not `tern serve` (which
-does not load plugins), with isolated state and screenshots under
-`/tmp/tern-pill-theme-check/`. Preserve the operator's fonts and dimensions;
-use the existing OS account and omp credential paths, never fixture secrets.
-Tern 0.8.3 requires `-e` as its first argument; a controlled window may instead
-start a shell and run the checkout explicitly in its dedicated test pane:
+Tern qualification starts from a real window, not `tern serve` (which does
+not load plugins), with isolated state. Copy the operator's `settings.json`
+into an isolated `TERN_CONFIG_DIR`, keep a separate `TERN_DAEMON_SOCKET`
+(plugin `list`/`install`/`remove` read the operator's daemon unless both are
+set), and launch the window from a directory under `/tmp` (screenshots land in
+`target/shots/tern/live/` under the window process's cwd):
 
 ```bash
-tern --control /tmp/tern-pill-theme-check/control.sock
-# In that isolated pane:
-omp --no-extensions -e /ABSOLUTE/CHECKOUT/src/index.ts --no-session --no-title
+TERN_CONFIG_DIR=$D/config TERN_DAEMON_SOCKET=$D/daemon.sock \
+  /Applications/Tern.app/Contents/MacOS/tern --control $D/control.sock $D
+# scenario command in that window's pane:
+run "omp --no-extensions -e /ABSOLUTE/CHECKOUT/src/index.ts --no-session --no-title"
 ```
 
-Set `TERN_CONFIG_DIR` and `TERN_DAEMON_SOCKET` to the isolated config and
-daemon socket when addressing that daemon from outside its pane. The window
-control socket is separate. Factory initialization must complete before the
-extension activates: confirm the exact normal three-file copy and Tern's ready
-catalog match the checkout, with no `.path` registration. Package-update
-qualification uses normal `omp plugin install URL --force`, not `-e`, and
-checks that copy immediately after the command returns, before any session.
+Factory initialization must complete before the extension activates: confirm
+the exact normal three-file copy and Tern's ready catalog match the checkout,
+with no `.path` registration. Package-update qualification uses normal
+`omp plugin install URL --force`, not `-e`, and checks that copy immediately
+after the command returns, before any session. For a plugin-free run, remove
+the auto-installed copy after the extension initialized
+(`tern plugin remove omp-unified-exec --json`) and confirm `list` is empty;
+for the operator's setup, also install omp-todo-more's Tern plugin and load
+its extension with a second `-e`. Switch chat styles with `palette "Chat
+style: Reader"` (Spine, Console) and appearance with `palette "Dark
+appearance"` / `"Light appearance"`, each followed by `key Enter`;
+`theme dark NAME` only picks the dark theme, so confirm the dump header's
+`theme`. A tiling window manager can pin the window size: float the test
+window before `resize`, and read the real viewport from `tern ctl stats`.
 
 Use the real omp input to start `cat` and `sleep 600` with
-`yield_time_ms: 1000`, plus a read-only background agent. The terminal count
-must be 2 while the native agent counter is visible. Before editing, capture
-the same theme/style combination, rectangles and screenshot. After editing,
-repeat the full entry path; switch Reader, Spine and Console and a light/dark
-theme without replacing those sessions. At 1280×800 and 700px width,
-compare row/pill right edges (within 1px), font, height, radius, border and
-hover against the agent counter in the same pane. Check Spine focus/unfocus,
-no outer ✕ or empty button, no double inset/plate/spacing, and no Console
-full-width mismatch. `tern ctl dump` reports runtime rectangles and fonts;
-identify the two rows by their terminal/users icon descendants.
-
-Click the terminal counter; Close and Esc must leave both processes alive.
-Kill sleep from the list: only its confirmed exit removes its row and changes
-2 to 1. Open cat, type `hello-from-tern` and Enter, observe the actual echo,
-then Kill from its page: await exit/removal, the list empties and the counter
-unmounts. Starting another session must immediately show 1. With no session or other
-widget, compare composer/meter/activity/todo rectangles against a plugin-free
-baseline in every style; the selected empty container must occupy no height.
-List `x` remains Kill and is also covered by the real-session automated tests.
+`yield_time_ms: 1000`, an async `bash` `sleep 900` and a background subagent.
+`tern ctl dump '[data-role^="omp.hud"]'` reports runtime rectangles and
+fonts; identify segments by their users/job/terminal icons. Check one
+`omp.hud` row and one `omp.hud.pill` whose last `omp.hud.seg` is the terminal
+count, equal segment heights and fonts, and Tern's divider at the terminal
+segment's left edge (scan ±3 px of each boundary in a 2x crop; the dump does
+not expose radius, border or `::before`). Click the terminal segment; Close
+and Esc must leave both processes alive. Kill sleep from the list: only its
+confirmed exit removes its row and changes 2 to 1. Open cat, type
+`hello-from-tern` and Enter, observe the actual echo, then Kill from its page:
+await exit/removal, and once exited sessions are drained the segment leaves
+while agents and jobs still open their sheets. Starting another session must
+immediately show 1, with only that segment in a shown pill when omp has no
+agents or jobs. List `x` remains Kill and is also covered by the real-session
+automated tests.
 
 OSC 10/11 qualification, 2026-10-12, macOS arm64 / omp 18.10.1, isolated real
 window: an omp started in a tty session and opened on the terminal page drew
@@ -293,60 +295,33 @@ running and no credential copies. Commands, owner replies, byte hashes,
 before/after state and results are under
 `/tmp/tern-auto-install-check/acceptance/` (`matrix-summary.json`).
 
-Before-change reproduction, 2026-10-13, macOS arm64, Tern 0.8.3 / omp 18.10.3,
-operator fonts at 12px, light-dawn, 1280×800: the checkout extension started
-cat (#1), sleep (#2) and a background agent in the isolated real window.
-Console's native agent pill ended at x1259 while the terminal pill ended at
-x1233.69; the outer ✕ occupied the remaining space. After switching through
-the real Chat style control, Spine's shared widget container had a
-44.31px height and `rgba(255, 255, 255, 0.55)` background, and pill right edges
-were x1027.69 (agent) and x1002.64 (terminal). The pre-change window screenshot
-is `/tmp/tern-pill-theme-check/before-spine.png`. This establishes the original
-layout defect, not post-change qualification.
-
-Post-change theme qualification, same environment: a fresh omp process loaded
-the modified checkout, started cat (#1, PID 1910), sleep (#2, PID 1912) and a
-native background agent (PID 2050). The same two tty sessions stayed stored
-while the real settings UI selected Reader, Spine and Console at 1280×800 and
-700×800, with light-dawn and titanium selected from the available picker.
-All 12 focused combinations had identical native/terminal row and pill right
-edges, fonts and pill heights; the terminal row remained above the agent row
-and the count stayed 2. Four additional Spine combinations used a real
-split-down shell to take focus: the tested surface had `sf-unfocused`, kept
-its width and transparent container, and still matched both right edges.
-The split changed pane height, which the geometry records include.
-
-The real hover comparisons in all six style/theme combinations also matched:
-light segments used `rgba(45, 52, 64, 0.06)` and dark segments used
-`rgba(232, 236, 244, 0.06)`. Same-pane screenshots show matching border/radius
-appearance, no outer ✕ or empty button and no Spine plate; the native dump
-does not expose numeric border/radius values. Close and Esc retained the
-two terminal counters and the live native agent. Geometry, accessibility,
-hover observations and screenshots are under `/tmp/tern-pill-theme-check/`
-(`matrix-*.json/png`, `matrix-summary.json`, `hover-matrix.json`,
-`after-close-escape.json`).
-
-The same real interaction path killed sleep from the list (only cat remained,
-count 1), opened cat and showed `hello-from-tern` twice (terminal echo and
-cat output), then killed cat from its page. The empty sheet reported
-`0 running · 0 stored`; its counter unmounted and the selected widget
-container was an invisible `sf-void` at `[0, 0, 0, 0]`. A new tty (#5) mounted
-count 1 immediately and was killed through the list afterward. The captured
-sequence is in `list-kill-sleep.json`, `cat-echo.png`, `page-kill-cat.json`,
-`empty-list-unmounted.json` and `new-tty-remount.json` in that directory.
-
-No-tty geometry qualification used a fresh checkout omp with a per-run
-`--config=/tmp/tern-pill-theme-check/todo-startup.yml` overlay containing
-`todo: { enabled: true }`, so real working and native todo HUD rows were
-visible during a pipe wait. Across eight same-process
-linked/plugin-free pairs (three styles at both widths, plus Spine unfocused
-at both widths), actual `tern plugin unlink` / `link` changed only the
-isolated daemon's stylesheet. The dock, working, todo, Message and context
-meter rectangles were identical, as were all visible descendant backgrounds.
-The selector always matched the invisible zero-size `sf-void`, never the
-editor. Its computed Spine background changed, but with no paint area.
-Evidence: `final-baseline-summary.json`, `final-plugin-*.json/png`,
-`final-pluginfree-*.json/png` and `plugin-lifecycle-comparison.json`.
+Pill-group qualification, 2026-10-22, macOS arm64, Tern 0.9.5 / omp 18.12.5,
+operator fonts, `issue-76-pill-segment@03a1742`
+([#76](https://github.com/oh-my-omp/omp-unified-exec/issues/76)). Before the
+change, survey runs in Reader, Spine and Console with light-dawn and dark-nord
+found the terminal counter a separate capsule on another `omp.hud` row in
+every case; without Tern plugins and with omp-todo-more it sat below the
+composer (Reader with omp-todo-more at 1100×850: native pill y 648, terminal
+pill y 801), because omp-todo-more's dock grid made the moved container
+`display: contents`. After the change, two isolated real windows (no Tern
+plugin; omp-todo-more extension and plugin) each covered Reader, Spine and
+Console × light-dawn/dark-nord at 1100×850 and each style at 700×850 with an
+agent, background jobs and two sessions. All 18 cells had one `omp.hud` row
+and one pill ordered agents 1, jobs 2, terminals 2, with equal segment heights
+and fonts (Reader/Spine 18.47 px, 10.6154 px weight 500; Console 16 px, 12 px
+weight 400) and the pill above the composer, omp-todo-more's own HUD still in
+its activity track. The terminal boundary painted Tern's divider in every
+cell (RGB delta 18 light, 15 dark). In Reader light at 700 px, both windows
+showed no painted line at the native agents|jobs boundary (x 588.984, device
+fraction 0.969); draining the terminals moved that boundary to x 625.688
+(fraction 0.375), where it painted. Tern's 1px divider therefore depends on
+the boundary's sub-pixel position, not on the terminal segment. Clicking the
+segment opened the Terminals sheet, Esc kept the sessions, list `x` changed 2
+to 1, draining the last session removed the segment while Agents and
+Background jobs still opened, and a lone new session showed a visible pill
+holding only its segment. Evidence is under `/tmp/tern-76-verify/`
+(`*/shots/*.png`, `*.dump.json`, `divider-pixel-evidence.json`,
+`narrow-native-control.json`).
 
 Current automated qualification runs strict types and the full suite through
 `npm test` (Bun's native runner). Real PTY suites are mandatory, including:

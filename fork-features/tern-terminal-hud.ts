@@ -2,25 +2,27 @@
  * Tern terminal HUD (fork): live view of every exec_command session for omp's
  * native (Tern Surface Protocol) frontend.
  *
- * A counter pill on omp's native `omp.hud` row (`omp.hud.pill` with one
- * `omp.hud.seg`: a tinted icon and the bare count, the words in the hover
- * label) counts the stored sessions. Clicking it opens the Terminals
- * sheet, built like omp's Agents sheet: a `picker` listing the sessions with
- * a status dot, and the selected session's facts and newest output rows as
- * its preview. Open shows its retained history and current screen in a
- * full-pane terminal page, with typed keys sent through ExecSession.write.
- * Kill in the sheet or page uses the same termination path as kill_session.
+ * A terminals segment joins omp's own running-work pill (`omp.hud.pill`,
+ * after its agents and jobs segments): a tinted icon and the stored session
+ * count, the words in the hover label. omp has no API for pill segments, so
+ * the HUD wraps `InteractiveMode.prototype.describeHudPills` once per process
+ * and appends a segment component; Tern draws the capsule, the divider and
+ * every chat style. Clicking it opens the Terminals sheet, built like omp's
+ * Agents sheet: a `picker` listing the sessions with a status dot, and the
+ * selected session's facts and newest output rows as its preview. Open shows
+ * its retained history and current screen in a full-pane terminal page, with
+ * typed keys sent through ExecSession.write. Kill in the sheet or page uses
+ * the same termination path as kill_session.
  *
  * Authority: each session's TerminalScreen (src/terminal-screen.ts) and the
  * SessionStore. The HUD keeps no copy of either: every description re-reads
  * them, and subscriptions only ask omp to describe again.
  *
- * The widget describes its pill row below omp's editor; the fork's Tern
- * plugin (`fork-features/tern-plugin/`, CSS only) moves that row to the front
- * of omp's dock, a line of its own above omp's pill line. The sheet is an
- * extension custom overlay whose component answers `nativeSheet`, so omp
- * mounts its `picker` description as the modal sheet itself, as it does for
- * the Agents sheet (omp `packages/tui/src/native/backend.ts`).
+ * The sheet is an extension custom overlay whose component answers
+ * `nativeSheet`, so omp mounts its `picker` description as the modal sheet
+ * itself, as it does for the Agents sheet (omp `packages/tui/src/native/backend.ts`);
+ * the fork's Tern plugin (`fork-features/tern-plugin/`, CSS only) sets the
+ * sheet preview's output rows in the mono face.
  */
 import { homedir } from "node:os";
 
@@ -34,6 +36,10 @@ import type { StyledScreen } from "../src/terminal-screen.ts";
 
 // ---------------- omp native contract ----------------
 
+function requalify(change: string): Error {
+	return new Error(`omp-unified-exec: ${change}; requalify fork-features/tern-terminal-hud.ts for this omp version`);
+}
+
 /** omp's process-wide "a TSP surface is live" flag. */
 export interface NativeRenderingState {
 	isNativeRendering(): boolean;
@@ -43,14 +49,37 @@ export interface NativeRenderingState {
 function parseNativeRenderingState(value: { readonly [K in keyof NativeRenderingState]?: unknown }): NativeRenderingState {
 	const { isNativeRendering, onNativeRenderingChange } = value;
 	if (typeof isNativeRendering !== "function" || typeof onNativeRenderingChange !== "function") {
-		throw new Error(
-			"omp-unified-exec: @oh-my-pi/pi-tui/native/state no longer provides isNativeRendering/onNativeRenderingChange; requalify fork-features/tern-terminal-hud.ts for this omp version",
-		);
+		throw requalify("@oh-my-pi/pi-tui/native/state no longer provides isNativeRendering/onNativeRenderingChange");
 	}
 	return {
 		isNativeRendering: () => isNativeRendering() === true,
 		onNativeRenderingChange: (listener) => onNativeRenderingChange(listener) as () => void,
 	};
+}
+
+/** The prototype slot of omp's `InteractiveMode` that describes the running-work pill row. */
+export interface HudPillsPrototype {
+	describeHudPills(this: object): unknown;
+}
+
+function isHudPillsPrototype(value: unknown): value is HudPillsPrototype {
+	return typeof value === "object" && value !== null && "describeHudPills" in value && typeof value.describeHudPills === "function";
+}
+
+/** Parse `@oh-my-pi/pi-coding-agent/modes/interactive-mode`; fails when omp no longer has the pill describer. */
+export function parseInteractiveModeModule(value: { readonly InteractiveMode?: unknown }): HudPillsPrototype {
+	const mode = value.InteractiveMode;
+	const prototype: unknown = typeof mode === "function" ? mode.prototype : undefined;
+	if (!isHudPillsPrototype(prototype)) {
+		throw requalify("@oh-my-pi/pi-coding-agent/modes/interactive-mode no longer provides InteractiveMode.prototype.describeHudPills");
+	}
+	return prototype;
+}
+
+/** The omp modules the HUD reads, parsed at load so a reshaped omp fails plugin loading. */
+export interface TernHudHost {
+	readonly native: NativeRenderingState;
+	readonly pills: HudPillsPrototype;
 }
 
 /** A described node in omp's native view format (TSP node without its wire id). */
@@ -61,7 +90,18 @@ export interface HudNode {
 	readonly key?: string;
 }
 
-/** The action a pill click sends (not a Tern built-in action name, which Tern handles itself). */
+/** A native child: a described node, or a component omp describes in its place. */
+export type NativeChild = NativeNode | Component;
+
+/** A described node whose children may include components (omp's pill row, decorated). */
+export interface NativeNode {
+	readonly k: string;
+	readonly p?: Readonly<Record<string, unknown>>;
+	readonly c?: readonly NativeChild[];
+	readonly key?: string;
+}
+
+/** The action a segment click sends (not a Tern built-in action name, which Tern handles itself). */
 export const OPEN_ACTION = "unified-exec.terminals.open";
 /** Picker action: open the selected session's full-pane terminal page. */
 export const OPEN_TERMINAL_ACTION = "open";
@@ -71,7 +111,6 @@ export const KILL_ACTION = "kill";
 export const CLOSE_ACTION = "close";
 /** The terminal page's way back to the list (Tern's backdrop and head `esc` send `close` too). */
 export const BACK_ACTION = "back";
-const WIDGET_KEY = "unified-exec-terminals";
 /** Role of the sheet preview's Recent output block, which the fork's Tern plugin sets in the mono face. */
 export const TAIL_ROLE = "unified-exec.terminals.tail";
 const COMMAND_MAX = 120;
@@ -148,15 +187,14 @@ function parseItemId(item: unknown): number | undefined {
 }
 
 /**
- * Pure: the dock row for `count` stored sessions (at least one: the
- * widget is unmounted otherwise). omp's running-work counter, copied: a row
- * with role `omp.hud`, holding an `omp.hud.pill` with one `omp.hud.seg`
- * segment, a tinted icon and the bare count; the words live in the hover
- * label. Tern owns the row, pill and segment styling in every chat style.
+ * Pure: the terminals segment for `count` stored sessions, `running` of them
+ * still running. omp's running-work segment, copied: a row with role
+ * `omp.hud.seg`, a tinted icon and the bare count; the words live in the
+ * hover label. Tern owns its styling inside omp's pill in every chat style.
  */
-export function describeTerminalPill(count: number): HudNode {
-	const label = `${count} terminal${count === 1 ? "" : "s"}`;
-	const segment: HudNode = {
+export function describeTerminalSegment(count: number, running: number): HudNode {
+	const label = `${count} terminal${count === 1 ? "" : "s"} · ${running} running`;
+	return {
 		k: "row",
 		key: "terminals",
 		p: { role: "omp.hud.seg", gap: "xs", align: "center", title: label, aria: label, actions: { click: OPEN_ACTION } },
@@ -165,13 +203,39 @@ export function describeTerminalPill(count: number): HudNode {
 			{ k: "text", key: "count", p: { spans: [{ t: String(count), s: "num" }], wrap: "none" } },
 		],
 	};
-	return {
-		k: "row",
-		p: { role: "omp.hud", justify: "end" },
-		c: [
-			{ k: "row", key: "running", p: { role: "omp.hud.pill", align: "center" }, c: [segment] },
-		],
-	};
+}
+
+function isNativeNode(value: unknown): value is NativeNode {
+	return typeof value === "object" && value !== null && "k" in value && typeof value.k === "string";
+}
+
+/** omp's pill when it has no segments of its own (its `describeHudPills` builds the same row). */
+const EMPTY_PILL: NativeNode = { k: "row", key: "running", p: { role: "omp.hud.pill", align: "center" }, c: [] };
+
+/**
+ * Parse what omp's `describeHudPills` returned: an `omp.hud` row holding at
+ * most one `omp.hud.pill` row. Anything else means omp reshaped its pills.
+ */
+export function parseHudPillsNode(value: unknown): NativeNode {
+	const pill = isNativeNode(value) ? value.c?.[0] : undefined;
+	if (
+		!isNativeNode(value) || value.k !== "row" || value.p?.role !== "omp.hud" || (value.c?.length ?? 0) > 1
+		|| (pill !== undefined && !(isNativeNode(pill) && pill.k === "row" && pill.p?.role === "omp.hud.pill"))
+	) {
+		throw requalify("InteractiveMode.describeHudPills no longer returns an omp.hud row with one omp.hud.pill");
+	}
+	return value;
+}
+
+/**
+ * Pure: omp's pill row with `segment` appended as the pill's last segment, a
+ * new pill when omp has none, and the row shown. omp's node is not mutated:
+ * omp returns the same object while its own segments are unchanged.
+ */
+export function withTerminalSegment(hud: NativeNode, segment: Component): NativeNode {
+	const existing = hud.c?.[0];
+	const pill = isNativeNode(existing) ? existing : EMPTY_PILL;
+	return { ...hud, p: { ...hud.p, hidden: undefined }, c: [{ ...pill, c: [...(pill.c ?? []), segment] }] };
 }
 
 /** A picker / sheet action button, as omp's `actionButton` builds it. */
@@ -425,48 +489,134 @@ export type KillSession = (id: number) => Promise<boolean>;
 /** How the Terminals sheet was left. */
 export type SheetResult = { readonly kind: "closed" } | { readonly kind: "open"; readonly id: number };
 
+/** An interactive mode's terminal handle, asked to describe omp's dock again. */
+interface RenderTarget {
+	requestRender(): void;
+}
+
+/** omp's `InteractiveMode#ui` (its TUI): store changes reach omp's dock only through it. */
+function renderTargetOf(mode: object): RenderTarget {
+	const ui: unknown = "ui" in mode ? mode.ui : undefined;
+	const request: unknown = typeof ui === "object" && ui !== null && "requestRender" in ui ? ui.requestRender : undefined;
+	if (typeof request !== "function") throw requalify("InteractiveMode no longer has ui.requestRender");
+	return { requestRender: () => request.call(ui) };
+}
+
 /**
- * The dock widget: the counter pill. omp calls `describe` instead
- * of `render` while Tern renders natively; it is only mounted then, so
- * `render` draws nothing.
+ * The terminals segment inside one interactive mode's pill. omp calls
+ * `describe` instead of `render` while Tern renders natively, and only then
+ * describes the pill row, so `render` draws nothing. Each mode gets its own
+ * component: omp skips a component described twice in one frame.
  */
-class TerminalPill implements Component {
-	private described: { readonly count: number; readonly node: HudNode } | undefined;
-
-	constructor(
-		private readonly store: SessionStore,
-		private readonly open: () => void,
-		private readonly requestRender: () => void,
-	) {}
-
-	/** The stored sessions changed. */
-	membershipChanged(): void {
-		this.described = undefined;
-		this.requestRender();
-	}
+class TerminalSegment implements Component {
+	constructor(private readonly provider: SegmentProvider) {}
 
 	describe(): HudNode {
-		const count = this.store.size;
-		if (this.described?.count !== count) this.described = { count, node: describeTerminalPill(count) };
-		return this.described.node;
+		return this.provider.segment();
 	}
 
 	handleNativeEvent(event: unknown): void {
 		const parsed = parseHudEvent(event);
-		if (parsed?.kind !== "action") return;
-		if (parsed.act === OPEN_ACTION) this.open();
+		if (parsed?.kind === "action" && parsed.act === OPEN_ACTION) this.provider.open();
 	}
 
 	render(): string[] {
 		return [];
 	}
 
-	invalidate(): void {
-		this.described = undefined;
+	invalidate(): void {}
+}
+
+/**
+ * One activation's terminals segment for every interactive mode describing
+ * omp's pills. The segment description is derived from the store and
+ * re-read after each store or exit change; the decorated pill row is
+ * memoized per mode on omp's node identity, the segment component is fixed
+ * per mode for this provider's lifetime.
+ */
+class SegmentProvider {
+	private node: HudNode | undefined;
+	private readonly modes = new WeakMap<object, { readonly segment: TerminalSegment; decorated?: { readonly base: unknown; readonly node: NativeNode } }>();
+	private readonly targets = new Map<object, RenderTarget>();
+	private readonly watch: SessionWatch;
+
+	constructor(
+		private readonly store: SessionStore,
+		readonly open: () => void,
+	) {
+		this.watch = new SessionWatch(store, this.changed);
+	}
+
+	private changed = (): void => {
+		this.node = undefined;
+		this.requestRender();
+	};
+
+	requestRender(): void {
+		for (const target of this.targets.values()) target.requestRender();
+	}
+
+	segment(): HudNode {
+		if (!this.node) {
+			let running = 0;
+			for (const session of this.store.values()) if (!session.hasExited) running++;
+			this.node = describeTerminalSegment(this.store.size, running);
+		}
+		return this.node;
+	}
+
+	/** omp's pill row for `mode` with the terminals segment, or omp's own row when no session is stored. */
+	decorate = (mode: object, base: unknown): unknown => {
+		if (!this.targets.has(mode)) this.targets.set(mode, renderTargetOf(mode));
+		if (this.store.size === 0) return base;
+		let entry = this.modes.get(mode);
+		if (!entry) {
+			entry = { segment: new TerminalSegment(this) };
+			this.modes.set(mode, entry);
+		}
+		const memo = entry.decorated;
+		if (memo && memo.base === base) return memo.node;
+		const node = withTerminalSegment(parseHudPillsNode(base), entry.segment);
+		entry.decorated = { base, node };
+		return node;
+	};
+
+	/** Stop watching; the caller has already unregistered `decorate`, so omp re-describes its own row. */
+	dispose(): void {
+		this.watch.dispose();
+		this.requestRender();
+		this.targets.clear();
 	}
 }
 
-/** Store and per-session subscriptions shared by the sheet and the page; each change re-describes. */
+type DecoratePills = (mode: object, base: unknown) => unknown;
+
+/** The process's pill wrapper: installed once per prototype, delegating to the current activation's decorator. */
+interface PillsRegistry {
+	decorate: DecoratePills | undefined;
+	readonly wrapped: WeakSet<object>;
+}
+
+const pillsRegistrySymbol = Symbol.for("omp-unified-exec.tern-hud-pills");
+const processGlobal = globalThis as typeof globalThis & { [pillsRegistrySymbol]?: PillsRegistry };
+const pillsRegistry: PillsRegistry = processGlobal[pillsRegistrySymbol] ??= { decorate: undefined, wrapped: new WeakSet() };
+
+/**
+ * Wrap omp's pill describer once per process. Reloaded activations swap
+ * `pillsRegistry.decorate` rather than wrapping again; with no decorator the
+ * wrapper returns omp's row unchanged.
+ */
+export function wrapHudPills(prototype: HudPillsPrototype): void {
+	if (pillsRegistry.wrapped.has(prototype)) return;
+	const original = prototype.describeHudPills;
+	prototype.describeHudPills = function describeHudPills(this: object): unknown {
+		const base = original.call(this);
+		return pillsRegistry.decorate ? pillsRegistry.decorate(this, base) : base;
+	};
+	pillsRegistry.wrapped.add(prototype);
+}
+
+/** Store and per-session subscriptions shared by the segment, the sheet and the page; each change re-describes. */
 class SessionWatch {
 	private readonly watches = new Map<number, { readonly exit: () => void; screen: (() => void) | undefined }>();
 	private readonly unsubscribeStore: () => void;
@@ -474,7 +624,8 @@ class SessionWatch {
 	constructor(
 		private readonly store: SessionStore,
 		private readonly changed: () => void,
-		private readonly shown: () => number | undefined,
+		/** The session whose screen to watch; none when absent (the segment only counts). */
+		private readonly shown?: () => number | undefined,
 	) {
 		this.unsubscribeStore = store.subscribe(() => {
 			this.sync();
@@ -486,7 +637,7 @@ class SessionWatch {
 	/** Watch every stored session's exit and only the shown one's screen. */
 	sync(): void {
 		const sessions = sortedSessions(this.store);
-		const shownId = this.shown() ?? sessions[0]?.id;
+		const shownId = this.shown ? (this.shown() ?? sessions[0]?.id) : undefined;
 		const live = new Set<number>();
 		for (const session of sessions) {
 			live.add(session.id);
@@ -690,23 +841,27 @@ class TerminalPage implements Component {
 
 // ---------------- mounting ----------------
 
-/** Load omp's native rendering flag; fails when omp no longer provides it. */
-export async function loadNativeRenderingState(): Promise<NativeRenderingState> {
-	// Dynamic: omp supplies this module at extension load time.
-	return parseNativeRenderingState(await import("@oh-my-pi/pi-tui/native/state"));
+/** Load the omp modules the HUD reads; fails when omp no longer provides them. */
+export async function loadTernHudHost(): Promise<TernHudHost> {
+	// Dynamic: omp supplies these modules at extension load time.
+	const [state, modes] = await Promise.all([
+		import("@oh-my-pi/pi-tui/native/state"),
+		import("@oh-my-pi/pi-coding-agent/modes/interactive-mode"),
+	]);
+	return { native: parseNativeRenderingState(state), pills: parseInteractiveModeModule(modes) };
 }
 
 /**
- * Keep the pill mounted in omp's dock exactly while omp renders natively and
- * the store holds a session; the ANSI TUI never gets a widget (and so no
- * spacer row). A pill click opens the Terminals sheet; Open replaces it with
- * the session's terminal page, whose Back reopens the sheet on the same
- * session. At most
- * one of them is open.
+ * Keep this activation's terminals segment in omp's pill exactly while an
+ * interactive session renders natively; the segment itself shows only while
+ * the store holds a session, and the ANSI TUI never sees it. A segment click
+ * opens the Terminals sheet; Open replaces it with the session's terminal
+ * page, whose Back reopens the sheet on the same session. At most one of them
+ * is open.
  */
-export function mountTerminalHud(pi: ExtensionAPI, store: SessionStore, native: NativeRenderingState, kill: KillSession): void {
+export function mountTerminalHud(pi: ExtensionAPI, store: SessionStore, host: TernHudHost, kill: KillSession): void {
 	let ui: ExtensionContext["ui"] | undefined;
-	let pill: TerminalPill | undefined;
+	let provider: SegmentProvider | undefined;
 	let sheetOpen = false;
 
 	const openSheet = async (): Promise<void> => {
@@ -734,48 +889,34 @@ export function mountTerminalHud(pi: ExtensionAPI, store: SessionStore, native: 
 		}
 	};
 
-	const unmount = (): void => {
-		if (!pill) return;
-		pill = undefined;
-		// omp disposes the removed widget component.
-		ui?.setWidget(WIDGET_KEY, undefined);
+	const deactivate = (): void => {
+		const ended = provider;
+		if (!ended) return;
+		provider = undefined;
+		// A later activation may already own the wrapper; only withdraw this one's decorator.
+		if (pillsRegistry.decorate === ended.decorate) pillsRegistry.decorate = undefined;
+		ended.dispose();
 	};
 
 	const sync = (): void => {
-		const wanted = ui !== undefined && native.isNativeRendering() && store.size > 0;
-		if (!wanted) {
-			unmount();
+		if (ui === undefined || !host.native.isNativeRendering()) {
+			deactivate();
 			return;
 		}
-		if (pill) {
-			pill.membershipChanged();
-			return;
-		}
-		ui?.setWidget(
-			WIDGET_KEY,
-			(tui) => {
-				pill = new TerminalPill(
-					store,
-					() => void openSheet(),
-					() => tui.requestRender(),
-				);
-				return pill;
-			},
-			// `belowEditor`: omp adds no spacer for it (`aboveEditor` gets one);
-			// the fork's Tern plugin moves the row above omp's pill line.
-			{ placement: "belowEditor" },
-		);
+		if (provider) return;
+		provider = new SegmentProvider(store, () => void openSheet());
+		wrapHudPills(host.pills);
+		pillsRegistry.decorate = provider.decorate;
 	};
 
-	store.subscribe(sync);
-	native.onNativeRenderingChange(sync);
+	host.native.onNativeRenderingChange(sync);
 	pi.on("session_start", async (_event, eventCtx) => {
-		unmount();
+		deactivate();
 		ui = eventCtx.hasUI ? eventCtx.ui : undefined;
 		sync();
 	});
 	pi.on("session_shutdown", async () => {
-		unmount();
+		deactivate();
 		ui = undefined;
 	});
 }

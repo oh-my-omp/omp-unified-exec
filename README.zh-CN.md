@@ -42,17 +42,19 @@ Tern 更新会在这条命令成功返回前完成，无需单独执行 Tern 命
 
 当 omp 在 Tern 里原生渲染、并且存在会话时：
 
-- **计数按钮。** 一个终端图标加存储中的会话数，单独一行放在 omp 计数器正上方。整行、药丸和分段使用 Tern 原生 HUD 样式，跟随 Reader、Spine、Console 和配色主题。没有外层隐藏按钮；最后一个会话被移除后，计数按钮自动卸载。
-- **Terminals 面板。** 点击计数按钮打开一个仿照 omp Agents 面板的面板：每个会话一行，带状态点、尺寸、PID 和运行时长；选中会话的命令、状态、目录、PID、尺寸、启动时间、可点击的日志路径和最新几行输出作为预览。↑/↓ 或点击选择会话，`x` / Kill 按 `kill_session` 的方式结束它，Esc / Close 关闭面板。
+- **终端分段。** 一个终端图标加存储中的会话数，作为 omp 自己运行中计数药丸的分段，排在 agents 和 jobs 分段之后，同在一个胶囊里；悬停标签还给出仍在运行的数量。药丸、分隔线以及各 chat style 和配色主题都由 Tern 绘制。最后一个会话被移除后分段消失；若 agents 和 jobs 也都没有，药丸整个消失。
+- **Terminals 面板。** 点击终端分段打开一个仿照 omp Agents 面板的面板：每个会话一行，带状态点、尺寸、PID 和运行时长；选中会话的命令、状态、目录、PID、尺寸、启动时间、可点击的日志路径和最新几行输出作为预览。↑/↓ 或点击选择会话，`x` / Kill 按 `kill_session` 的方式结束它，Esc / Close 关闭面板。
 - **终端页。** Enter / Open 把会话打开成一个仿照 omp Console 的全屏页：显示保留的历史和当前屏幕，带颜色、按会话自身宽度显示，跟随新输出，并可向上回滚。键入的按键会发给会话（与 `write_stdin` 的写法相同，模型能看到效果）；Esc / Back 返回面板；Kill 结束会话。
 
 HUD 直接读取会话，不保存任何副本。它只在 omp 原生渲染时存在，因此 omp 的 ANSI TUI 不会多出一行。工具结果仍是纯文本；显式 `read term://…/screen.png` 请求返回图像。
 
-**Tern 插件。** omp 扩展无法往 omp 的计数器那一行里加东西，所以本包附带一个只含 CSS 的 Tern 插件（`fork-features/tern-plugin/`）。它把共享的 `belowEditor` widget 容器移到 omp 计数器上方，清除容器的间距、背景和阴影，避免与原生 HUD 边距重复叠加。同一容器中的其他 widget 也共享这个位置和重置；插件不重设药丸外观或 omp 的输入框，并让面板的输出预览使用等宽字体。
+**分段如何并入 omp 的药丸。** omp 没有给扩展加药丸分段的 API，所以 HUD 在每个进程里包装一次 omp 的 `InteractiveMode.prototype.describeHudPills`，把自己的分段组件追加为药丸的最后一个子节点；omp 没有药丸时由包装创建。omp 自己的行对象从不被修改。扩展重新加载时只替换装饰函数，不再包装第二次。如果 omp 不再有这个方法，或返回其他形状的行，加载或描述时报 "requalify" 错误，而不是静默不显示分段。
+
+**Tern 插件。** 本包附带一个只含 CSS 的 Tern 插件（`fork-features/tern-plugin/`），只负责让面板的输出预览使用等宽字体；终端分段不需要插件。
 
 omp 等待扩展 factory 完成，因此插件在包安装校验（包括 `install --force`）和普通扩展加载期间同步。它向 Tern 查询插件目录及 catalog；只有三个文件完全一致的正常副本，且版本、样式表和 ready 状态都匹配时，才不改动。缺失或旧文件通过 `tern plugin install <包内目录> --force` 更新。已确认的旧 `.path` 注册由 Tern 自己的 unlink 和正常副本安装自动迁移，不创建开发链接。
 
-CLI 继承 omp 的环境，由 Tern 决定目标目录并负责重新加载。daemon 未运行时，Tern 安装副本供下次启动使用。没有 `tern` 可执行文件不影响非 Tern 使用；如果 Tern 存在但同步失败，包校验或普通扩展加载会失败并报告命令诊断，不延迟到 session-start 重试，也不显示成功 toast。如果 omp 随后保存包配置失败，已经完成的外部 Tern 更新不会一起回滚。没有插件时，计数按钮显示在输入框下方。
+CLI 继承 omp 的环境，由 Tern 决定目标目录并负责重新加载。daemon 未运行时，Tern 安装副本供下次启动使用。没有 `tern` 可执行文件不影响非 Tern 使用；如果 Tern 存在但同步失败，包校验或普通扩展加载会失败并报告命令诊断，不延迟到 session-start 重试，也不显示成功 toast。如果 omp 随后保存包配置失败，已经完成的外部 Tern 更新不会一起回滚。没有插件时，预览的输出行使用界面字体。
 
 设计、决策和 Tern 实测记录：
 [docs/IV-0002-output-lifecycle-and-rendering.md](docs/IV-0002-output-lifecycle-and-rendering.md)。
@@ -416,7 +418,7 @@ fork-features/
 ├── command-approval.ts   # built-in bash approval port and factory-loaded host helpers
 ├── session-binding.ts    # activation-local AgentSession identity for approval settings
 ├── omp-tools.d.ts        # types of the omp modules loaded at runtime
-├── tern-terminal-hud.ts  # counter pill, Terminals sheet, terminal page
+├── tern-terminal-hud.ts  # terminals segment in omp's pill, Terminals sheet, terminal page
 ├── terminal-resource.ts  # process-global terminal keys, live/frozen projections
 ├── terminal-url.ts       # omp `term://` read handler
 ├── terminal-image.ts     # terminal screenshots (SVG → PNG)
