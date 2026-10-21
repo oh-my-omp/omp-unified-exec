@@ -29,15 +29,15 @@ Remove an existing `pi-unified-exec` first (`omp plugin uninstall
 pi-unified-exec`): both register the same tools. The fork publishes nothing to
 npm.
 
-omp also installs the bundled Tern plugin as a normal copy when `tern` is on
-PATH. Updates use the same command with `--force`:
+Updates use the same command with `--force`:
 
 ```bash
 omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
 ```
 
-The Tern update finishes before this command succeeds; no separate Tern
-command or developer link is needed.
+The extension needs no Tern plugin. Versions up to 0.14.7 installed one
+(`omp-unified-exec`); when `tern` is on PATH, loading the extension (including
+install validation) removes that copy or link through Tern's own CLI.
 
 This plugin supports only omp running on Bun 1.4+ (omp is a compiled Bun
 executable). Pi and other non-omp hosts fail immediately at the extension
@@ -88,17 +88,22 @@ When omp renders natively in Tern and a session exists:
   capsule; the hover label also gives how many still run. Tern draws the pill,
   its dividers and every chat style and color theme. Removing the last
   session removes the segment; with no agents or jobs either, the pill goes.
-- **Terminals sheet.** Clicking the segment opens a sheet built like omp's Agents
-  sheet: one row per session with a status dot, size, PID and running
-  time; the selected session's command, state, directory, PID, size, start
-  time, linked log path and newest output rows as the preview. ↑/↓ or a click
-  picks a session, `x` / Kill ends it the way `kill_session` does, Esc / Close
-  leaves.
-- **Terminal page.** Enter / Open shows the session as a full-pane page built
-  like omp's Console: its retained history and current screen in colour, at
-  its own width, following new output and scrollable back. Typed keys go to
-  the session (as `write_stdin` writes them, so the model sees their effect);
-  Esc / Back returns to the sheet; Kill ends the session.
+- **Terminals view.** Clicking the segment opens a view built like omp's
+  Background jobs view, styled by Tern's own rules for that view in every
+  theme and chat style: a centered card listing the sessions (terminal icon,
+  command, elapsed time, tinted by state) beside the selected session's
+  detail: a status row (Running / Exit N, elapsed, `exec · #id`, Kill while it
+  runs, Open), the whole command, its directory, PID, size, start time and
+  linked log, and its coloured output following the newest line. The footer
+  shows how many run and are stored, and Close. ↑/↓ or a click picks a
+  session, `x` / Kill ends it the way `kill_session` does, Esc / Close leaves.
+  The card's header icon is the one Tern draws for the jobs view.
+- **Terminal page.** Enter / Open (or a double click) shows the session as a
+  full-pane page framed like omp's Console: its retained history and current
+  screen in colour, at its own width, following new output and scrollable
+  back. Typed keys go to the session (as `write_stdin` writes them, so the
+  model sees their effect); Esc / Back returns to the view; Kill ends the
+  session.
 
 The HUD reads the sessions in place and keeps no copy of them. It only exists
 while omp renders natively, so omp's ANSI TUI gains no row. Tool results stay
@@ -113,25 +118,15 @@ again. If omp no longer has that method, or it returns a row of another
 shape, loading or describing fails with a "requalify" error instead of
 silently dropping the segment.
 
-**The Tern plugin.** The package ships a CSS-only Tern plugin
-(`fork-features/tern-plugin/`) that only sets the sheet's output preview in
-the monospace face; the segment needs no plugin. The awaited omp extension
-factory synchronizes this plugin during package-install validation, including
-`install --force`, and during ordinary extension loading. It asks Tern for
-its plugin directory and catalog; an exact three-file normal copy with the
-current ready version and stylesheet is left unchanged. Missing or stale
-files are updated with `tern plugin install <bundled-directory> --force`.
-Known legacy `.path` registrations are migrated automatically through Tern's
-own unlink and copy-install operations; no developer link is created.
-
-The CLI inherits omp's environment, so Tern owns the destination and reload.
-With no daemon running, Tern installs the copy for its next start. A missing
-`tern` executable does not prevent non-Tern use. If Tern is present but
-synchronization fails, package validation or ordinary extension loading
-fails with command diagnostics; there is no deferred session-start retry or
-success toast. Tern's external update is not rolled back if omp later fails
-to save its package configuration. Without the plugin the preview's output
-rows use the interface face.
+**No Tern plugin.** The view and page use omp's own overlay roles
+(`omp.overlay.jobs`, `omp.overlay.console`), so Tern's built-in styles draw
+them and the segment. Those roles are presentation contracts of omp and Tern,
+requalified on upgrades. The extension removes the `omp-unified-exec` Tern
+plugin that earlier versions installed, because its stylesheet still moved
+omp's shared widget container: during omp's awaited factory it asks Tern's
+`plugin list`, then `plugin remove` (or `plugin unlink` when Tern answers that
+it is linked), and confirms Tern no longer lists it. Without `tern` nothing
+runs; if an available Tern fails, loading fails with its diagnostics.
 
 Design, decisions and Tern qualification evidence:
 [docs/IV-0002-output-lifecycle-and-rendering.md](docs/IV-0002-output-lifecycle-and-rendering.md).
@@ -619,13 +614,12 @@ fork-features/
 ├── command-approval.ts   # built-in bash approval port and factory-loaded host helpers
 ├── session-binding.ts    # activation-local AgentSession identity for approval settings
 ├── omp-tools.d.ts        # types of the omp modules loaded at runtime
-├── tern-terminal-hud.ts  # terminals segment in omp's pill, Terminals sheet, terminal page
+├── tern-terminal-hud.ts  # terminals segment in omp's pill, Terminals view, terminal page
 ├── terminal-resource.ts  # process-global terminal keys, live/frozen projections
 ├── terminal-url.ts       # omp `term://` read handler
 ├── terminal-image.ts     # terminal screenshots (SVG → PNG)
 ├── monitor-subscription.ts # monitor conditions, batching and follow-ups
-├── tern-plugin-install.ts# keeps the Tern plugin installed
-├── tern-plugin/          # CSS-only Tern plugin
+├── tern-plugin-removal.ts# removes the Tern plugin earlier versions installed
 └── README.md             # fork customizations and requalification
 docs/
 ├── IV-0001-long-wait-and-wake-control.md

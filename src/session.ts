@@ -40,6 +40,8 @@ export interface SessionState {
 	exitCode: number | null;
 	signal: NodeJS.Signals | null;
 	failureMessage: string | null;
+	/** Epoch ms the session was marked exited; null while running. */
+	exitedAt: number | null;
 }
 
 export class ExecSession {
@@ -78,6 +80,7 @@ export class ExecSession {
 		exitCode: null,
 		signal: null,
 		failureMessage: null,
+		exitedAt: null,
 	};
 	private readonly exitListeners = new Set<(session: ExecSession) => void>();
 	private lastUsedAt: number;
@@ -167,6 +170,7 @@ export class ExecSession {
 				exitCode,
 				signal,
 				failureMessage: self.state.failureMessage ?? failureMessage ?? null,
+				exitedAt: Date.now(),
 			};
 			self.exitedAc.abort();
 			self.notifyExitListeners();
@@ -217,6 +221,7 @@ export class ExecSession {
 			exitCode: this.state.exitCode,
 			signal: this.state.signal,
 			failureMessage: message,
+			exitedAt: Date.now(),
 		};
 		this.notifyExitListeners();
 	}
@@ -400,6 +405,11 @@ export class ExecSession {
 
 	get failureMessage(): string | null {
 		return this.state.failureMessage;
+	}
+
+	/** Epoch ms the session was marked exited; null while running. */
+	get exitedAt(): number | null {
+		return this.state.exitedAt;
 	}
 
 	get totalBytesSeen(): number {

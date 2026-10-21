@@ -20,7 +20,7 @@ both register `exec_command` and the other unified-exec tools.
 | Only omp is supported: non-omp hosts are rejected at the extension factory before activation | `fork-features/omp-presentation.ts`, `src/index.ts`, `tests/omp-presentation.test.ts`; `package.json` `omp.extensions` | `ExtensionAPI.arktype` identifies omp. The named `activate` export is the direct tool-core test seam, not another supported host entry point. | Fork-only |
 | Bun-only native PTY backend and test runner | `src/pty.ts`, `fork-features/omp-presentation.ts`, `tests/pty-load.test.ts`, `tests/bun-pty-runtime.mjs`, `package.json`, `.github/workflows/ci.yml` | omp is a compiled Bun executable. Every session uses `Bun.Terminal` (Bun 1.4+), supplying `openpty` on Linux/macOS and ConPTY on Windows. The factory requires `Bun.spawn` and `Bun.Terminal` before loading omp modules or activating; Bun's native test runner exercises the full suite on all three platforms, plus source/compiled runtime fixtures. | Fork-only |
 | omp presentation: exec_command, write_stdin and kill_session render through omp's bash renderer; other tools use omp's default card | `fork-features/omp-presentation.ts`, `fork-features/omp-tools.d.ts`, `tests/omp-presentation.test.ts`; `withHostPresentation` in `src/index.ts`; `fork-features` in `package.json` `files` and `tsconfig.json` | omp owns `renderCall`/`renderResult` and Tern's `describeCall`/`describeResult`. Display-only adapters and input-preview helpers live together in `omp-presentation.ts`; the bash renderer comes from `@oh-my-pi/pi-tui/tools` `toolRenderers.bash`, and a missing contract fails plugin loading. | Fork-only |
-| Tern terminal HUD: a terminals segment (terminal icon and stored session count) inside omp's own running-work pill, after its agents and jobs segments; clicking it opens the Terminals sheet, built like omp's Agents sheet (sessions with status dots and Size / PID / Time columns, the selected session's facts, log link and newest output rows as the preview, Kill, Close, Open); Open shows a full-pane terminal page built like omp's Console, with typed keys sent to the session | `fork-features/tern-terminal-hud.ts`, `fork-features/tern-plugin/`, `fork-features/tern-plugin-install.ts`, `fork-features/omp-tools.d.ts`, `tests/tern-terminal-hud.test.ts`, `tests/tern-plugin-install.test.ts`; `TerminalScreen.styledScreen`/`onChange` in `src/terminal-screen.ts`, `ExecSession.styledScreen`/`onScreenChange` in `src/session.ts`, `SessionStore.subscribe` in `src/session-store.ts`; `activate` in `src/index.ts` returns the store and a kill over `terminateSessionById` to `withHostPresentation`; `fork-features/tern-plugin` in `package.json` `files` | A tool result shows a session's screen only as it was when that call returned ([#17](https://github.com/oh-my-omp/omp-unified-exec/issues/17)). omp has no API for pill segments ([#76](https://github.com/oh-my-omp/omp-unified-exec/issues/76)): the HUD wraps `InteractiveMode.prototype.describeHudPills` once per process (a `Symbol.for` registry holds the current activation's decorator) and appends one segment component per interactive mode as the pill's last child, creating and showing the pill when omp has none and never mutating omp's memoized row. The decorator is registered exactly while an interactive session renders natively; the segment shows while a session is stored, including naturally exited sessions not yet removed, and store or exit changes ask omp's TUI to render again. Tern owns the capsule, divider and Reader, Spine and Console geometry. The CSS-only plugin only sets the preview's `code` output (`unified-exec.terminals.tail`) in the mono face. The awaited omp factory synchronizes a normal Tern copy during install/force validation and ordinary loading; it verifies all three files and the ready catalog, automatically migrates confirmed legacy `.path` links through Tern's CLI, and fails loading if an available Tern cannot synchronize. No session-start installation or developer link remains. The sheet answers `nativeSheet` and uses a modal `picker`; the page declares a `full` `nativeOverlay` and shows colored, scrollable `ansi` from retained history and the current screen ([#19](https://github.com/oh-my-omp/omp-unified-exec/issues/19)). Only the page's typed keys and sheet/page Kill reach sessions; model-visible results stay plain text. | Fork-only |
+| Tern terminal HUD: a terminals segment (terminal icon and stored session count) inside omp's own running-work pill, after its agents and jobs segments; clicking it opens the Terminals view, built like omp's Background jobs view (sessions as a master list with icon, command and elapsed time; the selected session's status row with Kill and Open, command, facts and coloured output; running/stored summary and Close); Open shows a full-pane terminal page framed like omp's Console, with typed keys sent to the session | `fork-features/tern-terminal-hud.ts`, `fork-features/tern-plugin-removal.ts`, `fork-features/omp-tools.d.ts`, `tests/tern-terminal-hud.test.ts`, `tests/tern-plugin-removal.test.ts`, `tests/fixtures/tern-cli.mjs`; `TerminalScreen.styledScreen`/`onChange` in `src/terminal-screen.ts`, `ExecSession.styledScreen`/`onScreenChange`/`exitedAt` in `src/session.ts`, `SessionStore.subscribe` in `src/session-store.ts`; `activate` in `src/index.ts` returns the store and a kill over `terminateSessionById` to `withHostPresentation` | A tool result shows a session's screen only as it was when that call returned ([#17](https://github.com/oh-my-omp/omp-unified-exec/issues/17)). omp has no API for pill segments ([#76](https://github.com/oh-my-omp/omp-unified-exec/issues/76)): the HUD wraps `InteractiveMode.prototype.describeHudPills` once per process (a `Symbol.for` registry holds the current activation's decorator) and appends one segment component per interactive mode as the pill's last child, creating and showing the pill when omp has none and never mutating omp's memoized row. The decorator is registered exactly while an interactive session renders natively; the segment shows while a session is stored, including naturally exited sessions not yet removed, and store or exit changes ask omp's TUI to render again. Tern owns the capsule, divider and Reader, Spine and Console geometry. The view and the page are custom overlays declaring omp's own roles ([#77](https://github.com/oh-my-omp/omp-unified-exec/issues/77)): `nativeOverlay` `omp.overlay.jobs` (lg, centered, head Terminals) with the jobs panel's `omp.jobs.*` role tree, and `omp.overlay.console` for the `full` page, so Tern's built-in styles draw both with no plugin; the components keep selection, keys, Open and Kill, and the page shows colored, scrollable `ansi` from retained history and the current screen ([#19](https://github.com/oh-my-omp/omp-unified-exec/issues/19)). The awaited omp factory removes the `omp-unified-exec` Tern plugin earlier versions installed (`plugin remove`, or `unlink` when Tern answers it is linked, confirmed by `plugin list`); missing Tern skips it, a failing Tern rejects loading. Only the page's typed keys and view/page Kill reach sessions; model-visible results stay plain text. | Fork-only |
 | Process-unique terminal resources and `read term://` | `fork-features/terminal-resource.ts`, `fork-features/terminal-url.ts`, `src/terminal-screen.ts`, `src/session.ts`, `src/session-store.ts`, `src/tool-result.ts`, `src/script-result.ts`, `src/index.ts`; initialization in `omp-presentation.ts` | omp's `@oh-my-pi/pi-coding-agent/internal-urls` supplies the process-singleton `InternalUrlRouter.instance().register(handler)` seam. One `term` handler reads a `Symbol.for` shared index, with UUID-suffixed keys across activations/reloads. Physical-row projections never consume; the session freezes at output closure plus parser completion. Frozen rows and the copied active styled grid remain readable until process exit; shutdown only discards its own unfinished live resources. | Fork-only |
 | Terminal screenshots through `read term://…/screen.png` | `fork-features/terminal-image.ts`, `fork-features/terminal-url.ts`, `fork-features/omp-tools.d.ts` | The host's `@oh-my-pi/pi-natives` root `rasterizeSvg(Uint8Array, maxWidthPx, maxHeightPx)` supplies system-font SVG rasterization without install scripts. A file-backed scheme's `locate()` hands the private PNG to production `read`; text paths return null and still resolve normally. Only copied emulator cells reach SVG. Live appearance/cursor and frozen appearance/no-cursor share K1's projection. | Fork-only |
 | Future-output monitors and repeated follow-up wakes | `fork-features/monitor-subscription.ts`, `src/completion.ts`, `src/session.ts`, `src/terminal-screen.ts`, `src/index.ts`, `src/script-result.ts`, `tests/monitor.test.ts` | The source establishes a non-consuming future boundary; the completion coordinator owns actual subscriptions and merges End with ordinary wake. The existing `pi.sendMessage` seam delivers `unified-exec-monitor` with `display:true`, `triggerTurn:true`, `deliverAs:"followUp"`; the tool and messages retain host-default presentation. | Fork-only |
@@ -169,29 +169,22 @@ instances keep `ui.requestRender`; omp's dock must still describe that row on
 every native frame, describe a component child in a node's children in place
 (no wrapper element) and route its events to that component's
 `handleNativeEvent`, and Tern must still draw a divider between sibling
-`omp.hud.seg` rows of one pill. A custom-overlay component answering
-`nativeSheet` must
-still be mounted as its `picker` sheet with `select`/`activate`/`action`
-events reaching it, a custom overlay with a `full` `nativeOverlay` must still
-be drawn as a full-pane sheet whose `handleInput` receives typed keys, and
-a `code` node's role must still reach its element with `.sf-code-lines`.
-In Tern, a `full` sheet's `ansi` must still fill the height its action bar leaves under
-`grow` and a fractional `max.h`, and scroll inside itself. On omp upgrades,
-package installation validation must still await the extension factory after
-materializing package assets, and propagate its rejection before reporting
-success. Ordinary loading uses that same initializer; `session_start` has no
-installation IO. Requalify missing/stale copies, same-version asset updates,
-unchanged exact copies and legacy `.path` registrations through only
-`omp plugin install URL --force`, checking Tern's copy before any session.
-Tern's `plugin dir --json`, `list --json` (`id`, `version`, `css`, `status`),
-`install DIR --force --json` (`id`, `version`, absolute `dir`) and
-`unlink ID --json` must retain their contract. The exact linked-target
-conflict plus a matching canonical registration and fresh catalog are
-required before unlink; unrelated failures must never remove registrations.
-The per-command timeout is 75 seconds, covering Tern's 60-second reload wait.
-With no daemon, the copy must still install for next start. Missing Tern
-skips initialization; an available but failing Tern rejects installation
-validation and ordinary loading. Check
+`omp.hud.seg` rows of one pill. A custom overlay's `nativeOverlay` role and
+head must still reach Tern's overlay frame with `select`/`activate`/`action`
+events and `handleInput` keys reaching the component; Tern must still scope
+the Background jobs layout under `.sf-overlay[data-role='omp.overlay.jobs']`
+with the `omp.jobs.*` inner roles (split, master, detail, status, state, age,
+id, command, facts, out, label, output, nooutput, summary, empty) and key no
+behavior on them, and draw `omp.overlay.console` as a full-pane overlay. In
+Tern, a `full` overlay's `ansi` must still fill the height its action bar
+leaves under `grow` and a fractional `max.h`, and scroll inside itself, and an
+`ansi` with role `omp.jobs.output` must keep colors and follow its newest row
+within `max.h: "16lines"`. On omp upgrades, package installation validation
+must still await the extension factory and propagate its rejection; Tern's
+`plugin list --json` (`plugins[].id`), `remove ID --json`, its exact
+`is linked; use unlink` answer and `unlink ID --json` must retain their
+contract for the old-plugin removal, with a 75-second timeout covering Tern's
+60-second reload wait. Check
 it in a real Tern window (`tern --control`, plugins load only in windows, not
 in `tern serve`) with the owner's settings, isolated `TERN_CONFIG_DIR` and
 `TERN_DAEMON_SOCKET`, a running turn, a background agent and a background
@@ -204,11 +197,13 @@ the agents and jobs segments and Tern's segment divider at its left edge (Tern
 drops that 1px line at some sub-pixel boundary positions, native boundaries
 included; compare the boundary x with a native-only pill before blaming the
 segment), and no
-second `omp.hud` row. The Terminals sheet
-must open like the Agents sheet and pick a session by click and ↑/↓. Kill and
+second `omp.hud` row. The Terminals view must
+match the native Background jobs view's card, master and detail widths and
+layout in the same window, and pick a session by click and ↑/↓. Kill and
 `x` must end only the selected running session after confirmed exit; Open /
 Enter must show the full-pane page at the session's full width, with retained
 history still scrollable after model observations and typed keys reaching a
-running `cat`. Esc / Back must return to the sheet; Close and Esc must leave
+running `cat`. Esc / Back must return to the view; Close and Esc must leave
 processes alive and the composer usable. Removing the last session removes the
-segment; starting another session immediately adds it again.
+segment; starting another session immediately adds it again. A Tern config
+holding the old plugin must list no `omp-unified-exec` after loading.

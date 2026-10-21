@@ -14,7 +14,7 @@ import {
 	OPEN_TERMINAL_ACTION,
 	parseHudPillsNode,
 	parseInteractiveModeModule,
-	TAIL_ROLE,
+	VIEW_FRAME,
 	terminalPageFrame,
 	withTerminalSegment,
 	type HudNode,
@@ -39,6 +39,7 @@ function entry(id: number, state: TerminalState): TerminalEntry {
 	return {
 		id,
 		command: `command-${id}`,
+		script: `command-${id}\n  --flag ${id}`,
 		state,
 		cwd: `/tmp/terminal-${id}`,
 		pid: 1000 + id,
@@ -63,8 +64,9 @@ function styledEntry(id: number, cols: number, lines = 3): TerminalEntry {
 	};
 }
 
-function exited(exitCode: number | null): TerminalState {
-	return { kind: "exited", exitCode, signal: null, failure: null };
+/** Exits `ranMs` after entry()'s start. */
+function exited(exitCode: number | null, ranMs = 2500): Extract<TerminalState, { kind: "exited" }> {
+	return { kind: "exited", exitCode, signal: null, failure: null, exitedAt: new Date(2026, 0, 2, 3, 4, 5).getTime() + ranMs };
 }
 
 function ansiText(node: HudNode): string {
@@ -114,51 +116,43 @@ function pillChildren(row: unknown): readonly unknown[] {
 	return pill.c;
 }
 
-function recentOutputText(node: HudNode): string {
-	const output = onlyNode(node, "section");
-	assert.deepEqual(output.p, { head: "Recent output" });
-	const tail = onlyNode(output, "code");
-	assert.equal(tail.key, "tail");
-	assert.equal(tail.p?.lang, "text");
-	assert.equal(tail.p?.wrap, false);
-	assert.equal(tail.p?.role, TAIL_ROLE);
-	const text = tail.p?.text;
-	assert.ok(typeof text === "string");
-	assert.ok(text.split("\n").length <= 12);
-	return text;
+function withRole(node: HudNode, role: string): HudNode[] {
+	return [...(node.p?.role === role ? [node] : []), ...(node.c ?? []).flatMap((child) => withRole(child, role))];
 }
 
-function assertLogRow(node: HudNode, logPath: string): void {
-	const log = node.c?.find((child) => child.key === "log");
-	assert.deepEqual(log, {
-		k: "row",
-		key: "log",
-		p: { gap: "md", align: "baseline" },
-		c: [
-			{ k: "text", key: "k", p: { spans: [{ t: "Log", s: "muted" }], shrink: 0 } },
-			{ k: "text", key: "v", p: {
-				spans: [{ t: logPath, s: "path", href: `file://${logPath}` }],
-				truncate: "start", wrap: "none", grow: 1, title: logPath,
-			} },
-		],
-	});
-	const facts = onlyNode(node, "kv").p?.items;
-	assert.ok(Array.isArray(facts));
-	assert.equal(facts.some((fact: unknown) => {
-		assert.ok(typeof fact === "object" && fact !== null && "k" in fact);
-		return fact.k === "Log";
-	}), false, "the Log path is a separate row, not a grid fact");
+function onlyRole(node: HudNode, role: string): HudNode {
+	const matches = withRole(node, role);
+	assert.equal(matches.length, 1, `expected one ${role} node`);
+	return matches[0]!;
 }
 
-function pickerItems(node: HudNode): { readonly id: string; readonly dot: string }[] {
-	assert.equal(node.k, "picker");
-	const items = node.p?.items;
+/** The master list's selected item key, or null without a list (the empty view). */
+function selectedOf(view: HudNode): unknown {
+	const lists = nodesOfKind(view, "list");
+	return lists.length === 0 ? null : lists[0]!.p?.selected;
+}
+
+function listItems(view: HudNode): { readonly key: string | undefined; readonly tone: unknown; readonly value: unknown }[] {
+	return nodesOfKind(onlyNode(view, "list"), "item").map((item) => ({ key: item.key, tone: item.p?.tone, value: item.p?.value }));
+}
+
+/** The detail's Output: colored ANSI text, or the placeholder text. */
+function outputOf(view: HudNode): { readonly kind: "ansi" | "none"; readonly text: unknown; readonly node: HudNode } {
+	const out = onlyRole(view, "omp.jobs.out");
+	const ansi = withRole(out, "omp.jobs.output");
+	if (ansi.length > 0) return { kind: "ansi", text: ansi[0]!.p?.text, node: ansi[0]! };
+	const none = onlyRole(out, "omp.jobs.nooutput");
+	return { kind: "none", text: none.p?.text, node: none };
+}
+
+function factsOf(view: HudNode): { readonly k: string; readonly v: unknown }[] {
+	const items = onlyRole(view, "omp.jobs.facts").p?.items;
 	assert.ok(Array.isArray(items));
-	return items.map((item: unknown) => {
-		assert.ok(typeof item === "object" && item !== null && "id" in item && "dot" in item);
-		assert.ok(typeof item.id === "string" && typeof item.dot === "string");
-		return { id: item.id, dot: item.dot };
-	});
+	return items as { readonly k: string; readonly v: unknown }[];
+}
+
+function buttonActs(node: HudNode): unknown[] {
+	return nodesOfKind(node, "row").filter((row) => row.p?.role === "omp.btn").map((row) => row.p?.actions);
 }
 
 describe("terminal HUD pill segment", () => {
@@ -225,109 +219,79 @@ describe("terminal HUD pill segment", () => {
 	});
 });
 
-describe("terminal HUD sheet description", () => {
-	it("describes a large Terminals picker with ordered rows, status dots, fact columns, and Kill Close Open actions", () => {
-		const entries = [entry(3, { kind: "running" }), entry(11, exited(0)), entry(19, exited(1))];
+describe("terminal HUD view description", () => {
+	it("lists sessions in id order with state tones and elapsed times frozen at exit, over a running/stored summary and Close", () => {
+		const entries = [entry(3, { kind: "running" }), entry(11, exited(0, 2500)), entry(19, exited(1, 65_000))];
 		const now = entries[0]!.startedAt + 4500;
 		const view = describeTerminalsSheet(entries, undefined, now);
-		assert.equal(view.k, "picker");
-		assert.equal(view.p?.title, "Terminals");
-		assert.equal(view.p?.size, "lg");
-		assert.equal(view.p?.noun, "terminals");
-		assert.equal(view.p?.subtitle, "1 running · 3 stored");
-		assert.equal(view.p?.total, undefined);
-		assert.equal(view.p?.preview, "side");
-		assert.deepEqual(view.p?.columns, [
-			{ id: "size", head: "Size", format: "dim", priority: 2 },
-			{ id: "pid", head: "PID", format: "text", priority: 3 },
-			{ id: "time", head: "Time", format: "elapsed", priority: 5 },
+		const split = onlyRole(view, "omp.jobs.split");
+		assert.deepEqual(split.c?.map((child) => child.p?.role), ["omp.jobs.master", "omp.jobs.detail"]);
+		assert.equal(selectedOf(view), "s3", "the first session is selected by default");
+		assert.deepEqual(listItems(view), [
+			{ key: "s3", tone: "pending", value: [{ t: "4s", s: "mono" }] },
+			{ key: "s11", tone: "success", value: [{ t: "2s", s: "mono" }] },
+			{ key: "s19", tone: "error", value: [{ t: "1m05s", s: "mono" }] },
 		]);
-		assert.deepEqual(view.p?.items, entries.map((value, index) => ({
-			id: `s${value.id}`, label: value.command, mono: true,
-			dot: ["accent", "success", "error"][index],
-			detail: `#${value.id} · ${index === 0 ? "running" : `exit ${index - 1}`}`,
-			facts: { time: index === 0 ? 4500 : `exit ${index - 1}`, pid: String(value.pid), size: "80×24" },
-		})));
-		assert.deepEqual(view.p?.actions, [
-			{ id: KILL_ACTION, label: "Kill", keys: ["x"], danger: true },
-			{ id: CLOSE_ACTION, label: "Close", keys: ["esc"], end: true },
-			{ id: OPEN_TERMINAL_ACTION, label: "Open", keys: ["enter"], primary: true },
-		]);
+		assert.deepEqual(onlyNode(view, "list").p?.actions, { click: "select", dblclick: "activate" });
+		const footer = view.c?.at(-1);
+		assert.ok(footer);
+		assert.equal(footer.p?.role, "omp.actions");
+		assert.equal(onlyRole(footer, "omp.jobs.summary").p?.text, "1 running · 3 stored");
+		assert.deepEqual(buttonActs(footer), [{ click: CLOSE_ACTION }]);
 	});
 
-	it("marks failed, signalled, and unknown exits as errors and disables Kill with its reason", () => {
-		const states: TerminalState[] = [
-			exited(1), exited(null),
-			{ kind: "exited", exitCode: 0, signal: "SIGTERM", failure: null },
-			{ kind: "exited", exitCode: 0, signal: null, failure: "spawn failed" },
-		];
-		const view = describeTerminalsSheet(states.map((state, index) => entry(index + 1, state)), undefined);
-		assert.deepEqual(pickerItems(view).map((item) => item.dot), states.map(() => "error"));
-		assert.deepEqual(view.p?.actions, [
-			{ id: KILL_ACTION, label: "Kill", keys: ["x"], danger: true, disabled: "Already exited" },
-			{ id: CLOSE_ACTION, label: "Close", keys: ["esc"], end: true },
-			{ id: OPEN_TERMINAL_ACTION, label: "Open", keys: ["enter"], primary: true },
-		]);
+	it("shows each state's label, tone and glyph, elapsed age, identity, and Kill only while running beside Open", () => {
+		const now = new Date(2026, 0, 2, 3, 4, 5).getTime() + 9000;
+		for (const [state, label, tone, glyph] of [
+			[{ kind: "running" }, "Running", "pending", { t: "●", fx: "pulse" }],
+			[exited(0), "Exit 0", "success", { t: "✓" }],
+			[exited(1), "Exit 1", "error", { t: "✕" }],
+			[exited(null), "Exited", "error", { t: "✕" }],
+			[{ ...exited(0), signal: "SIGTERM" }, "SIGTERM", "error", { t: "✕" }],
+			[{ ...exited(0), failure: "spawn failed" }, "Failed", "error", { t: "✕" }],
+		] satisfies [TerminalState, string, string, object][]) {
+			const view = describeTerminalsSheet([entry(7, state)], 7, now);
+			const status = onlyRole(view, "omp.jobs.status");
+			const chip = onlyRole(status, "omp.jobs.state");
+			assert.deepEqual(chip.p?.spans, [glyph, { t: ` ${label}` }]);
+			assert.equal(chip.p?.tone, tone);
+			const age = onlyRole(status, "omp.jobs.age");
+			assert.equal(age.k, "elapsed");
+			if (state.kind === "running") {
+				assert.equal(age.p?.age, 9000);
+				assert.equal(age.p?.stopped, undefined, "a running age keeps ticking");
+			} else {
+				assert.equal(age.p?.age, 2500);
+				assert.equal(age.p?.stopped, 2500, "an exited age is frozen at its exit");
+			}
+			assert.deepEqual(onlyRole(status, "omp.jobs.id").p?.spans, [{ t: "exec · #7", s: "mono" }]);
+			assert.deepEqual(buttonActs(status), [
+				...(state.kind === "running" ? [{ click: KILL_ACTION }] : []),
+				{ click: OPEN_TERMINAL_ACTION },
+			]);
+		}
 	});
 
-	it("falls back to the first session when the selected session is absent", () => {
+	it("selects the first session when the requested one is absent", () => {
 		const entries = [entry(7, exited(0)), entry(12, { kind: "running" })];
 		for (const selectedId of [undefined, 999]) {
 			const view = describeTerminalsSheet(entries, selectedId);
-			assert.equal(view.p?.selected, `s${entries[0]!.id}`);
-			assert.equal(recentOutputText(view), entries[0]!.screen.text);
+			assert.equal(selectedOf(view), "s7");
+			assert.equal(onlyRole(view, "omp.jobs.detail").key, "s7");
 		}
 	});
 
-	it("shows empty-session copy with no selection or preview and disables Kill and Open", () => {
+	it("shows an empty state with only Close and no list or detail", () => {
 		const view = describeTerminalsSheet([], undefined);
-		assert.deepEqual(view.p?.items, []);
-		assert.equal(view.p?.selected, null);
-		assert.equal(view.p?.total, undefined);
-		assert.equal(view.p?.empty, "No sessions. Start one with exec_command.");
-		assert.deepEqual(view.c, []);
-		assert.deepEqual(view.p?.actions, [
-			{ id: KILL_ACTION, label: "Kill", keys: ["x"], danger: true, disabled: true },
-			{ id: CLOSE_ACTION, label: "Close", keys: ["esc"], end: true },
-			{ id: OPEN_TERMINAL_ACTION, label: "Open", keys: ["enter"], primary: true, disabled: true },
-		]);
+		assert.equal(selectedOf(view), null);
+		assert.equal(withRole(view, "omp.jobs.split").length, 0);
+		const empty = onlyRole(view, "omp.jobs.empty");
+		assert.equal(onlyRole(empty, "omp.jobs.empty.title").p?.text, "No terminals");
+		assert.match(String(onlyRole(empty, "omp.jobs.empty.note").p?.text), /exec_command/);
+		assert.deepEqual(buttonActs(view), [{ click: CLOSE_ACTION }]);
 	});
 
-	it("describes the selected command, status badge, metadata grid, and session-keyed recent output", () => {
-		const entries = [entry(3, { kind: "running" }), entry(11, exited(0)), entry(19, exited(1))];
-		const keys: string[] = [];
-		for (const [index, selected] of entries.entries()) {
-			const view = describeTerminalsSheet(entries, selected.id);
-			assert.deepEqual(view.c?.map((node) => node.k), ["row", "kv", "row", "section"]);
-			const title = view.c?.[0];
-			assert.ok(title);
-			assert.equal(title.p?.role, "omp.hub.title");
-			assert.equal(onlyNode(title, "text").p?.role, "omp.picker.title");
-			assert.equal(onlyNode(title, "text").p?.text, selected.command);
-			assert.equal(onlyNode(title, "badge").p?.text, index === 0 ? "running" : `exit ${index - 1}`);
-			assert.equal(onlyNode(title, "badge").p?.tone, ["accent", "success", "error"][index]);
-			const grid = onlyNode(view, "kv");
-			assert.equal(grid.p?.role, "omp.hub.kv");
-			assert.equal(grid.p?.layout, "grid");
-			assert.deepEqual(grid.p?.items, [
-				{ k: "Session", v: `#${selected.id}` },
-				{ k: "Directory", v: [{ t: selected.cwd, s: "path" }] },
-				{ k: "PID", v: String(selected.pid) },
-				{ k: "Size", v: "80 × 24" },
-				{ k: "Started", v: [{ t: "2026-01-02 03:04:05", s: "dim" }] },
-			]);
-			assertLogRow(view, selected.logPath);
-			const output = onlyNode(view, "section");
-			assert.equal(output.key, `output-s${selected.id}`);
-			assert.equal(output.p?.head, "Recent output");
-			keys.push(output.key!);
-			assert.equal(recentOutputText(view), selected.screen.text);
-			assert.equal(nodesOfKind(output, "ansi").length, 0);
-		}
-		assert.equal(new Set(keys).size, entries.length);
-	});
-
-	it("shortens only the leading home directory and shows the full linked log path in its own row", () => {
+	it("shows the whole command in a bash block and the session facts, shortening only a leading home directory", () => {
 		const home = homedir();
 		for (const [cwd, shown] of [
 			[home, "~"],
@@ -337,59 +301,38 @@ describe("terminal HUD sheet description", () => {
 		] as const) {
 			const selected = { ...entry(7, { kind: "running" }), cwd, logPath: "/tmp/logs/terminal 7.log" };
 			const view = describeTerminalsSheet([selected], selected.id);
-			const facts = onlyNode(view, "kv").p?.items;
-			assert.ok(Array.isArray(facts));
-			const directory: unknown = facts.find((fact: unknown) => {
-				assert.ok(typeof fact === "object" && fact !== null && "k" in fact);
-				return fact.k === "Directory";
-			});
-			assert.deepEqual(directory, { k: "Directory", v: [{ t: shown, s: "path" }] });
-			assertLogRow(view, selected.logPath);
+			const command = onlyRole(view, "omp.jobs.command");
+			assert.equal(command.k, "code");
+			assert.equal(command.p?.text, selected.script);
+			assert.equal(command.p?.lang, "bash");
+			assert.deepEqual(factsOf(view), [
+				{ k: "Directory", v: [{ t: shown, s: "path" }] },
+				{ k: "PID", v: [{ t: "1007", s: "num" }] },
+				{ k: "Size", v: [{ t: "80 × 24", s: "num" }] },
+				{ k: "Started", v: [{ t: "2026-01-02 03:04:05", s: "dim" }] },
+				{ k: "Log", v: [{ t: "/tmp/logs/terminal 7.log", s: "path", href: "file:///tmp/logs/terminal 7.log" }] },
+			]);
 		}
+		const unknownPid = describeTerminalsSheet([{ ...entry(7, { kind: "running" }), pid: undefined }], 7);
+		assert.equal(factsOf(unknownPid).some((fact) => fact.k === "PID"), false, "an unknown process id is left out, not invented");
 	});
 
-	it("uses an em dash fact and omits the PID preview row when the process id is unknown", () => {
-		const selected = { ...entry(7, { kind: "running" }), pid: undefined };
-		const view = describeTerminalsSheet([selected], selected.id, selected.startedAt + 1500);
-		const items = view.p?.items;
-		assert.ok(Array.isArray(items));
-		const item: unknown = items[0];
-		assert.ok(typeof item === "object" && item !== null && "facts" in item);
-		assert.deepEqual(item.facts, { time: 1500, pid: "—", size: "80×24" });
-		const facts = onlyNode(view, "kv").p?.items;
-		assert.ok(Array.isArray(facts));
-		assert.equal(facts.some((fact: unknown) => {
-			assert.ok(typeof fact === "object" && fact !== null && "k" in fact);
-			return fact.k === "PID";
-		}), false);
-	});
-
-	it("shows the newest twelve plain output rows after stripping SGR and trailing blank rows", () => {
-		const value = entry(7, { kind: "running" });
-		const lines = Array.from({ length: 20 }, (_, row) => row === 15 ? "" : `row-${row}`);
-		const selected = { ...value, screen: {
-			...value.screen,
-			text: `${lines.map((line) => `\x1b[38;2;12;34;56m${line}\x1b[0m`).join("\n")}\n\x1b[31m \x1b[0m\n\x1b[1m\t\x1b[0m\n\x1b[0m\n`,
-		} };
-		const view = describeTerminalsSheet([selected], selected.id);
-		const tail = recentOutputText(view);
-		assert.equal(tail, lines.slice(-12).join("\n"));
-		assert.equal(tail.split("\n").length, 12);
-		assert.equal(tail.includes("\x1b["), false);
-		assert.equal(nodesOfKind(view, "ansi").length, 0);
-	});
-
-	it("keeps the recent-output section and shows dim No output yet copy for an empty screen", () => {
+	it("shows the session's colored screen as Output, following it only while running, and a placeholder for a blank screen", () => {
+		for (const state of [{ kind: "running" }, exited(0)] satisfies TerminalState[]) {
+			const selected = { ...styledEntry(7, 40, 30), state };
+			const output = outputOf(describeTerminalsSheet([selected], 7));
+			assert.equal(output.kind, "ansi");
+			assert.equal(output.text, selected.screen.text, "the whole retained screen, colors kept");
+			assert.equal(output.node.k, "ansi");
+			assert.equal(output.node.p?.follow, state.kind === "running");
+			assert.deepEqual(output.node.p?.max, { h: "16lines" });
+		}
 		for (const text of ["", "\x1b[31m \x1b[0m\n\t\n"]) {
-			const value = entry(7, { kind: "running" });
-			const selected = { ...value, screen: { ...value.screen, text } };
-			const view = describeTerminalsSheet([selected], selected.id);
-			const output = onlyNode(view, "section");
-			assert.equal(output.key, "output-s7");
-			assert.equal(output.p?.head, "Recent output");
-			assert.equal(nodesOfKind(output, "code").length, 0);
-			assert.equal(nodesOfKind(output, "ansi").length, 0);
-			assert.deepEqual(onlyNode(output, "text").p?.spans, [{ t: "No output yet", s: "dim" }]);
+			for (const [state, placeholder] of [[{ kind: "running" }, "No output yet"], [exited(0), "No output"]] as const) {
+				const value = entry(7, state);
+				const output = outputOf(describeTerminalsSheet([{ ...value, screen: { ...value.screen, text } }], 7));
+				assert.deepEqual({ kind: output.kind, text: output.text }, { kind: "none", text: placeholder });
+			}
 		}
 	});
 });
@@ -399,7 +342,7 @@ describe("terminal HUD page description", () => {
 		for (const state of [{ kind: "running" }, exited(0)] satisfies TerminalState[]) {
 			const value = entry(7, state);
 			assert.deepEqual(terminalPageFrame(value, value.id), {
-				role: "unified-exec.overlay.terminal",
+				role: "omp.overlay.console",
 				size: "full",
 				head: [
 					{ t: "Terminals · ", s: "muted" },
@@ -446,7 +389,6 @@ interface HudComponent {
 }
 
 interface CustomComponent extends HudComponent {
-	nativeSheet?(): boolean;
 	readonly nativeOverlay?: Readonly<Record<string, unknown>>;
 	handleInput(data: string): void;
 	dispose(): void;
@@ -608,16 +550,16 @@ function makeHarness(t: TestContext, initiallyNative = false, ModeClass: new () 
 		},
 		get sheet() {
 			assert.ok(overlay, "custom overlay is open");
-			assert.equal(overlay.nativeSheet?.(), true, "Terminals sheet is open");
+			assert.equal(overlay.nativeOverlay?.role, VIEW_FRAME.role, "Terminals view is open");
 			return overlay;
 		},
 		get page() {
-			assert.ok(overlay?.nativeOverlay, "terminal page is open");
+			assert.equal(overlay?.nativeOverlay?.role, "omp.overlay.console", "terminal page is open");
 			return overlay;
 		},
 		/** Whether omp's pill shows the terminals segment this frame. */
 		get mounted() { return segments().length > 0; },
-		get sheetOpen() { return overlay?.nativeSheet?.() === true; },
+		get sheetOpen() { return overlay?.nativeOverlay?.role === VIEW_FRAME.role; },
 		setNative(on: boolean) {
 			nativeOn = on;
 			for (const listener of nativeListeners) listener(on);
@@ -785,7 +727,7 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		segment.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		assert.equal(h.customCalls.length, 1);
 		assert.deepEqual(h.customCalls[0]?.options, { overlay: true });
-		assert.equal(h.sheet.nativeSheet?.(), true);
+		assert.deepEqual(h.sheet.nativeOverlay, VIEW_FRAME);
 		segment.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		assert.equal(h.customCalls.length, 1, "a second click while open does nothing");
 		const first = h.customCalls[0]!;
@@ -823,17 +765,13 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		h.segment.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		const sheet = h.sheet;
 		const initial = sheet.describe();
-		assert.deepEqual(pickerItems(initial).map((item) => item.id), [`s${first.id}`, `s${second.id}`, `s${third.id}`]);
-		assert.equal(initial.p?.selected, `s${first.id}`);
-		assert.equal(recentOutputText(initial), "first-screen");
-		assert.equal(onlyNode(initial, "section").key, `output-s${first.id}`);
-		const facts = onlyNode(initial, "kv").p?.items;
-		assert.ok(Array.isArray(facts));
-		assert.ok(facts.some((fact: unknown) => {
-			assert.ok(typeof fact === "object" && fact !== null && "k" in fact && "v" in fact);
-			return fact.k === "PID" && fact.v === String(first.pid);
-		}), "preview PID comes from the actual PTY session");
-		assertLogRow(initial, first.logPath);
+		assert.deepEqual(listItems(initial).map((item) => item.key), [`s${first.id}`, `s${second.id}`, `s${third.id}`]);
+		assert.equal(selectedOf(initial), `s${first.id}`);
+		assert.match(String(outputOf(initial).text), /first-screen/);
+		assert.equal(onlyRole(initial, "omp.jobs.detail").key, `s${first.id}`);
+		assert.deepEqual(factsOf(initial).find((fact) => fact.k === "PID"), { k: "PID", v: [{ t: String(first.pid), s: "num" }] },
+			"the detail's PID comes from the actual PTY session");
+		assert.deepEqual(factsOf(initial).find((fact) => fact.k === "Log"), { k: "Log", v: [{ t: first.logPath, s: "path", href: `file://${first.logPath}` }] });
 		for (const event of [null, {}, { type: "action", act: "unrelated" }, { type: "select", item: "invalid" }]) {
 			sheet.handleNativeEvent(event);
 		}
@@ -842,17 +780,16 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		sheet.handleNativeEvent({ type: "select", item: `s${second.id}` });
 		const selected = sheet.describe();
 		assert.ok(h.renders > before);
-		assert.equal(selected.p?.selected, `s${second.id}`);
-		assert.equal(onlyNode(selected, "section").key, `output-s${second.id}`);
-		assert.equal(recentOutputText(selected), "second-screen");
-		assert.equal(recentOutputText(selected).includes("\x1b["), false, "real PTY SGR is stripped from the sheet's recent output");
+		assert.equal(selectedOf(selected), `s${second.id}`);
+		assert.equal(onlyRole(selected, "omp.jobs.detail").key, `s${second.id}`);
+		assert.match(String(outputOf(selected).text), /second-screen/);
+		assert.match(String(outputOf(selected).text), /\x1b\[[0-9;]+m/, "the view's output keeps the real PTY colors");
 		sheet.handleInput("\x1b[A");
-		assert.equal(sheet.describe().p?.selected, `s${first.id}`);
-		assert.equal(recentOutputText(sheet.describe()), "first-screen");
+		assert.equal(selectedOf(sheet.describe()), `s${first.id}`);
+		assert.match(String(outputOf(sheet.describe()).text), /first-screen/);
 		sheet.handleInput("\x1b[B");
-		assert.equal(sheet.describe().p?.selected, `s${second.id}`);
-		assert.equal(onlyNode(sheet.describe(), "section").key, `output-s${second.id}`);
-		assert.equal(recentOutputText(sheet.describe()), "second-screen");
+		assert.equal(selectedOf(sheet.describe()), `s${second.id}`);
+		assert.match(String(outputOf(sheet.describe()).text), /second-screen/);
 		sheet.handleNativeEvent({ type: "action", act: OPEN_TERMINAL_ACTION });
 		await h.waitForCustom(2);
 		const page = h.page.describe();
@@ -872,15 +809,16 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		h.segment.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		const sheet = h.sheet;
 		const initial = sheet.describe();
-		assert.deepEqual(pickerItems(initial), [{ id: `s${session.id}`, dot: "accent" }]);
+		assert.deepEqual(listItems(initial).map(({ key, tone }) => ({ key, tone })), [{ key: `s${session.id}`, tone: "pending" }]);
 		const before = h.renders;
 		assert.equal(session.write(Buffer.from("exit\r")), true);
 		await waitFor(() => session.hasExited, (listener) => session.onExit(listener), "real child exits on stdin");
 		const exitedView = sheet.describe();
 		assert.ok(h.renders > before);
 		assert.notStrictEqual(exitedView, initial);
-		assert.deepEqual(pickerItems(exitedView), [{ id: `s${session.id}`, dot: "success" }]);
-		assert.equal(exitedView.p?.subtitle, "0 running · 1 stored");
+		assert.deepEqual(listItems(exitedView).map(({ key, tone }) => ({ key, tone })), [{ key: `s${session.id}`, tone: "success" }]);
+		assert.equal(onlyRole(exitedView, "omp.jobs.summary").p?.text, "0 running · 1 stored");
+		assert.equal(onlyRole(exitedView, "omp.jobs.age").p?.stopped, onlyRole(exitedView, "omp.jobs.age").p?.age, "a real exit freezes the age");
 		assert.equal(h.mounted, true);
 		assert.equal(terminalCount(h.segment.describe()), 1, "exited sessions remain in the pill count");
 		assert.equal(h.segment.describe().p?.title, "1 terminal · 0 running", "the segment re-describes on a real exit");
@@ -892,13 +830,13 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		const removed = h.spawn();
 		const remaining = h.spawn();
 		h.segment.handleNativeEvent({ type: "action", act: OPEN_ACTION });
-		assert.equal(h.sheet.describe().p?.selected, `s${removed.id}`);
+		assert.equal(selectedOf(h.sheet.describe()), `s${removed.id}`);
 		removed.terminate();
 		h.store.remove(removed.id);
 		await removed.release();
 		const forbiddenRead = t.mock.method(removed, "styledScreen", () => { throw new Error("removed screen read after release"); });
 		assert.equal(terminalCount(h.segment.describe()), 1);
-		assert.equal(h.sheet.describe().p?.selected, `s${remaining.id}`);
+		assert.equal(selectedOf(h.sheet.describe()), `s${remaining.id}`);
 		h.segment.invalidate();
 		h.sheet.invalidate();
 		assert.doesNotThrow(() => h.segment.describe());
@@ -925,7 +863,7 @@ describe("terminal HUD lifecycle with real sessions", () => {
 			const pageCall = h.customCalls[1]!;
 			assert.deepEqual(pageCall.options, { overlay: true });
 			const frame = page.nativeOverlay;
-			assert.equal(frame?.role, "unified-exec.overlay.terminal");
+			assert.equal(frame?.role, "omp.overlay.console");
 			assert.equal(frame?.size, "full");
 			const head = frame?.head;
 			assert.ok(Array.isArray(head));
@@ -949,7 +887,7 @@ describe("terminal HUD lifecycle with real sessions", () => {
 			assert.equal(await pageCall.promise, undefined);
 			await h.waitForCustom(3);
 			assert.equal(pageCall.disposed, true);
-			assert.equal(h.sheet.describe().p?.selected, `s${selected.id}`);
+			assert.equal(selectedOf(h.sheet.describe()), `s${selected.id}`);
 			assert.equal(selected.hasExited, false, "page navigation does not kill its session");
 		});
 	}
@@ -971,7 +909,7 @@ describe("terminal HUD lifecycle with real sessions", () => {
 			assert.equal(h.killCalls.at(-1), running.id);
 			await waitFor(() => h.store.get(running.id) === undefined, (listener) => h.store.subscribe(listener), "kill removes only after child exit");
 			assert.equal(running.hasExited, true);
-			assert.equal(h.sheet.describe().p?.selected, `s${finished.id}`);
+			assert.equal(selectedOf(h.sheet.describe()), `s${finished.id}`);
 		}
 		assert.equal(h.killCalls.length, 2);
 		assert.ok(h.store.get(finished.id), "the finished session remains stored");
@@ -1004,7 +942,7 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		await h.waitForCustom(3);
 		assert.equal(writes.mock.callCount(), 1, "Esc is navigation, not terminal input");
 		assert.equal(pageCall.disposed, true);
-		assert.equal(h.sheet.describe().p?.selected, `s${session.id}`);
+		assert.equal(selectedOf(h.sheet.describe()), `s${session.id}`);
 		assert.equal(session.hasExited, false);
 	});
 
@@ -1050,7 +988,7 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		page.handleNativeEvent({ type: "action", act: BACK_ACTION });
 		await pageCall.promise;
 		await h.waitForCustom(3);
-		assert.equal(h.sheet.describe().p?.selected, null);
-		assert.deepEqual(h.sheet.describe().p?.items, []);
+		assert.equal(selectedOf(h.sheet.describe()), null);
+		assert.equal(onlyRole(h.sheet.describe(), "omp.jobs.empty.title").p?.text, "No terminals");
 	});
 });

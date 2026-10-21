@@ -1,7 +1,0 @@
-schema = 1
-id = "omp-unified-exec"
-name = "omp-unified-exec terminals"
-version = "0.14.7"
-description = "Sets omp-unified-exec's Terminals sheet output preview in the mono face."
-window = "window.luau"
-styles = ["terminals.css"]

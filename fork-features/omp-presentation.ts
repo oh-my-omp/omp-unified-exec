@@ -15,7 +15,7 @@ import type { TerminalAppearance } from "../src/terminal-screen.ts";
 import { truncationMarker } from "../src/tool-result.ts";
 import { type CommandApprovalHost, loadCommandApprovalHost } from "./command-approval.ts";
 import { loadTernHudHost, mountTerminalHud } from "./tern-terminal-hud.ts";
-import { initializeTernPlugin } from "./tern-plugin-install.ts";
+import { retireTernPlugin } from "./tern-plugin-removal.ts";
 import { initializeTerminalUrls } from "./terminal-url.ts";
 
 // ---------------- omp bash renderer contract ----------------
@@ -466,7 +466,7 @@ export function withHostPresentation(
 			presentOnOmp(host), loadTernHudHost(), loadOmpAppearance(), loadOmpShellPath(host), loadCommandApprovalHost(),
 			loadGithubCacheInvalidation(),
 		]).then(async ([pi, hud, appearance, shellPath, approvalHost, invalidateGithubCache]) => {
-			await initializeTernPlugin();
+			await retireTernPlugin();
 			await initializeTerminalUrls();
 			const activated = activate(pi, appearance, shellPath, approvalHost, invalidateGithubCache);
 			mountTerminalHud(pi, activated.store, hud, activated.kill);
