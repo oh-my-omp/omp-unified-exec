@@ -837,12 +837,16 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		assert.ok(h.store.get(finished.id), "the finished session remains stored");
 	});
 
-	it("writes printable page input to a real cat terminal while Esc returns without being written", async (t) => {
+	it("writes printable page input to a real stdin terminal while Esc returns without being written", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
-		const session = h.spawn(["/bin/sh", "-c", "stty -echo; printf 'cat-ready\\n'; exec cat"]);
-		await waitFor(() => session.styledScreen()?.text.includes("cat-ready") === true,
-			(listener) => session.onScreenChange(listener), "cat terminal is ready with echo disabled");
+		const session = h.spawn([process.execPath, "-e", [
+			"process.stdin.setRawMode(true)",
+			"process.stdin.on('data', (data) => process.stdout.write(data))",
+			"process.stdout.write('input-ready\\n')",
+		].join("; ")]);
+		await waitFor(() => session.styledScreen()?.text.includes("input-ready") === true,
+			(listener) => session.onScreenChange(listener), "stdin terminal is ready with echo disabled");
 		h.component.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		h.sheet.handleInput("\r");
 		await h.waitForCustom(2);
@@ -850,7 +854,7 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		const writes = t.mock.method(session, "write");
 		page.handleInput("typed-through-page\r");
 		await waitFor(() => session.styledScreen()?.text.includes("typed-through-page") === true,
-			(listener) => session.onScreenChange(listener), "cat emits the page's typed line");
+			(listener) => session.onScreenChange(listener), "the stdin child emits the page's typed line");
 		assert.match(ansiText(page.describe()), /typed-through-page/);
 		assert.equal(writes.mock.callCount(), 1);
 		assert.equal(Buffer.from(writes.mock.calls[0]!.arguments[0]!).toString(), "typed-through-page\r");
