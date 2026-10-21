@@ -301,6 +301,30 @@ holding only its segment. Evidence is under `/tmp/tern-76-verify/`
 (`*/shots/*.png`, `*.dump.json`, `divider-pixel-evidence.json`,
 `narrow-native-control.json`).
 
+Jobs-view qualification, 2026-10-22, macOS arm64, Tern 0.9.5 / omp 18.12.5,
+operator fonts, `issue-77-jobs-view@ddedaf5`
+([#77](https://github.com/oh-my-omp/omp-unified-exec/issues/77)), isolated
+real windows with no Tern plugin (`plugin list` empty). At 1200×900 with the
+file tree open, the Terminals view and the native Background jobs view in the
+same window measured card 886.16, master 295.59 and detail 590.56 in Reader,
+Spine and Console × light/dark (difference 0.00), with the same header heights
+(48.00 / 40.61 / 36.92), Console's flush master list and mono typography; at
+900×900 both stacked master above detail at 631.84. A colored loop's Output
+was `ansi` that advanced from line-33 to line-43 within a fixed 256 px
+viewport; an exited `sleep 3; echo done` showed `✓ Exit 0` with its age frozen
+at 3.0s. The page matched omp's own `bash` `pty: true` Console overlay in all
+three styles: role `omp.overlay.console`, classes `sf-overlay sz-full
+at-bottom modal`, card 939.23×832.31 and the same head typography and face.
+↑/↓ and clicks moved the detail, `x` removed only the running sleep, `x` on an
+exited session changed nothing and showed no Kill, Enter opened cat and
+`hello` echoed twice, Esc returned to the view and Esc closed it with the
+sessions alive; after draining the exited session and killing cat, the view
+showed `No terminals`, its note and Close only, and the segment left the pill.
+A config holding the 0.14.7 plugin copy (listed `ready`) listed no plugins
+after the extension loaded; a linked 0.14.7 plugin was unlinked by a headless
+load, its `.path` gone and the linked directory intact; a further load with
+nothing installed succeeded. Evidence is under `/tmp/tern-77-verify/`.
+
 Current automated qualification runs strict types and the full suite through
 `npm test` (Bun's native runner). Real PTY suites are mandatory, including:
 
