@@ -31,6 +31,7 @@
  */
 
 import { constants as osConstants } from "node:os";
+import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { type AgentToolResult, type AgentToolUpdateCallback, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type TUnsafe } from "typebox";
@@ -230,6 +231,16 @@ function heldOpenNote(session: ExecSession): string | undefined {
 	return session.shellExited && !session.hasExited ? HELD_OPEN_NOTE : undefined;
 }
 
+/** The host bash's working-directory error for `dir`, or undefined when it is a usable directory. */
+function workdirProblem(dir: string): string | undefined {
+	try {
+		return statSync(dir).isDirectory() ? undefined : `Working directory is not a directory: ${dir}`;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return `Working directory does not exist: ${dir}`;
+		throw error;
+	}
+}
+
 async function runExecCommand(
 	ctx: ExtensionCtx,
 	args: ExecCommandArgs,
@@ -266,7 +277,8 @@ async function runExecCommand(
 			ctx.ui?.notify(`unified-exec: using bash at ${resolved.shell} (not on PATH)`, "info");
 		}
 	}
-	const effectiveCwd = args.workdir && args.workdir.length > 0 ? args.workdir : cwd;
+	// A relative workdir is relative to the calling session's cwd, never to the host process's.
+	const effectiveCwd = args.workdir && args.workdir.length > 0 ? resolve(cwd, args.workdir) : cwd;
 	// Resolve before building argv so the result names exactly what is spawned.
 	// Windows resolution fails closed to avoid cwd-first executable lookup.
 	shellBin = /[\\/]/.test(shellBin)
@@ -275,6 +287,24 @@ async function runExecCommand(
 	const shellCommand = buildShellCommand(shellBin, args.cmd);
 	const yieldTimeMs = clampYield(args.yield_time_ms, DEFAULT_EXEC_YIELD_MS);
 	const wantsWake = args.on_exit === "wake";
+
+	// Same wording as the host's bash; nothing is spawned for an unusable directory.
+	const workdirFailure = workdirProblem(effectiveCwd);
+	if (workdirFailure) {
+		return finalizeResponse({
+			wallTimeSec: 0,
+			collected: NO_OUTPUT,
+			sessionId: undefined,
+			exitCode: -1,
+			signal: null,
+			failure: workdirFailure,
+			logPath: undefined,
+			cwd: effectiveCwd,
+			shell: shellBin,
+			command: args.cmd,
+			yieldTimeMs,
+		});
+	}
 
 	const id = ctx.store.allocateId();
 	const session = ExecSession.spawn(id, {
