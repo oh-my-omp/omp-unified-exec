@@ -303,9 +303,9 @@ export class CompletionCoordinator {
 	}
 
 	/**
-	 * Release an observer WITHOUT marking completion observed (relative or
-	 * absolute deadline reached while still running, cancellation, handler
-	 * error). The wake stays armed.
+	 * Release an observer WITHOUT marking completion observed (attachment
+	 * window ended while still running, cancellation or handler error).
+	 * The wake stays armed.
 	 */
 	releaseObservation(sessionId: number, toolCallId: string): void {
 		const r = this.records.get(sessionId);

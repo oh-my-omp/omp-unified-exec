@@ -771,11 +771,8 @@ function clearSessionExitWatchers(ctx: ExtensionCtx): void {
 	ctx.exitUnsubscribers.clear();
 }
 
-/** Shared streaming-update payload (relative polls and absolute waits). */
-function buildStreamUpdate(
-	session: ExecSession,
-	extra?: Partial<ProcessResultDetails>,
-): AgentToolResult<ProcessUpdateDetails> {
+/** Shared non-consuming streaming-update payload for exec and input attachment. */
+function buildStreamUpdate(session: ExecSession): AgentToolResult<ProcessUpdateDetails> {
 	const snapshot = session.liveSnapshot();
 	const text = snapshot ? sanitizeOutputText(snapshot.text) : "";
 	return {
@@ -793,7 +790,6 @@ function buildStreamUpdate(
 			// of streaming vs final state.
 			output: text,
 			...(snapshot ? { terminal: terminalViewDetails(snapshot.view, true) } : {}),
-			...extra,
 		},
 	};
 }
