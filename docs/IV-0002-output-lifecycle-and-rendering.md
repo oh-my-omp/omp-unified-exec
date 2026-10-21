@@ -1,6 +1,6 @@
 # IV-0002 — Bounded output lifecycle and compact tool rendering
 
-**Status:** active; codemode visual-row fix shipped in 0.12.1
+**Status:** active; bounded terminal output and omp-native presentation
 **Root IV:** this document
 **Related release:** [Changelog.md](../Changelog.md) — 2026-09-30 — 0.12.1
 **Workspace doctrine:** [docs/DC-0001-agentic-workspace.md](./DC-0001-agentic-workspace.md)
@@ -23,36 +23,22 @@ The initiative establishes a durable output contract across these layers:
 2. **Model/session result:** every output-bearing result is a bounded,
    terminal-inert plain-text tail with explicit truncation metadata and
    a recovery path.
-3. **TUI:** the bounded result is collapsed to five visual lines by default and
-   expands through Pi's configured `app.tools.expand` binding.
-4. **Scripts (0.12.0):** Pi codemode scripts receive `structuredContent`
-   matching each tool's `outputSchema`, whose `output` is the same bounded,
-   terminal-inert tail with real newlines. Without it, scripts received the
-   whole text envelope as one string. Printing that string inside an object
-   collapsed it to one escaped logical line, which Pi's logical-line codemode
-   preview could not bound.
-5. **Codemode presentation (0.12.1):** by default register Pi's native codemode
-   definition with a result-renderer-only decorator. Compact JSON from
-   `text(r)` / settled results flooded Pi 0.99.1's logical-line previews.
-   Pi 0.99.2 bounds individual sections by visual lines, but does not bound
-   many nested-call summaries as one result. Bound rendered rows at ten,
-   including call summaries,
-   spacers, clipping hint and native full-output-path footer; leave expanded
-   output and all model/script data native.
-6. **oh-my-pi presentation (fork):** omp calls extension renderers with its own
-   signatures and its Tern frontend reads `describeCall`/`describeResult`, so
-   the Pi renderers threw there and omp showed the raw model envelope. On omp,
-   `exec_command`, `write_stdin` and `kill_session` present through omp's own
-   bash renderer from the same bounded `details`; the other tools use omp's
-   default card.
-7. **Rendered terminal output:** PTY children draw with cursor movement, erases,
+3. **TUI:** omp owns collapsed/expanded output and its configured expansion
+   binding through its bash renderer.
+4. **Structured tools:** each tool returns `structuredContent` matching its
+   `outputSchema`; `output` is the same bounded, terminal-inert tail with
+   real newlines.
+5. **omp presentation:** only omp hosts are admitted. `exec_command`,
+   `write_stdin` and `kill_session` present through omp's own bash renderer
+   from the same bounded `details`; the other tools use omp's default card.
+6. **Rendered terminal output:** PTY children draw with cursor movement, erases,
    carriage returns and the alternate screen. Stripping those controls left
    every redraw appended to the previous one, so neither the model nor a human
    saw the terminal's actual state. Every session feeds its output into a
    per-session headless terminal emulator. Running results report unseen history
    plus the current screen and cursor; completed results report only the
    frozen final active screen, with a retained-terminal reading address.
-8. **Tern terminal HUD (fork):** a tool result shows a session's screen only as it
+7. **Tern terminal HUD (fork):** a tool result shows a session's screen only as it
    was when that call returned. On omp rendering natively in Tern, a counter
    pill copied from omp's running-work counter (terminal icon and bare count,
    words in its hover label) counts stored sessions on its own line above
@@ -74,9 +60,8 @@ The initiative establishes a durable output contract across these layers:
 
 ## Requirements
 
-- Never depend on a TUI renderer to enforce model/session size limits. Pi falls
-  back to raw result content if a renderer throws.
-- Apply Pi's `DEFAULT_MAX_BYTES` / `DEFAULT_MAX_LINES` tail limits to
+- Never depend on a TUI renderer to enforce model/session size limits.
+- Apply the host-compatible `DEFAULT_MAX_BYTES` / `DEFAULT_MAX_LINES` tail limits to
   `kill_session`, including model-visible recovery markers; independently cap
   metadata scans/headers that sit outside the output body.
 - Keep the full retained stream out of result details; `details.output` is the
@@ -132,11 +117,10 @@ The initiative establishes a durable output contract across these layers:
   rather than inferring liveness from the presence of `session_id`.
 - Preserve failed-kill ownership: an unconfirmed kill remains registered and is
   reported as running.
-- On Pi, the five original tools keep explicit call/result renderers and use
-  `keyHint("app.tools.expand", ...)`, not a hard-coded Ctrl+O label. On omp,
-  never register Pi-signature renderers: exec/write/kill delegate render and
-  describe hooks to omp's bash renderer; monitor, set_on_exit and list_sessions
-  use omp's bounded default card.
+- Reject non-omp hosts in the extension factory before activation. Exec/write/kill
+  delegate render and describe hooks to omp's bash renderer; monitor, set_on_exit
+  and list_sessions use omp's bounded default card. Tool-core definitions carry
+  no host renderer hooks.
 - On omp, mount the terminal HUD only while omp renders natively and the store
   holds a session, so the ANSI TUI gains no row. In Tern the pill takes a
   line of its own above omp's pill line. The stylesheet moves and resets the
@@ -149,18 +133,10 @@ The initiative establishes a durable output contract across these layers:
   The page writes typed keys to its running session (Esc goes back instead),
   and Kill ends a session through `kill_session`'s path; nothing else reaches
   sessions, and the HUD keeps no copy of session or screen state.
-- Count collapsed child output in visual lines after terminal wrapping.
-- Keep truncation and log-recovery warnings visible while collapsed.
+- Leave collapse/expansion and visual-line clipping to omp's native renderer.
+- Keep truncation and log-recovery warnings in the display projection.
 - Do not synchronously load an arbitrary log file when expanded. Expanded mode
   shows the complete bounded result; `log_path` owns complete-stream recovery.
-- Preserve native codemode definition fields/schema by reference, inactive
-  default, settings/loadout, MCP auto-activation, model helpers and store/load.
-- Unwrap cached native components before calling the original renderer; Pi
-  catches renderer exceptions and can silently expose the unbounded fallback.
-- Default-on codemode replacement must not write settings or activate the tool
-  beyond `defaultTools`. Register at session start so Pi keeps the built-in
-  loaded and never warns; verify precedence and warn on loss. Offer only
-  explicit opt-out `PI_UNIFIED_EXEC_COMPACT_CODEMODE=0`.
 
 ## Decisions
 
@@ -169,18 +145,13 @@ The initiative establishes a durable output contract across these layers:
 | Split output serialization into `src/tool-result.ts` | Result bounds remain testable without process or TUI machinery, and `src/index.ts` no longer carries multiple ad-hoc serializers. |
 | Replace undocumented `final_output` with bounded `output` | One canonical renderer/model field; avoids persisting the whole retained output. GitHub code search found no external consumer. |
 | Version as 0.9.0 | The observable details shape changed even though the old field was undocumented. |
-| Tool-specific render entry points over generic fallback | Kill/list semantics differ from process yields; explicit renderers prevent identity from being mistaken for liveness. |
+| Delegate tool presentation to omp | Exec/write/kill adapt bounded details to omp's bash renderer; other tools use omp's default cards. |
 | Expand only bounded output | Rendering or reading an unlimited multi-gigabyte log from a synchronous tool row is unsafe. |
 | Make result text terminal-inert; preserve raw logs | PTY output can contain clipboard, alternate-screen, keyboard-mode, and cursor controls. Models need text, not executable terminal state; forensic bytes remain recoverable by path. |
 | Project script results from details, not a second serializer | `structuredContent` inherits the bounds and terminal safety of `details.output`; metadata strings reuse `safeMeta`. Model `content` stays byte-identical. |
-| Require Pi 0.99.1 for 0.12.0 | `outputSchema`/`structuredContent` do not exist in earlier Pi types. Older Pi users stay on 0.11.x. |
+| Keep structured schemas and projections | `outputSchema` / `structuredContent` expose typed bounded results without changing model text or persisted details. |
 | Keep complete logs for now | Archive bounding/retention is a separate policy change and remains follow-up work. |
-| Bundle the native codemode display fix by default in 0.12.1 | Owner requested the fix here, not a separate package. It applies globally to nested tools while unified-exec is loaded; no Pi core patch or executor fork. |
-| Register codemode at session start in 0.12.2 | Load-time registration made Pi skip `builtin:codemode` and warn every package user. Session-start registration is Pi's documented dynamic-tool pattern; load order keeps this definition first, the built-in stays as fallback, and precedence is checked at runtime. |
-| Wrap the public factory via a receiver-bound API proxy | Keep native execution/schema/loadout/persistence and method receivers intact; intercept only tool registration and result rendering. |
-| Keep native ordering and clip the rendered head at ten rows | Bound the whole result text component. Call summaries can consume the budget; reserve recovery/hint footer space. Script-call and separate image components are outside this cap. |
-| Use a non-numeric clipping hint | Native rendering has already hidden output, so its rendered row count is not the full-output hidden-row count. |
-| Present on omp through omp's exported bash renderer | omp's `toolRenderers.bash` (`@oh-my-pi/pi-tui/tools`) already owns collapse, expansion, exit/background status and both ANSI and Tern views; reimplementing them on omp's native view primitives would couple deeper. Only a pure display adapter is plugin code. omp is identified by its injected `ExtensionAPI.arktype`; on omp a missing or reshaped bash renderer fails plugin loading instead of silently re-registering Pi renderers. Pi activation stays synchronous and unchanged. |
+| Present only on omp through its exported bash renderer | omp's `toolRenderers.bash` (`@oh-my-pi/pi-tui/tools`) owns collapse, expansion, exit/background status and ANSI/Tern views. A pure display adapter is plugin code. The injected `ExtensionAPI.arktype` identifies omp; non-omp hosts fail at factory invocation, and missing or reshaped required omp modules fail loading before activation. |
 | Show write/kill actions as bash comments | `# poll session N`, `# stdin → session N: "…"`, `# kill session N (SIGTERM)` name the action without presenting input bytes as an executable command; base64 input shows only its byte count. |
 | Append the truncation marker to the omp display text | The marker and `log_path` live outside `details.output`; appending `truncationMarker()` keeps recovery visible as the last collapsed line without claiming the log is an omp artifact. |
 | Mark omp Tern failures with view tone, not result `isError` | Tern derives card status from the host result's `isError`, which stays false for a nonzero exit because that is an ordinary completion for the model. The describe view sets `tone: "error"` for failed exits, signals, start failures and failed or unknown kills; the exit chip comes from omp's bash head. |
@@ -201,7 +172,7 @@ The initiative establishes a durable output contract across these layers:
 | Terminal page = a `full` sheet like omp's Console | omp's own terminal window is the Console sheet its bash tool opens with `pty: true`: `ui.custom` with `nativeOverlay { size: "full" }`, the PTY screen as `ansi`, keys forwarded to the process, and an action bar. Open closes the Terminals sheet and opens the page the same way (role `unified-exec.overlay.terminal`, head `Terminals · #id command state`); its body is a column filling the sheet (`min.h` 1) holding the session's history and screen as `ansi` at the session's own width, which grows into the height the action bar leaves (`grow` 1, `max.h` 1, a fraction of the available height) and follows the newest row, and the action bar with Kill (while running) and Back (`esc`) pinned at the bottom. Back, Esc and Tern's `close` reopen the Terminals sheet on the same session; at most one of the two is open. Typed keys go to the running session through `ExecSession.write`, as `write_stdin` writes, so the model's next observation sees their effect (owner's choice); Esc is kept for Back. The PTY keeps the size the model's session started with. Rejected: showing a session only in the sheet's side preview, which wrapped wide screens into a narrow column; a `max.h` in rows computed from the pane's rows less the sheet's chrome, which left the action bar floating above empty space. |
 | Page screen = `ansi`; preview output = plain `code` in the mono face | `ansi` keeps the colors and follows the newest row. Its text is the session's retained history plus the current screen (the alternate screen has no history), so its scrollbar scrolls back through the terminal's history. In the side preview Tern draws `ansi` as a mini terminal that reflows rows at the column's width, which shredded a 120-column `top` into fragments, so the preview shows only the newest 12 non-blank rows as a plain-text `code` block (`lang: "text"`, `wrap: false`, as omp sends its QR code), whose rows keep their spacing and scroll sideways. Tern draws a preview's `code` lines and `mono` spans in the UI face; the plugin's stylesheet sets the block (role `unified-exec.terminals.tail`) in the mono face and the facts' size, so columns align. Rejected: one `mono` text row per screen row, which Tern drew in the UI face with collapsed spacing and wide line gaps; restyling a truncated text's font, whose truncation Tern measures in the original face. |
 | HUD colors from cell attributes | `TerminalScreen.styledScreen()` writes SGR for palette/256/RGB colors and bold, dim, italic, underline, blink, inverse, invisible, strikethrough and overline. Child OSC, cursor and mode sequences cannot pass, because nothing is copied from the byte stream. |
-| Answer OSC 10/11 with the host's appearance | xterm answers DSR and DA1 itself but not the default-colour queries, so a child that picks its palette from them (omp probes OSC 11 with a DA1 sentinel) got no answer and fell back to dark, drawing dark blocks on a light Tern page. The emulator answers `?` queries inside the parse, before a following DA1, with white on black for a dark host and black on white for a light one. On omp the appearance is read at each query from omp's theme (`isLightTheme(getCurrentThemeName())` from `@oh-my-pi/pi-tui/theme`, loaded with the other omp modules so a reshaped omp fails plugin loading); Pi has no such signal and answers dark, as omp's Console responder does. Colour sets (`OSC 11;rgb:…`) are ignored. |
+| Answer OSC 10/11 with the host's appearance | xterm answers DSR and DA1 itself but not default-colour queries. The emulator answers `?` inside the parse, before a following DA1, with white on black for a dark host and black on white for a light one. Appearance is read at each query from omp's theme (`isLightTheme(getCurrentThemeName())` from `@oh-my-pi/pi-tui/theme`, loaded with the other omp modules so a reshaped omp fails plugin loading). Colour sets (`OSC 11;rgb:…`) are ignored. |
 | Screenshot cells through the host rasterizer and read pipeline | Each active grid becomes an in-memory SVG with XML-safe, individually positioned glyphs on an 8×16 logical cell grid, then `@oh-my-pi/pi-natives.rasterizeSvg` produces PNG bytes. Uniform scaling keeps the entire grid within 16,777,216 pixels. A file-backed handler locates a fresh private PNG; non-image targets still resolve as text. No image dependency with install scripts, second parser, screenshot cache or new tool-result option is introduced. |
 | Retain successful screenshot files for OS cleanup | The host opens a located file after the plugin returns and supplies no read-complete acknowledgement. Each read therefore writes an exclusive 0600 PNG in a private temporary directory; failed writes clean their directory, successful files remain for OS cleanup like logs. Repeated screenshots consume disk space; a timer or overwrite-per-key would race readers. |
 | Mount only while native and a session exists | omp's `isNativeRendering`/`onNativeRenderingChange` (`@oh-my-pi/pi-tui/native/state`) gate the widget, so the ANSI TUI never gets the widget container's spacer row. Store membership and native changes re-evaluate the gate; a missing module fails omp plugin loading before anything registers, like the bash renderer. |
@@ -218,17 +189,12 @@ The initiative establishes a durable output contract across these layers:
 | Non-consuming monitor rows, bounded notifications and End/wake routing | `TerminalScreen.subscribeLines`, `ExecSession.subscribeMonitor`, `fork-features/monitor-subscription.ts`, `src/completion.ts`; lifecycle in IV-0001 |
 | Session membership notifications | `SessionStore.subscribe` in `src/session-store.ts` |
 | Shared output envelope, truncation, incremental/final terminal metadata and process/kill text | `src/tool-result.ts`; `CollectResult` (`screen`, `final-screen`, `none`) in `src/collect.ts`, produced by `ExecSession.collect` (final screens from the frozen projection) |
-| Codemode script schemas and projections | `src/script-result.ts`, `tests/script-result.test.ts` |
+| Structured tool schemas and projections | `src/script-result.ts`, `tests/script-result.test.ts` |
 | Kill collection, partial sanitization, and tool registration | `src/index.ts` (`TerminateOutcome`, `buildStreamUpdate`, `kill_session`) |
-| Explicit Pi renderers and shared five-line preview | `src/render.ts` |
 | omp host selection, bash-renderer delegation, result/args display adapters | `fork-features/omp-presentation.ts`, `fork-features/omp-tools.d.ts`; wired by `withHostPresentation` in `src/index.ts`; tests `tests/omp-presentation.test.ts` |
 | Tern terminal HUD: native counter pill, Terminals picker sheet, terminal page, session/native mount gate | `fork-features/tern-terminal-hud.ts`, mounted by `withHostPresentation` with the store and kill `activate` returns; tests `tests/tern-terminal-hud.test.ts` |
 | Tern plugin placing the pill above omp's pill line and setting the sheet preview's output rows in the mono face | `fork-features/tern-plugin/` (`plugin.toml`, `terminals.css`, empty `window.luau`), shipped in the package; `initializeTernPlugin` in `fork-features/tern-plugin-install.ts` awaited by `withHostPresentation` during omp factory initialization; state tests `tests/tern-plugin-install.test.ts`, real omp install-boundary regression `tests/tern-install-cli.test.ts` |
-| Native codemode factory/renderer wrapper | `src/codemode-render.ts`; registration from `src/index.ts` |
-| Codemode width/cache/schema and real-CLI parity | `tests/codemode-render.test.ts`, `tests/codemode-cli.test.ts` |
-| Real codemode TUI A/B/C, opt-out, no-warning, legacy exclusion and recovery | `tests/tui-codemode.test.mjs`, `tests/fixtures/codemode-*` |
 | Pure output and terminal-safety tests | `tests/{tool-result,output-safety}.test.ts` |
-| Collapse/expand/list/legacy-safety renderer tests | `tests/render.test.ts` |
 | Real delayed noisy-kill regression | `tests/e2e.test.ts` |
 | Package/runtime compatibility | `package.json`, `package-lock.json`, `.github/workflows/ci.yml` |
 | Public behavior and development guidance | `README.md`, `docs/DEV.md`, `Changelog.md` |
@@ -440,37 +406,6 @@ unchanged current-copy identity and package/lock rollback on owner failure.
 This host-contract regression complements, not replaces, real Tern/UI
 qualification.
 
-Codemode focused gates (all providers are offline fixtures; MCP is local stdio):
-
-```bash
-npx tsx --test tests/codemode-render.test.ts tests/codemode-cli.test.ts
-npm run test:tui
-```
-
-On Pi 0.99.1 at 100×60, native object/settled result text components took 20/21 rows;
-the wrapper takes at most ten including summaries/spacers/footer. Multiline
-output keeps the original 36-more-lines hint when it fits. Actual CLI gates
-compare content after normalizing only the elapsed-time header, plus native
-declarations, mode/budget, default/legacy-exclusion/opt-out/MCP activation, search/model helpers
-and all store entries. TUI gates exercise Ctrl+O expansion and recollapse at
-40/80/100 columns, regular/fullscreen and dark/system/light themes, with no
-generic renderer fallback. Re-run on Pi upgrades; local TUI evidence is Linux,
-not live provider traffic or non-Linux terminal qualification. Pi 0.99.2
-macOS qualification is recorded below; it does not rewrite that release evidence.
-
-The local Pi 0.99.2 migration updates exact development pins while retaining
-`>=0.99.1` peers. Renderer tests accept native previews already within the cap,
-verify whole-result clipping for many summaries, and exercise native Container
-cache reuse. Tmux tests measure the isolated server with extended keys enabled
-to exclude host startup warnings. Runtime execution and rendering logic are
-unchanged. This is an unpublished checkout change, not an installed update.
-
-Local 0.12.1 release gate: `EXPECT_PTY=1 npm test` passes strict types and
-342 tests, with three Windows-only skips. `npm run test:tui` passes all 21
-cases. The eight codemode CLI cases and all TUI cases also pass with
-`PI_UNIFIED_EXEC_TEST_CLI` pointing at the installed 0.99.1 bundled CLI.
-`npm audit --omit=dev` reports zero vulnerabilities and `npm pack --dry-run`
-includes the new renderer module. No live provider traffic was used.
 
 The focused process regression:
 
@@ -478,37 +413,25 @@ The focused process regression:
 2. emits 4000 long lines and then remains alive;
 3. waits until the final line reaches the log;
 4. calls `kill_session`;
-5. asserts `details.output` is at most Pi's byte cap and no taller than the
+5. asserts `details.output` is at most the byte cap and no taller than the
    terminal, shows line 4000, carries no `final_output`, and that the log holds
    every line from 1 through 4000 (counted by content, since ConPTY prefixes
    the first lines with its own control sequences).
 
-Pure and renderer tests additionally exercise CSI/SGR mode changes, OSC
-clipboard/title writes, terminal strings, C0/C1 controls, unterminated
-sequences, legacy raw details, collapse, expand, re-collapse, expand-hint
-placement, partial-preview cache refresh, unknown-id errors, and a seven-entry
-session inventory with width-keyed row caching.
-
-Manual TUI smoke procedure:
-
-```text
-exec_command: delayed noisy command that sleeps after output
-kill_session: terminate its returned session id
-observe: five visual tail lines + expansion hint + kill/log status
-app.tools.expand: full bounded result
-app.tools.expand again: five-line tail restored
-```
+Pure output tests additionally exercise CSI/SGR mode changes, OSC
+clipboard/title writes, terminal strings, C0/C1 controls and unterminated
+sequences. Omp presentation tests cover persisted legacy details, partial
+results, failures, bounded output and recovery markers. Exercise collapse
+and expansion through omp's own binding in the real ANSI TUI and Tern.
 
 ## Consumers
 
-- Pi model turns using `exec_command`, `write_stdin`, `kill_session`, or
-  `list_sessions`.
-- Humans reviewing streaming and settled tool rows in Pi's TUI, and in omp's
-  ANSI TUI and Tern frontend; exact PTY logs must be opened through a
-  non-executing reader/escape visualizer, not `cat`.
-- Humans glancing at live session screens in the Tern terminal HUD on omp.
-- Persisted Pi session entries containing tool result details.
-- Pi codemode scripts calling these tools through `ctx.executeTool()`.
+- omp model turns using the unified-exec tools.
+- Humans reviewing streaming and settled tool rows in omp's ANSI TUI and Tern
+  frontend; exact PTY logs must be opened through a non-executing reader/escape
+  visualizer, not `cat`.
+- Humans glancing at live session screens in the Tern terminal HUD.
+- Persisted session entries containing tool result details.
 - Private path-based adoption in `piagent-config`, whose lifecycle owner links
   this public initiative.
 
@@ -531,15 +454,6 @@ cleanup. A separate initiative should decide and test:
 Likely implementation location: a new `src/output-archive.ts` owned by
 `ExecSession`.
 
-### Renderer ticker ownership
-
-The one-second elapsed/remaining ticker is cleared on a final result, but Pi's
-component API has no universal disposal callback if an in-flight transcript is
-dropped. Follow-up options are an extension-owned timer registry cleared on
-`session_shutdown`, an upstream disposal contract, or accepting lower countdown
-resolution without a dedicated ticker. Timers should at minimum be unreferenced
-if this becomes observable as a host-liveness problem.
-
 ### Existing lifecycle work
 
 Wake TTL/human disarm UX and Windows Job Object ownership remain in their
@@ -548,7 +462,7 @@ existing backlogs; they do not weaken this output contract.
 ## Non-goals
 
 - No async full-log viewer in a tool row.
-- No child ANSI styling in result text or Pi/omp tool rows; the raw log is the
+- No child ANSI styling in result text or omp tool rows; the raw log is the
   complete-stream recovery surface. The Tern HUD and explicit terminal images
   show colours re-encoded from emulator cells, never the child's bytes.
 - No input from the Tern HUD to sessions beyond the terminal page's typed keys
@@ -563,6 +477,6 @@ existing backlogs; they do not weaken this output contract.
 
 Before replacing this contract, prove the successor keeps model-visible output
 bounded independently of rendering, keeps terminal state inert, preserves
-complete/degraded recovery truthfully, honors Pi's configured expansion state,
+complete/degraded recovery truthfully, honors omp's configured expansion state,
 and retains failed-process ownership. Remove this IV only after its tests and
 consumers move with that replacement.

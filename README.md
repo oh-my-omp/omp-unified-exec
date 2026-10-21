@@ -38,11 +38,13 @@ omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
 The Tern update finishes before this command succeeds; no separate Tern
 command or developer link is needed.
 
-The package still loads on Pi unchanged (Pi's renderers, no HUD). Every session
-runs in a PTY: Bun's native `Bun.Terminal` under Bun 1.4+ (omp is a compiled Bun
-executable), and the optional `@homebridge/node-pty-prebuilt-multiarch` under
-Node. Without either, `exec_command` fails at call time with the load reason and
-session start shows a warning; the host's `bash` keeps working.
+This plugin supports only omp. Pi and other non-omp hosts fail immediately at
+the extension factory with an explicit “only supports omp” error, before any
+tools register. Every session runs in a PTY: Bun's native `Bun.Terminal` under
+Bun 1.4+ (omp is a compiled Bun executable), and the optional
+`@homebridge/node-pty-prebuilt-multiarch` in Node runtime tests. Without a PTY
+backend, `exec_command` fails at call time with the load reason and session
+start shows a warning; the host's `bash` keeps working.
 
 ## What it does
 
@@ -200,8 +202,8 @@ size; the raw stream goes only to `log_path`.
   text; Tern's terminal page and explicit `read term://…/screen.png` show them.
 - **Terminal queries are answered** on the child's input: cursor position and
   device attributes, and the default foreground/background colours (OSC 10/11).
-  On omp the colours follow omp's theme (light or dark, which in Tern follows
-  Tern's appearance); on Pi they are dark.
+  The colours follow omp's theme (light or dark, which in Tern follows
+  Tern's appearance).
 - History between calls is bounded by a cell budget (`TERMINAL_HISTORY_CELLS`
   divided by `cols` rows). Lines scrolled past it before a call reports them
   set `history_may_be_truncated: true`; they are only in the log.
@@ -419,30 +421,6 @@ action as a bash comment (`# poll session N`, `# stdin → session N: "…"`,
 use omp's default card. If omp's bash renderer is missing or reshaped, plugin loading
 fails rather than showing raw envelopes.
 
-**On Pi,** the five original tools have their own renderers, providing command banners,
-five-visual-line output tails expanded with `app.tools.expand`, live elapsed
-counters, `⟳ poll` / `» input` banners and kill/list summaries. While a process
-is alive the footer shows `unified-exec: N sessions running`.
-
-Model-visible content and persisted details are the same on both hosts.
-
-## Codemode scripts (Pi)
-
-Every tool declares an `outputSchema` and returns matching
-`structuredContent`, so Pi codemode scripts receive an object:
-
-```js
-const r = await tools.exec_command({ cmd: "npm test", yield_time_ms: 30000 });
-if (r.running) text(`still running as session ${r.session_id}`);
-else text(`exit ${r.exit_code}`);
-text(r.output); // print the output, not the whole object
-```
-
-Shapes are in `src/script-result.ts`. On Pi the package also caps collapsed
-codemode results at ten visual rows (all nested tools, display only);
-`PI_UNIFIED_EXEC_COMPACT_CODEMODE=0` opts out. omp has no codemode, so this is
-off there.
-
 ## Constants
 
 ```
@@ -578,9 +556,7 @@ src/
 ├── output-safety.ts      # terminal-control stripping
 ├── terminal-screen.ts    # headless terminal: observations, styled screens, query answers
 ├── tool-result.ts        # bounded envelopes + model-visible text
-├── script-result.ts      # codemode outputSchema / structuredContent
-├── render.ts             # Pi renderers for all five tools
-├── codemode-render.ts    # Pi codemode preview cap
+├── script-result.ts      # tool outputSchema / structuredContent
 └── unescape.ts           # C-style escape decoder for `chars`
 fork-features/
 ├── omp-presentation.ts   # omp host detection, bash-renderer delegation, theme appearance
@@ -597,7 +573,7 @@ docs/
 ├── IV-0001-long-wait-and-wake-control.md
 ├── IV-0002-output-lifecycle-and-rendering.md
 ├── DC-0001-agentic-workspace.md
-└── DEV.md                # upstream's maintainer guide
+└── DEV.md                # maintainer guide
 ```
 
 ## Tests
@@ -606,7 +582,6 @@ docs/
 npm install
 npm test                                   # strict typecheck + unit/integration suites
 EXPECT_PTY=1 bun test ./tests/tern-terminal-hud.test.ts ./tests/omp-presentation.test.ts
-npm run test:tui                           # Pi tmux acceptance (skips without tmux)
 ```
 
 Under Node the Node PTY suites skip when no prebuild loads; the Bun command runs
@@ -616,9 +591,8 @@ in a real Tern window, as described in
 
 ## Development and upstream
 
-[docs/DEV.md](docs/DEV.md) is upstream's maintainer guide (dev loop, test
-recipes, codex sources); its npm release section does not apply here, since
-the fork's publish workflow is disabled. Upstream changes arrive through the
+[docs/DEV.md](docs/DEV.md) covers the dev loop, test recipes and codex sources.
+The fork's publish workflow is disabled. Upstream changes arrive through the
 daily `Sync upstream` workflow; how fork changes are kept apart from upstream
 and resolved on sync is in [fork-features/README.md](fork-features/README.md).
 

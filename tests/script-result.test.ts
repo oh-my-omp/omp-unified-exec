@@ -2,22 +2,16 @@ import type { FinalScreenOutput } from "../src/collect.ts";
 
 
 /**
- * Codemode script-facing results: every tool declares an `outputSchema` and
- * returns a matching `structuredContent`, so codemode scripts receive
- * `output` as a real multi-line string instead of the whole text envelope.
+ * Structured tool results: every tool declares an `outputSchema` and returns
+ * matching `structuredContent`, with `output` as a real multi-line string.
  */
 
 import { strict as assert } from "node:assert";
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
-import { DEFAULT_MAX_BYTES, initTheme } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
 
-import extensionFactory from "../src/index.ts";
+import { activate } from "../src/index.ts";
 import {
 	killNotFoundScriptResult,
 	killScriptResult,
@@ -69,7 +63,7 @@ function makeHarness() {
 		ui: { notify() {}, setStatus() {}, setWidget() {}, select: async () => undefined },
 		hasUI: false,
 	};
-	(extensionFactory as any)({
+	const pi = {
 		registerTool: (def: any) => (tools[def.name] = def),
 		on() {},
 		registerCommand() {},
@@ -79,7 +73,10 @@ function makeHarness() {
 		getFlag: () => false,
 		getActiveTools: () => [],
 		setActiveTools() {},
-	});
+	};
+	// The fake supplies only the ExtensionAPI surfaces consumed by the tool core.
+	const api = pi as unknown as Parameters<typeof activate>[0];
+	activate(api);
 	return {
 		tools,
 		call: (name: string, params: any) => tools[name].execute("test-call-id", params, undefined, undefined, ctx),
@@ -219,82 +216,3 @@ describe("registered tools return structuredContent", { skip: IS_WINDOWS }, () =
 	});
 });
 
-describe("actual Pi codemode", { skip: IS_WINDOWS }, () => {
-	it("scripts receive an object whose output renders as bounded real lines", async () => {
-		const root = mkdtempSync(join(tmpdir(), "pi-unified-exec-codemode-"));
-		try {
-			const agentDir = join(root, "agent");
-			mkdirSync(agentDir);
-			const script = [
-				'const r = await tools.exec_command({ cmd: "seq 1 40 | sed \'s/^/line of build output number /\'", yield_time_ms: 5000 });',
-				'const decl = await describeTool("exec_command");',
-				'text(JSON.stringify({ type: typeof r, exit_code: r.exit_code, lines: r.output.trimEnd().split("\\n").length, declared: /output: string/.test(JSON.stringify(decl)) }));',
-				"text(r.output);",
-			].join("\n");
-			const provider = join(root, "provider.ts");
-			writeFileSync(
-				provider,
-				`
-import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/compat';
-export default function(pi) {
-  const faux = fauxProvider({ provider: 'exec-codemode' });
-  faux.setResponses([
-    fauxAssistantMessage(fauxToolCall('codemode', { code: ${JSON.stringify(script)} }), { stopReason: 'toolUse' }),
-    fauxAssistantMessage('CODEMODE_OK'),
-  ]);
-  pi.registerProvider(faux.provider);
-}
-`,
-			);
-			const cli =
-				process.env.PI_UNIFIED_EXEC_TEST_CLI ??
-				fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/cli.js", import.meta.url));
-			const extension = fileURLToPath(new URL("../src/index.ts", import.meta.url));
-			// prettier-ignore
-			const run = spawnSync(process.execPath, [
-				// No --no-extensions: codemode is a built-in extension. HOME and the agent dir are isolated.
-				cli, "--mode", "json", "--no-session", "--no-skills", "--no-prompt-templates", "--no-themes",
-				"-e", provider, "-e", extension, "--tools", "codemode,exec_command", "--provider", "exec-codemode", "--model", "faux-1", "run it",
-			], {
-				cwd: root,
-				env: { ...process.env, HOME: root, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1" },
-				encoding: "utf8",
-				timeout: 30_000,
-				maxBuffer: 8 * 1024 * 1024,
-			});
-			assert.equal(run.error, undefined);
-			assert.equal(run.status, 0, run.stderr);
-			const rows = run.stdout
-				.split("\n")
-				.filter((line) => line.startsWith("{"))
-				.map((line) => JSON.parse(line));
-			const end = rows.find((row) => row.type === "tool_execution_end" && row.toolName === "codemode");
-			assert.ok(end, run.stdout.slice(-8000));
-			assert.equal(end.isError, false, JSON.stringify(end.result).slice(0, 4000));
-			const texts: string[] = end.result.content.filter((c: any) => c.type === "text").map((c: any) => c.text);
-			const summaryText = texts.find((t) => t.startsWith('{"type"'));
-			assert.ok(summaryText, texts.join("\n---\n"));
-			assert.deepEqual(JSON.parse(summaryText), { type: "object", exit_code: 0, lines: 40, declared: true });
-			assert.match(run.stdout, /CODEMODE_OK/);
-
-			// Pi's own codemode renderer, collapsed at width 80: real lines are
-			// bounded by its five-line preview (22 rows before this change).
-			const { codemodeRenderers } = await import(
-				"../node_modules/@earendil-works/pi-coding-agent/dist/extensions/codemode/renderer.js"
-			);
-			initTheme("dark", false);
-			const theme = { fg: (_: string, t: string) => t, bg: (_: string, t: string) => t, bold: (t: string) => t };
-			const renderResult = codemodeRenderers.renderResult as (...args: unknown[]) => { render(width: number): string[] };
-			const component = renderResult(
-				{ ...end.result, details: undefined },
-				{ expanded: false, isPartial: false },
-				theme,
-				{ isError: false, showImages: false },
-			);
-			const rendered: string[] = component.render(80);
-			assert.ok(rendered.length <= 8, `collapsed codemode rows: ${rendered.length}\n${rendered.join("\n")}`);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-});

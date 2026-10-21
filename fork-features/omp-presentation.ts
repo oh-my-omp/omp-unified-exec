@@ -1,21 +1,14 @@
 /**
  * oh-my-pi (omp) presentation for the unified-exec tools.
  *
- * omp calls extension renderers as `renderCall(args, options, theme)` and
- * `renderResult(result, options, theme, args)`, and its Tern (TSP) frontend
- * reads `describeCall` / `describeResult` instead. The Pi renderers in
- * `src/render.ts` take a Pi render context in those positions and throw on omp,
- * which falls back to the generic card that dumps the model envelope.
- *
- * On omp, exec_command / write_stdin / kill_session delegate to omp's own bash
- * renderer through display-only adapters; every other tool drops its Pi
- * renderers and gets omp's default card. Model-visible results are untouched.
- * omp hosts also get the Tern terminal HUD (tern-terminal-hud.ts).
+ * exec_command / write_stdin / kill_session delegate to omp's own bash
+ * renderer through display-only adapters; every other tool uses omp's default
+ * card. Model-visible results are untouched. The factory rejects non-omp hosts
+ * before activation and initializes the Tern terminal HUD on omp.
  */
 import type { ExtensionAPI, ToolDefinition, TruncationResult } from "@earendil-works/pi-coding-agent";
 
 import { sanitizeOutputText } from "../src/output-safety.ts";
-import { base64ByteLength, stringifyChars } from "../src/render.ts";
 import type { SessionStore } from "../src/session-store.ts";
 import type { TerminalAppearance } from "../src/terminal-screen.ts";
 import { truncationMarker } from "../src/tool-result.ts";
@@ -284,6 +277,24 @@ export function toShellResult(view: ResultView): ShellResult {
 
 // ---------------- argument model ----------------
 
+function base64ByteLength(b64: string): number {
+	const compact = b64.replace(/\s+/g, "");
+	const padding = compact.endsWith("==") ? 2 : compact.endsWith("=") ? 1 : 0;
+	return Math.max(0, Math.floor((compact.length * 3) / 4) - padding);
+}
+
+function stringifyChars(chars: string): string {
+	const escaped = chars
+		.replace(/\x03/g, "^C")
+		.replace(/\x04/g, "^D")
+		.replace(/\x1b/g, "^[")
+		.replace(/\n/g, "\\n")
+		.replace(/\r/g, "\\r")
+		.replace(/\t/g, "\\t");
+	const safe = sanitizeOutputText(escaped);
+	return safe.length > 40 ? `${safe.slice(0, 37)}…` : safe;
+}
+
 /** Pure: streamed exec_command args → bash command line. */
 export function execShellArgs(args: StreamedArgs<"cmd" | "workdir">): ShellArgs {
 	return {
@@ -344,13 +355,11 @@ function isShellPresented(name: string): name is ShellPresentedTool {
 }
 
 /**
- * omp's registration API: Pi renderers stripped (omp cannot call them), bash
- * delegation attached for the shell-presented tools. The bash renderer is
- * required; a missing or reshaped one fails plugin loading rather than silently
- * re-registering renderers omp cannot call.
+ * omp's registration API: bash delegation attached for the shell-presented tools.
+ * The bash renderer is required; a missing or reshaped one fails plugin loading.
  */
 async function presentOnOmp(pi: ExtensionAPI): Promise<ExtensionAPI> {
-	// Dynamic: this module exists only inside omp, so a static import would break Pi hosts.
+	// Dynamic: omp supplies this module at extension load time.
 	const { toolRenderers } = await import("@oh-my-pi/pi-tui/tools");
 	const bash = parseShellRenderer(toolRenderers.bash);
 	const hooks: Record<ShellPresentedTool, OmpToolHooks<string>> = {
@@ -359,8 +368,7 @@ async function presentOnOmp(pi: ExtensionAPI): Promise<ExtensionAPI> {
 		kill_session: delegateToShell(bash, killShellArgs),
 	};
 	const registerTool: ExtensionAPI["registerTool"] = (definition) => {
-		const { renderCall: _piCall, renderResult: _piResult, ...rest } = definition;
-		const presented = isShellPresented(definition.name) ? { ...rest, ...hooks[definition.name] } : rest;
+		const presented = isShellPresented(definition.name) ? { ...definition, ...hooks[definition.name] } : definition;
 		// omp's registerTool takes its own render signatures; Pi's ToolDefinition type cannot express them.
 		pi.registerTool(presented as unknown as ToolDefinition);
 	};
@@ -379,7 +387,7 @@ export interface ActivatedExtension {
  * In Tern omp follows Tern's appearance, the surface the HUD shows screens on.
  */
 async function loadOmpAppearance(): Promise<() => TerminalAppearance> {
-	// Dynamic: this module exists only inside omp, so a static import would break Pi hosts.
+	// Dynamic: omp supplies this module at extension load time.
 	const themeModule: unknown = await import("@oh-my-pi/pi-tui/theme");
 	if (
 		typeof themeModule !== "object" ||
@@ -397,9 +405,8 @@ async function loadOmpAppearance(): Promise<() => TerminalAppearance> {
 }
 
 /**
- * Wraps the extension factory per host. Pi hosts activate synchronously with
- * `pi` unchanged. omp is identified by its injected `arktype` builder and
- * activates through {@link presentOnOmp} with omp's theme appearance
+ * Admit only omp, identified by its injected `arktype` builder, and activate
+ * through {@link presentOnOmp} with omp's theme appearance
  * (sessions answer it to OSC 10/11). The awaited factory initializes Tern's
  * normal plugin copy before registering tools/HUD; omp also awaits this
  * factory during package install/force-reinstall validation.
@@ -409,8 +416,7 @@ export function withHostPresentation(
 ): (host: ExtensionAPI) => void | Promise<void> {
 	return (host) => {
 		if (!("arktype" in host)) {
-			activate(host);
-			return;
+			throw new Error("omp-unified-exec only supports omp (oh-my-pi); the current host is not omp (missing arktype).");
 		}
 		// The omp modules load before activating, so a reshaped omp fails plugin loading with nothing registered.
 		return Promise.all([presentOnOmp(host), loadNativeRenderingState(), loadOmpAppearance()]).then(async ([pi, native, appearance]) => {

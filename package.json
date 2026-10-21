@@ -1,10 +1,10 @@
 {
 	"name": "omp-unified-exec",
 	"version": "0.14.7",
-	"description": "Codex-style unified_exec for pi: long-lived shell sessions the LLM polls and drives with write_stdin (Ctrl-C, arrow keys, PTY, REPLs, ssh, dev servers). Full output logged to disk.",
+	"description": "Codex-style unified_exec for omp: long-lived shell sessions the LLM polls and drives with write_stdin (Ctrl-C, arrow keys, PTY, REPLs, ssh, dev servers). Full output logged to disk.",
 	"keywords": [
-		"pi-package",
-		"pi-extension",
+		"omp",
+		"omp-extension",
 		"codex",
 		"unified-exec",
 		"bash",
@@ -20,8 +20,7 @@
 	"type": "module",
 	"scripts": {
 		"check": "tsc --noEmit",
-		"test": "npm run check && tsx --test tests/*.test.ts",
-		"test:tui": "node --test tests/tui-*.test.mjs"
+		"test": "npm run check && tsx --test tests/*.test.ts"
 	},
 	"engines": {
 		"node": ">=22.19.0"
@@ -33,7 +32,7 @@
 		"README.md",
 		"LICENSE"
 	],
-	"pi": {
+	"omp": {
 		"extensions": [
 			"./src/index.ts"
 		]

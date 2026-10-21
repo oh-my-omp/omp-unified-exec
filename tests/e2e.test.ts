@@ -12,11 +12,9 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
-import extensionFactory, { MAX_EMPTY_POLL_ENV_VAR, resolveMaxEmptyPollMs } from "../src/index.ts";
+import { activate, MAX_EMPTY_POLL_ENV_VAR, resolveMaxEmptyPollMs } from "../src/index.ts";
 import { IS_WINDOWS } from "../src/shell.ts";
 
-// Process-tool harness: the fake API has no codemode surfaces (see codemode-render tests).
-process.env.PI_UNIFIED_EXEC_COMPACT_CODEMODE = "0";
 
 interface ToolDef {
 	name: string;
@@ -79,8 +77,10 @@ function makeHarness() {
 		setActiveTools: () => {},
 	};
 
-	// run the factory synchronously
-	(extensionFactory as any)(pi);
+	// Activate the tool core directly; factory admission is covered separately.
+	// The fake supplies only the ExtensionAPI surfaces consumed by the tool core.
+	const api = pi as unknown as Parameters<typeof activate>[0];
+	activate(api);
 
 	return {
 		async call(toolName: string, params: any, signal?: AbortSignal, onUpdate?: (partial: any) => void) {
@@ -133,11 +133,11 @@ describe("unified-exec e2e", () => {
 		assert.match(h.tools.write_stdin.promptGuidelines!.join("\n"), /yield_until ONLY when the human explicitly asks/);
 	});
 
-	it("registers explicit call/result renderers for every unified-exec tool", () => {
+	it("leaves presentation hooks to the omp factory rather than the tool core", () => {
 		const h = makeHarness();
-		for (const name of ["exec_command", "write_stdin", "set_on_exit", "kill_session", "list_sessions"]) {
-			assert.equal(typeof h.tools[name]?.renderCall, "function", `${name} renderCall missing`);
-			assert.equal(typeof h.tools[name]?.renderResult, "function", `${name} renderResult missing`);
+		for (const name of ["exec_command", "write_stdin", "set_on_exit", "monitor", "kill_session", "list_sessions"]) {
+			assert.equal(h.tools[name]?.renderCall, undefined, `${name} has a core renderCall`);
+			assert.equal(h.tools[name]?.renderResult, undefined, `${name} has a core renderResult`);
 		}
 	});
 

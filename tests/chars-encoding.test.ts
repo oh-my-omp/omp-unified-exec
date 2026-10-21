@@ -19,10 +19,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import extensionFactory from "../src/index.ts";
+import { activate } from "../src/index.ts";
 
-// Process-tool harness: the fake API has no codemode surfaces (see codemode-render tests).
-process.env.PI_UNIFIED_EXEC_COMPACT_CODEMODE = "0";
 
 interface ToolDef {
 	name: string;
@@ -61,7 +59,9 @@ function makeHarness() {
 		getActiveTools: () => ["bash"],
 		setActiveTools: () => {},
 	};
-	(extensionFactory as any)(pi);
+	// The fake supplies only the ExtensionAPI surfaces consumed by the tool core.
+	const api = pi as unknown as Parameters<typeof activate>[0];
+	activate(api);
 	return {
 		async call(toolName: string, params: any, signal?: AbortSignal) {
 			const def = tools[toolName];
