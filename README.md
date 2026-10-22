@@ -10,6 +10,15 @@ each in a PTY session the model drives with input, reads and monitors instead of
 single blocking call. Sessions keep running between turns, with no command
 deadline, and a human can watch and type into them from Tern.
 
+[![omp-unified-exec demo in Tern](docs/assets/demo.gif)](docs/assets/demo.mp4)
+
+The agent starts `python3 -q` with `exec_command` and runs `x = 21` through
+`write_stdin`. The human opens that session from the terminals segment of
+omp's pill and types `y = x * 2` on its terminal page; the agent then prints
+`y` in the same session and gets 42. Kill in the Terminals view ends the
+session. Recorded in Tern with omp 18.12.6; model turns play at 3× speed.
+Full-resolution video: [docs/assets/demo.mp4](docs/assets/demo.mp4).
+
 This is a fork of [iamwrm/pi-unified-exec](https://github.com/iamwrm/pi-unified-exec),
 a Pi port of codex's `unified_exec`. The original tools (`exec_command`,
 `write_stdin`, `set_on_exit`, `kill_session`, `list_sessions`) retain their
@@ -625,7 +634,8 @@ docs/
 ├── IV-0001-long-wait-and-wake-control.md
 ├── IV-0002-output-lifecycle-and-rendering.md
 ├── DC-0001-agentic-workspace.md
-└── DEV.md                # maintainer guide
+├── DEV.md                # maintainer guide
+└── assets/               # README demo (demo.gif, demo.mp4)
 ```
 
 ## Tests
