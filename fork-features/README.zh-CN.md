@@ -11,7 +11,7 @@
 | 改动 | 文件 | 原因 | 上游 |
 |---|---|---|---|
 | 包名 `omp-unified-exec` | `package.json`（`name`、`repository`、`homepage`） | omp 以包名命名插件 | 仅 fork |
-| 为 fork 重写的中英文 README：Tern 录屏演示、omp 安装、Tern 终端 HUD、omp 呈现、fork 结构；移除上游的 npm、徽章和维护公告 | `README.md`、`README.zh-CN.md`、`docs/assets/demo.gif`、`docs/assets/demo.mp4` | fork 的行为和安装方式已经偏离上游 README（npm 包、仅 Pi 的呈现），继续沿用会误导 omp 用户 | 仅 fork |
+| 为 fork 重写的中英文 README：Tern 录屏演示、omp 安装、Tern 终端 HUD、omp 呈现、fork 结构；移除上游的 npm、徽章和维护公告 | `README.md`、`README.zh-CN.md`、`docs/assets/demo.{gif,mp4}`、`docs/assets/demo-lazygit.{gif,mp4}` | fork 的行为和安装方式已经偏离上游 README（npm 包、仅 Pi 的呈现），继续沿用会误导 omp 用户 | 仅 fork |
 | 只支持 omp：非 omp 宿主在扩展 factory 阶段、激活之前被拒绝 | `fork-features/omp-presentation.ts`、`src/index.ts`、`tests/omp-presentation.test.ts`；`package.json` 的 `omp.extensions` | `ExtensionAPI.arktype` 用于识别 omp。具名导出 `activate` 是直接测试工具核心的接缝，不是另一个受支持的宿主入口。 | 仅 fork |
 | 仅 Bun 的原生 PTY 后端与测试运行器 | `src/pty.ts`、`fork-features/omp-presentation.ts`、`tests/pty-load.test.ts`、`tests/bun-pty-runtime.mjs`、`package.json`、`.github/workflows/ci.yml` | omp 是编译后的 Bun 可执行文件。每个会话都使用 `Bun.Terminal`（Bun 1.4+），在 Linux/macOS 上提供 `openpty`，在 Windows 上提供 ConPTY。factory 在加载 omp 模块或激活前要求 `Bun.spawn` 和 `Bun.Terminal`；Bun 原生测试运行器在三平台运行完整套件，并运行源码/编译版 runtime fixture。 | 仅 fork |
 | omp 呈现：exec_command、write_stdin 和 kill_session 通过 omp 的 bash 渲染器渲染；其他工具使用 omp 的默认卡片 | `fork-features/omp-presentation.ts`、`fork-features/omp-tools.d.ts`、`tests/omp-presentation.test.ts`；`src/index.ts` 中的 `withHostPresentation`；`package.json` `files` 和 `tsconfig.json` 中的 `fork-features` | omp 负责 `renderCall`/`renderResult` 和 Tern 的 `describeCall`/`describeResult`。仅用于显示的适配器和输入预览辅助函数都位于 `omp-presentation.ts`；bash 渲染器来自 `@oh-my-pi/pi-tui/tools` 的 `toolRenderers.bash`，缺少这项契约时让插件加载失败。 | 仅 fork |

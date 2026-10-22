@@ -268,11 +268,13 @@ exec/write/kill cards, and Tern terminal interactions; required host modules
 must fail loading rather than silently degrade. Record observed qualification
 in `Changelog.md` with environment and evidence.
 
-## Re-recording the README demo
+## Re-recording the README demos
 
-`docs/assets/demo.mp4` and `demo.gif` are real omp turns in a headless Tern
-session, filmed by Tern's own `record` scenario command. Re-record them when
-the HUD, the Terminals view or omp's tool cards change visibly.
+`docs/assets/demo.*` (Python REPL, Gemini 4 Argon) and
+`docs/assets/demo-lazygit.*` (lazygit, GPT-6.1 Sol) are real omp turns in a
+headless Tern session, filmed by Tern's own `record` scenario command.
+Re-record them when the HUD, the Terminals view or omp's tool cards change
+visibly.
 
 1. Start an isolated headless Tern with the owner's settings:
    `TERN_CONFIG_DIR=$D/config TERN_DAEMON_SOCKET=$D/daemon.sock tern serve
@@ -280,24 +282,32 @@ the HUD, the Terminals view or omp's tool cards change visibly.
    `settings.json` copied into `$D/config`. omp's native rendering and the
    HUD need no Tern plugin, so `serve` shows them.
 2. Drive it with `tern ctl --control $D/control.sock …`: `size 1120 760`, then
-   `run "TMPDIR=/tmp omp --no-extensions -e $PWD/src/index.ts --no-session
-   --no-title"` so session logs show `/tmp` rather than the per-user temp
-   directory. Send `/new` before `record start NAME fps 30`: it clears
-   omp's startup notices, which can name the signed-in account.
-3. Type prompts one character per `type` with `wait 28` between them, and
-   switch to `record speed 3` while a model turn runs. A turn has ended when
-   the last `… this turn` text in `tern ctl tree` changes. Locate the
-   terminals segment with `tern ctl dump '[data-role^="omp.hud"]'` and
-   `click` its centre; Enter opens the terminal page, Escape goes back, `x`
-   kills the selected session.
-4. `record stop`, then encode from `$D/out/serve/NAME.mp4`:
+   `run "cd DIR; TMPDIR=/tmp omp --no-extensions -e $PWD/src/index.ts
+   --no-session --no-title --model MODEL"` so session logs show `/tmp` rather
+   than the per-user temp directory. `--no-extensions` also drops
+   extension-provided model providers; pick a built-in one such as
+   `openai-codex/gpt-6.1-sol`. Send `/new` before `record start NAME fps 30`:
+   it clears omp's startup notices, which can name the signed-in account.
+   For lazygit, `DIR` is a throwaway repository with a local `Demo` author,
+   and `LG_CONFIG_FILE` points at a config with `disableStartupPopups: true`.
+   Reset that repository by emptying it, not removing it: omp crashes on
+   `process.cwd` when its working directory disappears.
+3. Type prompts one character per `type` with `wait 28` between them (a
+   prompt cannot contain `"`, which ends the scenario string), and switch to
+   `record speed 3` while a model turn runs. A turn has ended when the last
+   `… this turn` text in `tern ctl tree` changes. Locate the terminals segment
+   with `tern ctl dump '[data-role^="omp.hud"]'` and `click` its centre;
+   Enter opens the terminal page, where typed keys reach the session, Escape
+   goes back, and `x` in the view kills the selected session.
+4. `record stop`, then encode `$D/out/serve/NAME.mp4` into
+   `docs/assets/OUT.mp4` and `OUT.gif` (`OUT` is `demo` or `demo-lazygit`):
 
 ```bash
 ffmpeg -i NAME.mp4 -vf "scale=1680:-2:flags=lanczos,fps=30" -c:v libx264 \
-  -preset slow -crf 24 -pix_fmt yuv420p -movflags +faststart -an docs/assets/demo.mp4
+  -preset slow -crf 24 -pix_fmt yuv420p -movflags +faststart -an docs/assets/OUT.mp4
 ffmpeg -i NAME.mp4 -vf "fps=12,scale=960:-1:flags=lanczos,palettegen=max_colors=128:stats_mode=diff" palette.png
 ffmpeg -i NAME.mp4 -i palette.png -lavfi \
-  "fps=12,scale=960:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=none:diff_mode=rectangle" docs/assets/demo.gif
+  "fps=12,scale=960:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=none:diff_mode=rectangle" docs/assets/OUT.gif
 ```
 
 Check every frame for account names, home-directory paths and tokens before

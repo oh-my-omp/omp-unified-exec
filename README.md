@@ -16,8 +16,20 @@ The agent starts `python3 -q` with `exec_command` and runs `x = 21` through
 `write_stdin`. The human opens that session from the terminals segment of
 omp's pill and types `y = x * 2` on its terminal page; the agent then prints
 `y` in the same session and gets 42. Kill in the Terminals view ends the
-session. Recorded in Tern with omp 18.12.6; model turns play at 3× speed.
-Full-resolution video: [docs/assets/demo.mp4](docs/assets/demo.mp4).
+session. Recorded in Tern with omp 18.12.6 and Gemini 4 Argon; model turns
+play at 3× speed. Full-resolution video:
+[docs/assets/demo.mp4](docs/assets/demo.mp4).
+
+[![lazygit driven by omp in Tern](docs/assets/demo-lazygit.gif)](docs/assets/demo-lazygit.mp4)
+
+A full-screen TUI works the same way. With GPT-6.1 Sol, the agent opens
+lazygit through `exec_command` and drives it with `write_stdin` alone: it
+stages only `src/todos.ts` and commits it as `feat: toggle todos`, leaving
+`README.md` unstaged. The human opens the same lazygit on its terminal page,
+in colour, focuses the commits panel with `4` to read the new commit's patch,
+and quits with `q`; the Terminals view then shows the session's `Exit 0`.
+Model turns play at 3× speed. Full-resolution video:
+[docs/assets/demo-lazygit.mp4](docs/assets/demo-lazygit.mp4).
 
 This is a fork of [iamwrm/pi-unified-exec](https://github.com/iamwrm/pi-unified-exec),
 a Pi port of codex's `unified_exec`. The original tools (`exec_command`,
@@ -635,7 +647,7 @@ docs/
 ├── IV-0002-output-lifecycle-and-rendering.md
 ├── DC-0001-agentic-workspace.md
 ├── DEV.md                # maintainer guide
-└── assets/               # README demo (demo.gif, demo.mp4)
+└── assets/               # README demos (demo*.gif, demo*.mp4)
 ```
 
 ## Tests
