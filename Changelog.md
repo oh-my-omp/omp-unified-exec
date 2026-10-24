@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+## 0.14.14 - 2026-10-24
+
 - Rewrite `AGENTS.md` for the fork: it now states what the repository is and where `docs/DEV.md` and `fork-features/README.md` cover setup and fork divergences, and gives the rules every change follows (changelog entries under the first `## Unreleased` with versions left to the `Release` workflow, bilingual README pairs edited together, Conventional Commits with the issue number), the fork-customization rules (fork-only modules in `fork-features/`, recorded in both fork READMEs; deleted upstream paths stay deleted; no compatibility shims) and verification (`npm test`, a real omp run for host-facing changes with `/reload` for a running omp, a real Tern window for HUD changes). The upstream frontier-model list (`gpt-5.5`, `claude-opus-4-7`) is dropped: it named superseded models and nothing in the repository consumes it. Both fork-features READMEs record `AGENTS.md` as fork-owned, with its own customization row and sync-conflict resolution split from the IV/DC document removal.
 
 ## 0.14.13 - 2026-10-24
