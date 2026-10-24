@@ -10,11 +10,11 @@
  * to the subset we need for the pi extension.
  */
 
-import { randomBytes } from "node:crypto";
 import { closeSync, createWriteStream, openSync, type WriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { sessionLogName, trackOpenLog } from "../fork-features/log-archive.ts";
 import { discardLiveTerminal, freezeTerminal, readTerminal, registerTerminal } from "../fork-features/terminal-resource.ts";
 import { buildInputWaitMessage, detectInputPrompt, type InputWaitAlert } from "../fork-features/input-wait.ts";
 import type { MonitorListener, MonitorSourceHandle, MonitorStart } from "../fork-features/monitor-subscription.ts";
@@ -107,7 +107,7 @@ export class ExecSession {
 		this.lastUsedAt = this.startedAt;
 		this.lastOutputAtMs = this.startedAt;
 		this.pid = undefined; // set in `start`
-		this.logPath = join(tmpdir(), `pi-unified-exec-${id}-${randomBytes(4).toString("hex")}.log`);
+		this.logPath = join(tmpdir(), sessionLogName(id));
 	}
 
 	static spawn(id: number, opts: SessionSpawnOptions): ExecSession {
@@ -120,6 +120,7 @@ export class ExecSession {
 		try {
 			closeSync(openSync(self.logPath, "w"));
 			self.logStream = createWriteStream(self.logPath, { flags: "a" });
+			trackOpenLog(self.logPath, self.logStream);
 			self.logStream.on("error", (err) => {
 				// Log-stream error (disk full, permissions, etc.). The child is
 				// still running: record the failure and stop mirroring writes, but

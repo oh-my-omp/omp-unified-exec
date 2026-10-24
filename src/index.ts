@@ -26,8 +26,9 @@
  *   - Sessions are terminated on session_shutdown (codex parity); a process
  *     that exits is never restarted.
  *   - Every byte the child writes goes to a per-session log file at
- *     /tmp/pi-unified-exec-<sid>-<random>.log. The LLM sees the rendered
+ *     <tmpdir>/pi-unified-exec-<pid>-<sid>-<random>.log. The LLM sees the rendered
  *     screen (capped at ~50 KiB / 2000 lines); the raw stream stays in the log.
+ *     Logs untouched for seven days become `<log>.gz` (fork-features/log-archive.ts).
  */
 
 import { constants as osConstants } from "node:os";

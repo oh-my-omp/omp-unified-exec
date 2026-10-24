@@ -14,6 +14,7 @@ import type { SessionStore } from "../src/session-store.ts";
 import type { TerminalAppearance } from "../src/terminal-screen.ts";
 import { truncationMarker } from "../src/tool-result.ts";
 import { type CommandApprovalHost, loadCommandApprovalHost } from "./command-approval.ts";
+import { scheduleLogArchive } from "./log-archive.ts";
 import { loadTernHudHost, mountTerminalHud } from "./tern-terminal-hud.ts";
 import { retireTernPlugin } from "./tern-plugin-removal.ts";
 import { initializeTerminalUrls } from "./terminal-url.ts";
@@ -470,6 +471,7 @@ export function withHostPresentation(
 			await initializeTerminalUrls();
 			const activated = activate(pi, appearance, shellPath, approvalHost, invalidateGithubCache);
 			mountTerminalHud(pi, activated.store, hud, activated.kill);
+			scheduleLogArchive();
 		});
 	};
 }

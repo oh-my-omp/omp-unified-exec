@@ -83,6 +83,7 @@ A sibling view, indexed by concern:
 | `term://` resources, read handler and screenshots | `fork-features/terminal-resource.ts`, `fork-features/terminal-url.ts`, `fork-features/terminal-image.ts` |
 | Monitors: conditions, batching, End/match/reminder delivery | `fork-features/monitor-subscription.ts`; subscriptions owned by `src/completion.ts` (`startMonitor`) |
 | Input-wait alerts: prompt detection, quiet watcher, delivery | `fork-features/input-wait.ts`; `ExecSession.watchInputWait` in `src/session.ts`; `alertInputWait` in `src/completion.ts` |
+| Session log naming, open-log tracking and seven-day gzip compression | `fork-features/log-archive.ts`; `ExecSession.spawn` in `src/session.ts`; scheduled by `withHostPresentation` |
 | Command approval and host session binding | `fork-features/command-approval.ts`, `fork-features/session-binding.ts` |
 | Structured output schemas and projections | `src/script-result.ts` |
 | Tool limits, early-exit grace, session-store limits | top of `src/index.ts` |
@@ -252,10 +253,11 @@ Tern terminal HUD (pill segment, Terminals view, terminal page):
 
 ## Debugging aids
 
-- **Per-session log files** at `pi-unified-exec-<sid>-*.log` in the system
-  temporary directory (`/tmp` or `%TEMP%`) capture the complete raw byte
-  stream the child wrote. Inspect them with a non-executing viewer to
-  diagnose ANSI / control-sequence issues.
+- **Per-session log files** at `pi-unified-exec-<pid>-<sid>-*.log` in the
+  system temporary directory (`/tmp` or `%TEMP%`) capture the complete raw
+  byte stream the child wrote; after seven days with a provably gone writer
+  they become `*.log.gz` (`gzcat` or `zcat <` on macOS). Inspect them with a
+  non-executing viewer to diagnose ANSI / control-sequence issues.
 - **`details.output` vs `content[0].text`**: the LLM reads
   `content[0].text` (structured); the TUI renderer reads
   `details.output` (clean body). If the TUI shows a header like

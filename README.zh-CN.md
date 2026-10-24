@@ -84,7 +84,7 @@ HUD 直接读取会话，不保存任何副本。它只在 omp 原生渲染时�
 session_id: 1                       (mutually exclusive with exit_code)
 exit_code: 0                        (mutually exclusive with session_id)
 signal: SIGTERM                     (optional, if killed)
-log_path: /tmp/pi-unified-exec-1-5cc5e104.log
+log_path: /tmp/pi-unified-exec-41237-1-5cc5e104.log  (omp pid, session id, random)
 terminal_url: term://1-9f2c1a7e-…
 cwd: /home/you/project
 shell: /bin/zsh                     (absolute path of the shell the session started with)
@@ -104,7 +104,7 @@ history_lines: 2                   (running, optional: lines scrolled off above 
 ```
 ...tail of output...
 
-[Showing lines 3900-4120 of 4500 (50.0KB limit). Full output: /tmp/pi-unified-exec-1-5cc5e104.log]
+[Showing lines 3900-4120 of 4500 (50.0KB limit). Full output: /tmp/pi-unified-exec-41237-1-5cc5e104.log]
 ```
 
 #### 命令审批
@@ -203,7 +203,7 @@ Live 读取使用宿主当前外观并画出描边光标；Frozen 读取保留�
 3. `on_exit` 默认 `"none"`。只有人明确希望自动恢复时才用 `"wake"`；`set_on_exit(session_id, on_exit: "none")` 可在不杀进程的情况下取消。
 4. 被带输入工具结果直接观察到的退出会消耗掉唤醒；连接窗口到期或取消则保留唤醒。Monitor End 会把已启用的普通唤醒合并进同一条通知。
 
-连接等待窗口到期永远不会杀掉进程。等待期间的缓存预热由宿主负责，与本包无关。原始日志在磁盘上不设上限。
+连接等待窗口到期永远不会杀掉进程。等待期间的缓存预热由宿主负责，与本包无关。原始日志不设大小上限；七天后的压缩见[语义](#语义)中的**日志**。
 
 #### `chars` 里的控制字节和转义
 
@@ -360,7 +360,7 @@ INPUT_WAIT_QUIET_MS          = 5_000 (output silence before the screen is examin
 - **关闭**时向每个会话发送 SIGTERM，1 秒后对仍存活的发送 SIGKILL。仍处于 150 ms 启动宽限期内的 `exec_command` 不会拿到 `session_id`：它等关闭结束进程后报告这次退出（进程撑过 SIGKILL 等待时报告 `running: true` 与 `exit not confirmed`），因此下一次 `session_start` 之后不会再看到该会话。其余终端已被关闭释放的进行中调用返回空输出，进程状态按实际报告：已退出，或在 SIGKILL 生效前仍在运行。
 - **LRU 淘汰**在达到 64 个会话时进行，淘汰最旧的非保护会话，优先选已退出的；最近使用的 8 个永不淘汰。
 - **观察**按会话串行执行；流式更新、`read term://`、monitor 与 Tern HUD 不消费普通观察。冻结终端资源的生命周期不受会话存储成员关系限制。
-- **日志**放在临时目录（`/tmp` 或 `%TEMP%`），本包从不删除。请用不会执行控制序列的查看器查看原始 PTY 日志，不要用 `cat`。
+- **日志**放在临时目录（`/tmp` 或 `%TEMP%`），文件名为 `pi-unified-exec-<omp pid>-<会话 id>-<随机>.log`。本包从不删除日志内容。最后写入超过七天的日志，在确认写入方已不存在后，会被替换为标准 gzip 文件 `<log_path>.gz`，修改时间保持不变；写入方不存在指：本进程已关闭它，文件名中的 omp pid 已不存在，或它最后写入于本次开机之前（不带 pid 的旧文件名只按最后一条判断）。omp 在扩展加载时检查一次，之后每天检查一次。在 Linux 上用 `zcat <文件>` 查看归档；在 macOS 上用 `gzcat <文件>` 或 `zcat < <文件>`，因为 macOS 的 `zcat` 接收路径参数时会去找 `<文件>.Z`。请用不会执行控制序列的查看器查看原始 PTY 日志，不要用 `cat`。
 
 ## 示例
 
@@ -455,6 +455,7 @@ fork-features/
 ├── terminal-image.ts     # terminal screenshots (SVG → PNG)
 ├── monitor-subscription.ts # monitor conditions, batching, reminders and follow-ups
 ├── input-wait.ts         # input prompt detection and input-wait alerts
+├── log-archive.ts        # seven-day gzip compression of session logs
 ├── tern-plugin-removal.ts# removes the Tern plugin earlier versions installed
 └── README.md             # fork customizations and requalification
 docs/

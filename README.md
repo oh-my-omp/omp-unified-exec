@@ -182,7 +182,7 @@ Response body (running, short output, no truncation):
 session_id: 1                       (mutually exclusive with exit_code)
 exit_code: 0                        (mutually exclusive with session_id)
 signal: SIGTERM                     (optional, if killed)
-log_path: /tmp/pi-unified-exec-1-5cc5e104.log
+log_path: /tmp/pi-unified-exec-41237-1-5cc5e104.log  (omp pid, session id, random)
 terminal_url: term://1-9f2c1a7e-…
 cwd: /home/you/project
 shell: /bin/zsh                     (absolute path of the shell the session started with)
@@ -202,7 +202,7 @@ When output exceeds the caps (50 KiB / 2000 lines), a footer is appended:
 ```
 ...tail of output...
 
-[Showing lines 3900-4120 of 4500 (50.0KB limit). Full output: /tmp/pi-unified-exec-1-5cc5e104.log]
+[Showing lines 3900-4120 of 4500 (50.0KB limit). Full output: /tmp/pi-unified-exec-41237-1-5cc5e104.log]
 ```
 
 #### Command approval
@@ -353,7 +353,8 @@ and `monitor`.
    End merges an already-armed wake into the same notification.
 
 The attachment window never kills a process. Cache warming during waits is the
-host's business, not this package's. Raw logs are unbounded on disk.
+host's business, not this package's. Raw logs have no size cap; see **Logs**
+under [Semantics](#semantics) for their seven-day compression.
 
 #### Control bytes and escapes in `chars`
 
@@ -586,9 +587,16 @@ INPUT_WAIT_QUIET_MS          = 5_000 (output silence before the screen is examin
 - **Observations** are serialized per session; streaming updates, `read term://`,
   monitor and the Tern HUD never consume ordinary observations. Frozen terminal
   resources outlive session-store membership.
-- **Logs** live in the temp directory (`/tmp` or `%TEMP%`) and are never
-  deleted by the package. Inspect raw PTY logs with a non-executing viewer, not
-  `cat`.
+- **Logs** live in the temp directory (`/tmp` or `%TEMP%`) as
+  `pi-unified-exec-<omp pid>-<session id>-<random>.log`. The package never
+  deletes their content. A log last written more than seven days ago is
+  replaced by a standard gzip `<log_path>.gz` with the same modification time,
+  once its writer is provably gone: this process closed it, the omp pid in its
+  name no longer exists, or it was last written before the last boot (the only
+  test for older names without a pid). omp checks when the extension loads and
+  daily after that. Read an archive with `zcat <file>` on Linux, or
+  `gzcat <file>` / `zcat < <file>` on macOS, whose `zcat` given a path looks
+  for `<file>.Z`. Inspect raw PTY logs with a non-executing viewer, not `cat`.
 
 ## Worked examples
 
@@ -694,6 +702,7 @@ fork-features/
 ├── terminal-image.ts     # terminal screenshots (SVG → PNG)
 ├── monitor-subscription.ts # monitor conditions, batching, reminders and follow-ups
 ├── input-wait.ts         # input prompt detection and input-wait alerts
+├── log-archive.ts        # seven-day gzip compression of session logs
 ├── tern-plugin-removal.ts# removes the Tern plugin earlier versions installed
 └── README.md             # fork customizations and requalification
 docs/
