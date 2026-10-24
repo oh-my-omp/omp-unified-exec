@@ -56,7 +56,11 @@ export interface SpawnedChild {
 	onData(handler: (chunk: Uint8Array) => void): () => void;
 	/** Subscribe to the child's exit event. Fires at most once. */
 	onExit(handler: ExitCallback): void;
-	/** Send a signal to the process group; silently no-ops if already dead. */
+	/**
+	 * Send a signal to the process group. Keeps reaching the group after the
+	 * shell exits while a member still holds the terminal; no-ops once the
+	 * session has finalized.
+	 */
 	kill(signal?: NodeJS.Signals): void;
 }
 
@@ -346,12 +350,23 @@ export function spawnBunPty(runtime: BunRuntime, opts: SpawnOptions): SpawnedChi
 			exitHandlers.add(handler);
 		},
 		kill(signal = "SIGTERM") {
-			if (processExited) return;
+			if (finalized) return;
 			if (IS_WINDOWS) {
-				killWindowsTree(child.pid);
+				// taskkill /T cannot walk a tree whose root has exited.
+				if (!processExited) killWindowsTree(child.pid);
 				return;
 			}
-			killPosixProcessGroup(child.pid, signal);
+			if (!processExited) {
+				killPosixProcessGroup(child.pid, signal);
+				return;
+			}
+			// The shell is reaped but a group member still holds the terminal. The
+			// group id stays reserved while any member lives; the bare pid does not.
+			try {
+				process.kill(-child.pid, signal);
+			} catch {
+				// the group is gone
+			}
 		},
 	};
 }

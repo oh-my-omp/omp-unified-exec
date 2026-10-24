@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+- `kill_session`, the Tern terminal page's Kill, `/unified-exec-sessions` and shutdown now end a session whose shell has exited while a descendant still holds the terminal ([#86](https://github.com/oh-my-omp/omp-unified-exec/issues/86)). The PTY backend stopped signalling as soon as the shell exited, but the session lasts until the terminal closes, so on Linux both SIGTERM and the SIGKILL escalation were dropped and `kill_session` reported `kill_failed` with the process still alive. It now signals the shell's process group until the session finalizes, and after the shell exits it signals only the group, never the shell's recycled pid; Windows skips `taskkill /T` once the root has exited.
+
 ## 0.14.12 - 2026-10-24
 
 - Compress week-old session logs without deleting them: a log last written more than seven days ago is replaced by a standard gzip `<log_path>.gz` with the same modification time (read with `zcat` on Linux, `gzcat` or `zcat <` on macOS), once its writer is provably gone. New logs are named `pi-unified-exec-<omp pid>-<session id>-<hex>.log`; a log counts as abandoned when this process has closed its stream (a process-global record of open log streams that survives reloads), when the pid in its name no longer exists, or when it was last written before the last boot, which is the only test applied to older names without a pid. The gzip is written to a private exclusive temp file, published with `link` so an existing archive is never overwritten, and the source is removed only if its device, inode, size and mtime are unchanged; symlinks and other users' files are skipped. omp scans the temp directory when the extension loads and daily after that.

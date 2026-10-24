@@ -572,6 +572,36 @@ describe("unified-exec e2e", () => {
 		await h.emit("session_shutdown");
 	});
 
+	// macOS closes the terminal with the shell, so only Linux keeps such a session open.
+	it("kill_session ends a session whose shell exited while a group member holds the terminal", { skip: process.platform !== "linux" }, async () => {
+		const h = makeHarness();
+		await h.emit("session_start");
+		let bg = 0;
+		try {
+			const r1 = await h.call("exec_command", {
+				cmd: "(trap '' HUP; exec sleep 300) & echo bg=$!; sleep 0.5",
+				shell: "/bin/sh",
+				yield_time_ms: 1500,
+			});
+			bg = Number(/bg=(\d+)/.exec(r1.details.output)?.[1]);
+			assert.ok(bg > 0, r1.details.output);
+			assert.match(r1.details.note ?? "", /shell has exited/, JSON.stringify(r1.details));
+			const killed = await h.call("kill_session", { session_id: r1.details.session_id });
+			assert.equal(killed.details.killed, true, JSON.stringify(killed.details));
+			assert.throws(() => process.kill(bg, 0), "the held-open group member survived kill_session");
+			bg = 0;
+		} finally {
+			if (bg > 0) {
+				try {
+					process.kill(bg, "SIGKILL");
+				} catch {
+					// already gone
+				}
+			}
+			await h.emit("session_shutdown");
+		}
+	});
+
 	it("list_sessions enumerates live sessions", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
