@@ -571,7 +571,9 @@ INPUT_WAIT_QUIET_MS          = 5_000 (output silence before the screen is examin
   A descendant that survives the shell and still holds the PTY (e.g. a
   `nohup`'d or SIGHUP-ignoring job) keeps it open; such results carry a `note`
   on how to detach it (`setsid cmd >log 2>&1 </dev/null &`), and the
-  running-session widget marks the session `terminal held`.
+  running-session widget marks the session `terminal held`. `kill_session` and
+  shutdown still signal the shell's process group then, so a descendant that
+  stayed in it is ended; one that left it (`setsid`) is not.
 - **A closed terminal** never crashes the host; writes report `failure_message`.
 - **Esc** breaks the current wait but leaves the session running.
 - **Shutdown** sends SIGTERM to every session and SIGKILLs survivors after 1s.
