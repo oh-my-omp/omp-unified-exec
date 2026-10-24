@@ -270,7 +270,8 @@ export function spawnBunPty(runtime: BunRuntime, opts: SpawnOptions): SpawnedChi
 
 	const child = runtime.spawn([file, ...args], {
 		cwd: opts.cwd,
-		env: opts.env.TERM === undefined ? { ...opts.env, TERM: "xterm-256color" } : opts.env,
+		// The child talks to this PTY's xterm emulator, never to omp's own terminal.
+		env: { ...opts.env, TERM: "xterm-256color" },
 		windowsVerbatimArguments: opts.windowsVerbatimArguments,
 		terminal: {
 			name: "xterm-256color",

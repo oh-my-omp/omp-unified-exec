@@ -37,6 +37,10 @@ import type { MonitorStart } from "../fork-features/monitor-subscription.ts";
 const { Terminal } = xtermHeadless;
 type Terminal = InstanceType<typeof Terminal>;
 
+const CR = 0x0d;
+const LF = 0x0a;
+const NO_BYTES = new Uint8Array(0);
+
 /** History budget in cells; scrollback rows = budget / cols (never below one screen). */
 export const TERMINAL_HISTORY_CELLS = 240_000;
 
@@ -219,6 +223,14 @@ export class TerminalScreen {
 	private disposed = false;
 	/** Notified after each child write is parsed into the screen. */
 	private readonly changeListeners = new Set<() => void>();
+	/**
+	 * Notified right after a carriage return that is not part of CR LF has
+	 * been parsed, before the bytes that overwrite its row. Only while a
+	 * listener exists are child writes split at those points.
+	 */
+	private readonly carriageReturnListeners = new Set<() => void>();
+	/** The last child byte was CR; whether it starts an overwrite depends on the next write. */
+	private pendingCarriageReturn = false;
 	private readonly appearance: () => TerminalAppearance;
 
 	/**
@@ -258,7 +270,24 @@ export class TerminalScreen {
 	/** Feed child output, in arrival order. */
 	write(chunk: Uint8Array): void {
 		if (this.disposed) return;
-		this.enqueue(chunk, true);
+		if (chunk.length === 0) return;
+		const pending = this.pendingCarriageReturn;
+		this.pendingCarriageReturn = chunk[chunk.length - 1] === CR;
+		if (this.carriageReturnListeners.size === 0) {
+			this.enqueue(chunk, this.notifyChange);
+			return;
+		}
+		// A bare CR returns the cursor to the start of its row, so the next
+		// bytes overwrite it. Sample the row in between; CR LF moves to a new
+		// row and needs no sample. Splitting a write keeps xterm's parser state.
+		if (pending && chunk[0] !== LF && chunk[0] !== CR) this.enqueue(NO_BYTES, this.notifyCarriageReturn);
+		let start = 0;
+		for (let index = 0; index + 1 < chunk.length; index++) {
+			if (chunk[index] !== CR || chunk[index + 1] === LF || chunk[index + 1] === CR) continue;
+			this.enqueue(chunk.subarray(start, index + 1), this.notifyCarriageReturn);
+			start = index + 1;
+		}
+		this.enqueue(chunk.subarray(start), this.notifyChange);
 	}
 
 	/** Call `listener` each time a child write finishes parsing from now on (even one queued earlier); returns the unsubscribe. */
@@ -267,7 +296,15 @@ export class TerminalScreen {
 		return () => this.changeListeners.delete(listener);
 	}
 
-	private enqueue(data: Uint8Array | string, childOutput: boolean): void {
+	private readonly notifyChange = (): void => {
+		for (const listener of this.changeListeners) listener();
+	};
+
+	private readonly notifyCarriageReturn = (): void => {
+		for (const listener of this.carriageReturnListeners) listener();
+	};
+
+	private enqueue(data: Uint8Array | string, parsed?: () => void): void {
 		this.pendingWrites++;
 		this.term.write(data, () => {
 			this.pendingWrites--;
@@ -276,7 +313,7 @@ export class TerminalScreen {
 				this.flushWaiters = [];
 				for (const resolve of waiters) resolve();
 			}
-			if (childOutput) for (const listener of this.changeListeners) listener();
+			parsed?.();
 		});
 	}
 
@@ -551,11 +588,50 @@ export class TerminalScreen {
 				quiet = setTimeout(evaluate, 50);
 				maximum ??= setTimeout(evaluate, 250);
 			});
+			// A full-screen program (tmux, a remote shell inside it) may draw a
+			// line and overwrite it within one drain window: it returns to the
+			// row with a bare CR or a cursor-moving CSI (tmux uses `\r`,
+			// `CSI H`, `CSI row;1 H` + LF + `CSI A`, depending on the row). The
+			// cursor's row is read from the parsed buffer at those boundaries,
+			// before the move takes effect, and recorded as reported, so the
+			// next drain does not repeat it. `CSI C` is left out: tmux uses it
+			// to skip blanks in the middle of drawing a row. Normal-screen rows
+			// keep their marker identities and are not sampled here.
+			const sampleCursorRow = () => {
+				if (!active) return;
+				const buffer = this.term.buffer.active;
+				if (buffer.type !== "alternate") return;
+				if (previousEpoch !== this.altEpoch) {
+					previousAlt = [];
+					previousEpoch = this.altEpoch;
+				}
+				let start = buffer.cursorY;
+				while (start > 0 && buffer.getLine(start)?.isWrapped) start--;
+				let end = buffer.cursorY + 1;
+				while (end < this.rows && buffer.getLine(end)?.isWrapped) end++;
+				const rows = this.readRows("alternate", start, end);
+				const changed = rows.some((row, index) =>
+					row.text.trimEnd() !== (previousAlt[start + index]?.text.trimEnd() ?? "") ||
+					row.wrapped !== (previousAlt[start + index]?.wrapped ?? false));
+				if (!changed) return;
+				rows.forEach((row, index) => { previousAlt[start + index] = row; });
+				onLines([rows.map((row) => row.text).join("").trimEnd()]);
+			};
+			const carriageReturnListeners = this.carriageReturnListeners;
+			carriageReturnListeners.add(sampleCursorRow);
+			// A handler returning false runs before xterm's own, which then moves the cursor.
+			const cursorMoves = ["A", "B", "D", "E", "F", "G", "H", "d", "f"].map((final) =>
+				this.term.parser.registerCsiHandler({ final }, () => { sampleCursorRow(); return false; }));
+			const stopSampling = () => {
+				carriageReturnListeners.delete(sampleCursorRow);
+				for (const move of cursorMoves) move.dispose();
+			};
 			const handle: TerminalLineSubscription = {
 				cancel() {
 					active = false;
 					clearTimers();
 					unsubscribe();
+					stopSampling();
 					bufferSwitch.dispose();
 					reset.dispose();
 					disposeNormal();
@@ -563,7 +639,9 @@ export class TerminalScreen {
 				async finish() {
 					clearTimers();
 					unsubscribe();
+					// Every accepted byte, including its row samples, parses before this drain ends.
 					await drain();
+					stopSampling();
 					bufferSwitch.dispose();
 					if (!active) return false;
 					active = false;

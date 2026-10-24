@@ -150,7 +150,8 @@ switch 与 branch 只复核身份。绑定不可用或失败时，审批返回�
 - **运行中历史加屏幕。** 先给出自上次调用以来从顶部滚出、且尚未报告过的行，再给出完整的当前屏幕。回车刷新的进度条和重绘只显示最终状态。
 - **运行中屏幕未变。** 屏幕、光标和历史都没变化时，结果带 `screen_changed: false` 和 `(no output)`。
 - **退出只返回一屏。** 每一种退出结果（包括短命令和确认终止）都返回冻结的最终活动屏，即使屏幕没有变化。`terminal_url` 保留在结果根层；`terminal.retained_rows`、`terminal.rows` 与 `terminal.history_may_be_truncated` 描述正常屏的保留投影，最终元数据不含 `screen_changed` 或 `history_lines`。结果仍受 50 KiB / 2000 行上限约束；通过 URL 的 `/screen` 读取完整屏幕，通过 `/page/N` 读取更早的保留行。
-- **全屏程序**（备用屏幕，比如 `top`、编辑器）报告为 `terminal: alternate screen …`；退出后恢复普通屏幕。
+- **全屏程序**（备用屏幕，比如 `top`、编辑器、`tmux`）报告为 `terminal: alternate screen …`；退出后恢复普通屏幕。
+- **子进程看到的是 `TERM=xterm-256color`**，即它实际绘制所在的终端，与 omp 自身运行在哪个终端里无关；命令仍可自行设置 `TERM`。
 - **工具结果只有纯文本和光标。** exec/write/kill 文本里没有颜色；Tern 的终端页和显式 `read term://…/screen.png` 会显示颜色。
 - **终端查询会被回应**，回应写到子进程的输入上：光标位置、设备属性，以及默认前景色/背景色（OSC 10/11）。颜色跟随 omp 的主题（浅色或深色，在 Tern 里跟随 Tern 的外观）。
 - 两次调用之间的历史受单元格预算限制（`TERMINAL_HISTORY_CELLS` 除以 `cols` 得到行数）。在被报告之前就超出预算的行会使结果带上 `history_may_be_truncated: true`；这些行只存在于日志中。
@@ -158,14 +159,14 @@ switch 与 branch 只复核身份。绑定不可用或失败时，审批返回�
 #### 在 omp 中读取保留终端
 
 结果与 `list_sessions` 带有进程内唯一的 `terminal_url`，例如
-`term://3-9f2c1a7e-…`。正常屏的保留历史与屏幕可以独立于结果消费来读取：
+`term://3-9f2c1a7e-…`。人在终端里看到的内容可以独立于结果消费来读取：
 
 | 读取路径 | 内容 |
 |---|---|
-| `term://<key>` | 全部保留的正常屏物理行，去掉行尾空格与末尾空行。 |
+| `term://<key>` | 全部保留的正常屏物理行，去掉行尾空格与末尾空行。全屏程序（比如 `tmux`）占用备用屏期间，改为返回备用屏（备用屏没有历史）；程序离开备用屏后恢复正常屏历史。 |
 | `term://<key>/screen` | 当前活动屏，包括正在使用的备用屏。 |
 | `term://<key>/screen.png` | 完整活动网格的图像，带单元格颜色与属性。 |
-| `term://<key>/page/2` | 保留行的第二页，每页是会话的 `rows` 行。 |
+| `term://<key>/page/2` | `term://<key>` 所读行的第二页，每页是会话的 `rows` 行。 |
 | `term://<key>/page/-1` | 最后一页；负页码从末尾计数。 |
 | `term://<key>:raw:1-2` / `term://<key>:raw:-3` | 使用 `read` 现有的 head/tail 选择器，raw 模式不附上下文行。 |
 
@@ -266,6 +267,8 @@ write_stdin chars_b64="G3s6wgo="  → exact 5 decoded bytes
 | `max_returns` | number | `10` | 正安全整数，计成功的匹配消息数，不是行数，也不含 End。 |
 
 条件接收新增或改变的渲染逻辑行，包括没有换行的提示符；wrapped 物理行会合并。
+在备用屏上，单独的回车（后面不跟换行）或移动光标的 CSI 把光标所在行交给后续输出之前，这一行当时的内容也会参与匹配，
+因此 `tmux` 画出又覆盖掉的标记仍能命中。
 每行经过清洗，并截取前 1024 个 UTF-16 code unit。纯光标/样式变化不触发，
 也不会重放建立前的输出。
 

@@ -76,7 +76,10 @@ describe("unified-exec PTY mode", () => {
 	// until the session exits, so a leaked session hangs the test process
 	// forever (observed on windows-latest CI).
 
-	it("runs a command with a PTY", async () => {
+	it("runs a command with a PTY that announces the emulator's TERM", async () => {
+		const hostTerm = process.env.TERM;
+		// omp itself may run in another terminal; its TERM must not reach the child.
+		process.env.TERM = "xterm-kitty";
 		const h = makeHarness();
 		await h.emit("session_start");
 		try {
@@ -88,10 +91,13 @@ describe("unified-exec PTY mode", () => {
 			// If short-lived: exit_code is set; long-running: session_id. Either way output should
 			// include "tty" / "dev/" to confirm a PTY was allocated.
 			assert.ok(r.details.output.toLowerCase().includes("/dev/"), `output=${r.details.output}`);
+			if (!IS_WINDOWS) assert.match(r.details.output, /^seen=xterm-256color$/m);
 			if (r.details.session_id !== undefined) {
 				await h.call("kill_session", { session_id: r.details.session_id });
 			}
 		} finally {
+			if (hostTerm === undefined) delete process.env.TERM;
+			else process.env.TERM = hostTerm;
 			await h.emit("session_shutdown");
 		}
 	});

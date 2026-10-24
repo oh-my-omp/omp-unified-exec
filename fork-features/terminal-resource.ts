@@ -81,18 +81,31 @@ export function parseTerminalTarget(path: string): TerminalReadTarget {
 	throw new TerminalResourceError("invalid_terminal_target", `Expected /screen or /page/N; received ${path}.`);
 }
 
+/**
+ * What a human sees scrolling the terminal: the normal screen's retained rows,
+ * or, while a full-screen program holds the alternate screen, that screen
+ * (the alternate screen has no history).
+ */
+function visibleLines(projection: TerminalProjection): readonly string[] {
+	switch (projection.view.screen) {
+		case "normal": return projection.retainedLines;
+		case "alternate": return projection.screenLines;
+	}
+}
+
 export function terminalText(projection: TerminalProjection, target: TerminalReadTarget): string {
 	switch (target.kind) {
-		case "retained": return projection.retainedLines.join("\n");
+		case "retained": return visibleLines(projection).join("\n");
 		case "screen": return projection.screenLines.join("\n");
 		case "page": {
-			const totalPages = Math.max(1, Math.ceil(projection.retainedLines.length / projection.view.rows));
+			const lines = visibleLines(projection);
+			const totalPages = Math.max(1, Math.ceil(lines.length / projection.view.rows));
 			const page = target.page > 0 ? target.page : totalPages + target.page + 1;
 			if (page < 1 || page > totalPages) {
 				throw new TerminalResourceError("terminal_page_out_of_range", `Page ${target.page} is outside ${totalPages} total pages.`);
 			}
 			const start = (page - 1) * projection.view.rows;
-			return projection.retainedLines.slice(start, start + projection.view.rows).join("\n");
+			return lines.slice(start, start + projection.view.rows).join("\n");
 		}
 	}
 }
