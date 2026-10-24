@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { discardLiveTerminal, freezeTerminal, readTerminal, registerTerminal } from "../fork-features/terminal-resource.ts";
+import { buildInputWaitMessage, detectInputPrompt, type InputWaitAlert } from "../fork-features/input-wait.ts";
 import type { MonitorListener, MonitorSourceHandle, MonitorStart } from "../fork-features/monitor-subscription.ts";
 import { type CollectResult, type FinalScreenOutput, NO_OUTPUT, type NoOutput } from "./collect.ts";
 import { waitForExitOrDeadline } from "./long-wait.ts";
@@ -33,6 +34,14 @@ export interface SessionSpawnOptions {
 	windowsVerbatimArguments?: boolean; // Windows cmd.exe quoting (see shell.ts)
 	/** The background the session's screen is shown on (default dark), answered to OSC 10/11. */
 	appearance?: () => TerminalAppearance;
+	/** Alert when the screen settles on an unseen input prompt (see fork-features/input-wait.ts). */
+	inputWait?: InputWaitOptions;
+}
+
+export interface InputWaitOptions {
+	/** Output silence before the screen is examined. */
+	readonly quietMs: number;
+	readonly onAlert: (alert: InputWaitAlert) => void;
 }
 
 export interface SessionState {
@@ -74,6 +83,9 @@ export class ExecSession {
 	}
 
 	private totalOutputBytes = 0;
+	private lastOutputAtMs: number;
+	/** collect() calls in flight: their result will show the screen to the agent. */
+	private attachments = 0;
 
 	private state: SessionState = {
 		hasExited: false,
@@ -93,6 +105,7 @@ export class ExecSession {
 		this.cwd = opts.cwd;
 		this.startedAt = Date.now();
 		this.lastUsedAt = this.startedAt;
+		this.lastOutputAtMs = this.startedAt;
 		this.pid = undefined; // set in `start`
 		this.logPath = join(tmpdir(), `pi-unified-exec-${id}-${randomBytes(4).toString("hex")}.log`);
 	}
@@ -154,9 +167,11 @@ export class ExecSession {
 		// The output gate closes after the final child bytes and log flush.
 		// freezeTerminal then waits for parsing without consuming observation.
 		self.terminalFinalized = self.outputClosed.closed().then(() => freezeTerminal(key));
+		if (opts.inputWait) self.watchInputWait(screen, opts.inputWait);
 
 		self.child.onData((chunk) => {
 			self.totalOutputBytes += chunk.length;
+			self.lastOutputAtMs = Date.now();
 			screen.write(chunk);
 			// Mirror every byte to the log file. Errors are handled by the
 			// 'error' listener on the stream, which nulls `logStream` out.
@@ -201,6 +216,44 @@ export class ExecSession {
 		});
 
 		return self;
+	}
+
+	/**
+	 * After `quietMs` without a parsed change, examine the screen once. Alert
+	 * only when no tool call is attached (its result will show the screen), the
+	 * screen is not what a tool result already showed, it looks like a prompt,
+	 * and that exact screen has not been alerted before.
+	 */
+	private watchInputWait(screen: TerminalScreen, { quietMs, onAlert }: InputWaitOptions): void {
+		let quiet: NodeJS.Timeout | undefined;
+		let alerted: string | undefined;
+		const evaluate = () => {
+			quiet = undefined;
+			if (this.hasExited || this.screen !== screen || this.attachments > 0) return;
+			const probe = screen.inputProbe();
+			if (!probe || probe.presented) return;
+			const prompt = detectInputPrompt(probe);
+			if (!prompt) return;
+			const fingerprint = JSON.stringify([probe.kind, probe.cursorRow, probe.cursorCol, probe.rows]);
+			if (fingerprint === alerted) return;
+			alerted = fingerprint;
+			onAlert({
+				sessionId: this.id,
+				message: buildInputWaitMessage({
+					sessionId: this.id, command: this.displayCommand, prompt, screen: probe.kind, quietMs,
+					terminalUrl: this.terminalUrl, logPath: this.logPath,
+				}),
+				current: () => !this.hasExited && this.screen === screen && screen.unseen(probe.revision),
+			});
+		};
+		const unsubscribe = screen.onChange(() => {
+			clearTimeout(quiet);
+			quiet = setTimeout(evaluate, quietMs);
+		});
+		this.onExit(() => {
+			clearTimeout(quiet);
+			unsubscribe();
+		});
 	}
 
 	/**
@@ -320,18 +373,25 @@ export class ExecSession {
 	 * (shutdown does not wait for the process to die) has nothing to observe.
 	 */
 	async collect(opts: { deadlineMs: number; externalAbort?: AbortSignal }): Promise<CollectResult> {
-		await waitForExitOrDeadline({
-			exited: this.exited,
-			externalAbort: opts.externalAbort,
-			durationMs: opts.deadlineMs - Date.now(),
-		});
-		if (this.hasExited) return this.finalScreenOutput();
-		const screen = this.screen;
-		if (!screen) return NO_OUTPUT;
-		const observation = await screen.observe();
-		// Exit may land while the observation's parser barrier is pending.
-		if (this.hasExited) return this.finalScreenOutput();
-		return { kind: "screen", observation, terminalUrl: this.terminalUrl };
+		// Held through the observation, so the input-wait watcher never alerts
+		// on a screen this result is about to show.
+		this.attachments++;
+		try {
+			await waitForExitOrDeadline({
+				exited: this.exited,
+				externalAbort: opts.externalAbort,
+				durationMs: opts.deadlineMs - Date.now(),
+			});
+			if (this.hasExited) return this.finalScreenOutput();
+			const screen = this.screen;
+			if (!screen) return NO_OUTPUT;
+			const observation = await screen.observe();
+			// Exit may land while the observation's parser barrier is pending.
+			if (this.hasExited) return this.finalScreenOutput();
+			return { kind: "screen", observation, terminalUrl: this.terminalUrl };
+		} finally {
+			this.attachments--;
+		}
 	}
 
 	/** The frozen final screen, or nothing when shutdown discarded the unfinished terminal. */
@@ -414,6 +474,11 @@ export class ExecSession {
 
 	get totalBytesSeen(): number {
 		return this.totalOutputBytes;
+	}
+
+	/** Epoch ms of the last child output (spawn time before any). */
+	get lastOutputAt(): number {
+		return this.lastOutputAtMs;
 	}
 
 	get lastUsed(): number {

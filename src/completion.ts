@@ -1,4 +1,5 @@
-import { MonitorError, MonitorSubscription, parseMonitorCondition, type MonitorEndReason, type MonitorMessage, type MonitorSession, type MonitorStatus } from "../fork-features/monitor-subscription.ts";
+import type { InputWaitAlert, InputWaitMessage } from "../fork-features/input-wait.ts";
+import { MonitorError, MonitorSubscription, parseMonitorCondition, parseRemindAfter, type MonitorEndReason, type MonitorMessage, type MonitorSession, type MonitorStatus } from "../fork-features/monitor-subscription.ts";
 import { formatElapsedShort } from "./format-time.ts";
 
 /**
@@ -87,6 +88,8 @@ export interface CompletionCoordinatorOptions {
 	send: (message: WakeMessage) => void | Promise<void>;
 	/** Independent repeated monitor returns, through the same host follow-up path. */
 	sendMonitor?: (message: MonitorMessage) => void | Promise<void>;
+	/** Input-wait alerts, independent of monitors and wakes, through the same host follow-up path. */
+	sendInputWait?: (message: InputWaitMessage) => void | Promise<void>;
 	/** Debounce so naturally simultaneous completions batch into one prompt. */
 	debounceMs?: number;
 	/** Optional error sink for failed sends (ui.notify wrapper). */
@@ -95,6 +98,15 @@ export interface CompletionCoordinatorOptions {
 	setTimeoutFn?: (cb: () => void, ms: number) => unknown;
 	clearTimeoutFn?: (handle: unknown) => void;
 	nowFn?: () => number;
+}
+
+/** Validated by `startMonitor`; omitted fields take the monitor defaults. */
+export interface MonitorOptions {
+	/** JavaScript regex source; omitted waits for output closure only. */
+	condition?: string;
+	maxReturns?: number;
+	/** Silence before a one-time reminder that the monitor has not returned (default 20 minutes). */
+	remindAfterMs?: number;
 }
 
 const DEFAULT_DEBOUNCE_MS = 250;
@@ -116,6 +128,9 @@ function oneLine(raw: string, max: number): string {
 export class CompletionCoordinator {
 	private readonly records = new Map<number, CompletionRecord>();
 	private monitors = new Map<number, MonitorSubscription>();
+	/** Undelivered input-wait alerts, at most one per session (the newest screen wins). */
+	private inputAlerts = new Map<number, InputWaitAlert>();
+	private readonly inputSending = new Set<InputWaitAlert>();
 	private readonly opts: Required<Pick<CompletionCoordinatorOptions, "send" | "debounceMs">> &
 		CompletionCoordinatorOptions;
 	private debounceHandle: unknown;
@@ -143,14 +158,16 @@ export class CompletionCoordinator {
 		return this.records.size;
 	}
 
-	async startMonitor(session: MonitorSession, source: string | undefined, maximum = 10, signal?: AbortSignal): Promise<MonitorStatus> {
-		const condition = parseMonitorCondition(source);
+	async startMonitor(session: MonitorSession, options: MonitorOptions = {}, signal?: AbortSignal): Promise<MonitorStatus> {
+		const condition = parseMonitorCondition(options.condition);
+		const maximum = options.maxReturns ?? 10;
 		if (!Number.isSafeInteger(maximum) || maximum < 1) throw new MonitorError("invalid_max_returns", "max_returns must be a positive safe integer");
+		const remindAfterMs = parseRemindAfter(options.remindAfterMs);
 		const send = this.opts.sendMonitor;
 		if (!send) throw new Error("monitor delivery is not configured");
 		const scope = this.monitors;
 		const current = (subscription: MonitorSubscription): boolean => !this.stopped && this.monitors === scope && scope.get(session.id) === subscription;
-		const subscription = new MonitorSubscription(session, condition, maximum, send,
+		const subscription = new MonitorSubscription(session, condition, maximum, remindAfterMs, send,
 			(sub, completed) => {
 				if (!current(sub)) return;
 				// Consume the ordinary wake before removing monitor ownership.
@@ -169,6 +186,8 @@ export class CompletionCoordinator {
 			const old = scope.get(session.id);
 			scope.set(session.id, subscription);
 			old?.cancel();
+			// The silent period starts with publication, not with the tool result.
+			subscription.startReminder();
 			return true;
 		}, signal);
 		if (result !== "accepted") {
@@ -200,6 +219,38 @@ export class CompletionCoordinator {
 
 	monitorEndReason(sessionId: number, reason: MonitorEndReason): void {
 		this.monitors.get(sessionId)?.setEndReason(reason);
+	}
+
+	/**
+	 * Deliver an input-wait alert now. A failed send keeps it for the next
+	 * safe flush boundary while it still describes the current, unseen screen.
+	 */
+	alertInputWait(alert: InputWaitAlert): void {
+		if (this.stopped) return;
+		this.inputAlerts.set(alert.sessionId, alert);
+		this.deliverInputWait(alert);
+	}
+
+	private deliverInputWait(alert: InputWaitAlert): void {
+		const send = this.opts.sendInputWait;
+		const alerts = this.inputAlerts;
+		if (!send || this.stopped || alerts.get(alert.sessionId) !== alert || this.inputSending.has(alert)) return;
+		if (!alert.current()) {
+			alerts.delete(alert.sessionId);
+			return;
+		}
+		this.inputSending.add(alert);
+		const failed = (error: unknown) => {
+			this.inputSending.delete(alert);
+			try { this.opts.onSendError?.(error); } catch { /* a failed UI sink must not drop the alert */ }
+		};
+		let result: void | Promise<void>;
+		try { result = send(alert.message); }
+		catch (error) { failed(error); return; }
+		Promise.resolve(result).then(() => {
+			this.inputSending.delete(alert);
+			if (alerts.get(alert.sessionId) === alert) alerts.delete(alert.sessionId);
+		}, failed);
 	}
 
 	/**
@@ -421,6 +472,8 @@ export class CompletionCoordinator {
 		this.monitors = new Map();
 		for (const subscription of monitors.values()) subscription.cancel();
 		monitors.clear();
+		this.inputAlerts = new Map();
+		this.inputSending.clear();
 		if (this.debounceHandle !== undefined) {
 			this.clearTimer(this.debounceHandle);
 			this.debounceHandle = undefined;
@@ -462,6 +515,7 @@ export class CompletionCoordinator {
 	flushPending(): void {
 		if (this.stopped) return;
 		for (const subscription of this.monitors.values()) subscription.retry();
+		for (const alert of [...this.inputAlerts.values()]) this.deliverInputWait(alert);
 		const eligible: CompletionRecord[] = [];
 		for (const r of this.records.values()) {
 			if (

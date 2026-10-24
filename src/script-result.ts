@@ -171,6 +171,7 @@ const monitorStatusSchema = Type.Object({
 	condition: Type.Union([Type.String(), Type.Null()]),
 	returns: Type.Number(),
 	max_returns: Type.Number(),
+	remind_after_ms: Type.Number(),
 });
 
 export const monitorScriptResultSchema = Type.Union([

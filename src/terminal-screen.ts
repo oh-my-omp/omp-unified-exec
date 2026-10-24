@@ -32,6 +32,7 @@
 import xtermHeadless from "@xterm/headless";
 import type { IBufferCell, IMarker } from "@xterm/headless";
 
+import type { InputScreen } from "../fork-features/input-wait.ts";
 import type { MonitorStart } from "../fork-features/monitor-subscription.ts";
 
 const { Terminal } = xtermHeadless;
@@ -232,6 +233,10 @@ export class TerminalScreen {
 	/** The last child byte was CR; whether it starts an overwrite depends on the next write. */
 	private pendingCarriageReturn = false;
 	private readonly appearance: () => TerminalAppearance;
+	/** Parsed child writes so far. */
+	private revision = 0;
+	/** `revision` as of the last consuming observation, i.e. what a tool result last showed the agent. */
+	private presentedRevision = 0;
 
 	/**
 	 * @param reply receives the terminal's own responses to queries (cursor
@@ -297,6 +302,7 @@ export class TerminalScreen {
 	}
 
 	private readonly notifyChange = (): void => {
+		this.revision++;
 		for (const listener of this.changeListeners) listener();
 	};
 
@@ -350,6 +356,30 @@ export class TerminalScreen {
 		const buffer = this.term.buffer.active;
 		const rows = this.readRows(buffer.type, buffer.baseY, buffer.baseY + this.rows);
 		return { view: this.view(), text: toLines(rows).lines.join("\n") };
+	}
+
+	/**
+	 * The active screen with its revision, without consuming anything;
+	 * undefined while writes are still being parsed or after release.
+	 * `presented` is true when a consuming observation already showed this
+	 * revision to the agent.
+	 */
+	inputProbe(): (InputScreen & { readonly revision: number; readonly presented: boolean }) | undefined {
+		if (this.disposed || this.pendingWrites > 0) return undefined;
+		const buffer = this.term.buffer.active;
+		return {
+			kind: buffer.type,
+			rows: this.readRows(buffer.type, buffer.baseY, buffer.baseY + this.rows),
+			cursorRow: buffer.cursorY,
+			cursorCol: Math.min(buffer.cursorX, this.cols),
+			revision: this.revision,
+			presented: this.presentedRevision === this.revision,
+		};
+	}
+
+	/** Whether `revision` is still the current screen and no consuming observation has shown it. */
+	unseen(revision: number): boolean {
+		return !this.disposed && revision === this.revision && this.presentedRevision !== revision;
 	}
 
 	/**
@@ -672,6 +702,7 @@ export class TerminalScreen {
 	private async observeNow(): Promise<TerminalObservation> {
 		if (this.disposed) throw new Error("terminal screen observed after release");
 		await new Promise<void>((resolve) => this.term.write("", resolve));
+		this.presentedRevision = this.revision;
 		const view = this.view();
 		const buffer = this.term.buffer.active;
 

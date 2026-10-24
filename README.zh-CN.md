@@ -40,7 +40,8 @@ omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
 - **输出就是终端上看到的内容。** 每个会话都经过无头终端模拟器。运行中的结果返回当前屏幕、自上次调用以来滚出的未见历史与光标位置，而不是叠加每次重绘；退出结果只返回最终活动屏，其余保留行通过 `terminal_url` 读取。模拟器会像真实终端一样回应光标位置、设备属性与默认颜色查询，因此等待回应或选择配色的程序表现与真实终端一致。
 - **输出有上限，完整内容可找回。** 模型看到的每个结果都从尾部截取，最多 50 KiB / 2000 行，并去掉终端控制序列；每个会话的完整原始输出都写入 `log_path`。
 - **可选的完成唤醒。** `on_exit: "wake"` 让后台进程在无人观察时退出后唤醒一次 agent；`set_on_exit` 可以取消。
-- **等待匹配输出。** `monitor` 不消费输出地观察已有会话，在匹配批次或结束时唤醒模型；默认最多成功返回十次匹配消息。
+- **等待匹配输出。** `monitor` 不消费输出地观察已有会话，在匹配批次或结束时唤醒模型；默认最多成功返回十次匹配消息。monitor 20 分钟没有返回时，会提醒 agent 一次去检查会话。
+- **等待输入提醒。** 无论有没有 monitor，会话屏幕停在 agent 还没看过的提示上（`apt upgrade` 询问 sshd_config 这类 debconf/whiptail 对话框、`[Y/n]`、密码、分页器）时，都会唤醒 agent。
 - **omp 原生呈现。** `exec_command`、`write_stdin` 和 `kill_session` 用 omp 自己的 bash 卡片渲染（命令行、输出、退出码标签、错误配色），在 ANSI TUI 和 Tern 里都是如此。
 - **Tern 里的终端 HUD。** 不用调用工具，就能查看、回滚、输入并结束模型的会话。
 
@@ -262,6 +263,7 @@ write_stdin chars_b64="G3s6wgo="  → exact 5 decoded bytes
 | `action` | `"start"` \| `"cancel"` | `"start"` | 建立/替换该会话唯一的订阅，或静默取消。 |
 | `condition` | string | 不传 | JavaScript 正则源码（不带 `/` 分隔符）；不传则只在输出关闭时返回。 |
 | `max_returns` | number | `10` | 正安全整数，计成功的匹配消息数，不是行数，也不含 End。 |
+| `remind_after_ms` | number | `1200000` | 1–2147483647 的整数：monitor 多久没有返回就提醒一次。 |
 
 条件接收新增或改变的渲染逻辑行，包括没有换行的提示符；wrapped 物理行会合并。
 在备用屏上，单独的回车（后面不跟换行）或移动光标的 CSI 把光标所在行交给后续输出之前，这一行当时的内容也会参与匹配，
@@ -277,8 +279,35 @@ write_stdin chars_b64="G3s6wgo="  → exact 5 decoded bytes
 实际输出关闭时发送 End，附尚未返回的匹配和退出码/信号；人工 HUD/slash
 与 LRU 终止写明原因。End 合并已启用的普通完成唤醒。模型 `kill_session`、
 显式取消、替换、reset 与关闭都静默结束，即使模型 kill 失败也是如此。
-已排队交给宿主的后续消息无法撤回。未知/已结束会话、非法正则及非法上限
-返回类型化错误。
+已排队交给宿主的后续消息无法撤回。未知/已结束会话、非法正则、非法上限及非法
+提醒间隔返回类型化错误。
+
+monitor 建立后或上一次匹配送达后，若 `remind_after_ms`（默认 20 分钟）内没有送达任何匹配或 End，
+就发送一条 `event: "timeout"`、带 `silent_ms` 的 `unified-exec-monitor` 后续消息：说明 monitor
+没有返回，给出距上次输出的时间、屏幕类型、最后八行非空屏幕内容（标明是命令输出）和终端读取地址，
+请 agent 检查会话是在等输入、卡住了还是只是慢。提醒不计入 `max_returns`，也不结束 monitor；
+在下一次匹配送达开启新的静默期之前不会重复，所以 agent 要继续等就再调用一次 `monitor` 取得新的期限。
+有待发送的匹配时先发匹配，End 会取代尚未送达的提醒。
+
+### 等待输入提醒
+
+没有任何终端协议会告诉宿主“程序正在等输入”。`apt upgrade` 询问本地改过的 `sshd_config` 时走的是
+debconf（openssh-server 的维护脚本通过 ucf 调用 debconf）；debconf 经自己的管道与前端通信，
+whiptail/dialog 前端到了 PTY 上只是普通的绘制（备用屏、隐藏光标、框线字符）。经过 `ssh` 时，
+本机的进程状态也说明不了什么。因此每个运行中的会话在输出安静 5 秒后检查一次渲染后的屏幕，
+以下条件全部成立时发送一条唤醒模型的 `unified-exec-input-wait` 后续消息：
+
+- 没有挂着的 `exec_command`/`write_stdin` 调用（它的结果会展示屏幕），也没有工具结果展示过这一屏；
+- 屏幕上是一个提示：
+  - **dialog**——任意位置出现 `<Ok>`、`<Yes>`、`<No>` 或 `<Cancel>` 按钮（whiptail、dialog、debconf、needrestart）；
+  - **inline**——光标停在一行末尾，该行含有 `[Y/n]` 这类选项、`(yes/no)` 或 `(Y/I/N/O/D/Z)`、`[default=…]`，
+    或以 `password …:` / `passphrase …:` 结尾，或含 `press Enter/Return/any key`；
+  - **pager**——光标在最底行，前面是 `:`、`(END)` 或 `--More--`；
+- 这一屏之前没有提醒过。
+
+提醒写明会话和命令，把提示行作为命令输出引用，并给出读取地址。它是启发式的：用 `read term://…`
+读过的屏幕不算展示过；shell 提示符、进度行以及不在光标处的提示都会被忽略。发送失败时，只要屏幕没变、
+也没被展示过，就在下一个工具边界重试。
 
 ### `kill_session`
 
@@ -291,7 +320,7 @@ write_stdin chars_b64="G3s6wgo="  → exact 5 decoded bytes
 
 ### `list_sessions`
 
-列出存活的会话，并把每个已退出的会话最后报告一次（带 `running: false`、`exit_code`/`signal` 和 `log_path`）后再移除。每条记录带启动时的 `shell`、`wake_armed` 及活动 monitor 的条件/成功次数/上限；响应带当前宿主时间 `tool_time_utc`。
+列出存活的会话，并把每个已退出的会话最后报告一次（带 `running: false`、`exit_code`/`signal` 和 `log_path`）后再移除。每条记录带启动时的 `shell`、`wake_armed` 及活动 monitor 的条件/成功次数/上限/提醒间隔；响应带当前宿主时间 `tool_time_utc`。
 
 ## 命令
 
@@ -314,6 +343,8 @@ MAX_SESSIONS                 = 64
 LRU_PROTECTED_COUNT          = 8
 DEFAULT_MAX_BYTES            = 50 KiB  (model-visible per-call cap)
 DEFAULT_MAX_LINES            = 2000
+DEFAULT_REMIND_AFTER_MS      = 1_200_000 (monitor silence before one reminder)
+INPUT_WAIT_QUIET_MS          = 5_000 (output silence before the screen is examined for a prompt)
 ```
 
 ## 语义
@@ -422,7 +453,8 @@ fork-features/
 ├── terminal-resource.ts  # process-global terminal keys, live/frozen projections
 ├── terminal-url.ts       # omp `term://` read handler
 ├── terminal-image.ts     # terminal screenshots (SVG → PNG)
-├── monitor-subscription.ts # monitor conditions, batching and follow-ups
+├── monitor-subscription.ts # monitor conditions, batching, reminders and follow-ups
+├── input-wait.ts         # input prompt detection and input-wait alerts
 ├── tern-plugin-removal.ts# removes the Tern plugin earlier versions installed
 └── README.md             # fork customizations and requalification
 docs/

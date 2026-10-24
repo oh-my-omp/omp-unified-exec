@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
-import type { MonitorMessage } from "../fork-features/monitor-subscription.ts";
+import { MonitorSubscription, type MonitorMessage, type MonitorSession } from "../fork-features/monitor-subscription.ts";
 import { CompletionCoordinator } from "../src/completion.ts";
 import { ExecSession } from "../src/session.ts";
 import { TerminalScreen, type TerminalLineSubscription } from "../src/terminal-screen.ts";
@@ -35,6 +35,17 @@ async function terminalSession(id: number): Promise<ExecSession> {
 	const ready = await session.collect({ deadlineMs: Date.now() + 3000 });
 	assert.equal(ready.kind, "screen");
 	if (ready.kind === "screen" && ready.observation.kind === "rendered") assert.match(ready.observation.text, /READY/);
+	return session;
+}
+
+/** Spawned without consuming an observation; READY seen on the live screen. */
+async function readySession(id: number): Promise<ExecSession> {
+	const session = ExecSession.spawn(id, {
+		command: [process.execPath, "-e", "process.stdin.setRawMode(true); process.stdout.write('READY\\r\\n'); process.stdin.on('data', b => process.stdout.write(b.toString().replace(/\\n/g, '\\r\\n')));"],
+		cwd: process.cwd(), env: { ...process.env },
+	});
+	for (let attempt = 0; attempt < 150 && !session.liveSnapshot()?.text.includes("READY"); attempt++) await delay(20);
+	assert.match(session.liveSnapshot()?.text ?? "", /READY/);
 	return session;
 }
 
@@ -111,7 +122,7 @@ describe("monitor source and delivery", () => {
 			onSendError: () => { throw new Error("UI also unavailable"); },
 		});
 		t.after(async () => { coordinator.shutdown(); await close(session); });
-		await coordinator.startMonitor(session, "MATCH", 1);
+		await coordinator.startMonitor(session, { condition: "MATCH", maxReturns: 1 });
 		session.write(encoder.encode("MATCH one\n"));
 		await failed.promise;
 		assert.equal(coordinator.monitorStatus(session.id)?.returns, 0);
@@ -136,7 +147,7 @@ describe("monitor source and delivery", () => {
 		const coordinator = new CompletionCoordinator({ send: () => { ordinary++; }, sendMonitor: (message) => { monitors++; delivered.resolve(message); } });
 		t.after(async () => { coordinator.shutdown(); await close(session); });
 		coordinator.register(session);
-		await coordinator.startMonitor(session, "MATCH");
+		await coordinator.startMonitor(session, { condition: "MATCH" });
 		session.write(encoder.encode("EXIT\n"));
 		const message = await delivered.promise;
 		await delay(0);
@@ -149,6 +160,72 @@ describe("monitor source and delivery", () => {
 		assert.equal(monitors, 1);
 		assert.equal(ordinary, 0);
 		assert.equal(coordinator.monitorStatus(session.id), undefined);
+	});
+
+	it("reminds once per silent period with the current screen, and a delivered match starts a new period", async (t) => {
+		const session = await readySession(9103);
+		const messages: MonitorMessage[] = [];
+		const coordinator = new CompletionCoordinator({ send: () => {}, sendMonitor: (message) => { messages.push(message); } });
+		t.after(async () => { coordinator.shutdown(); await close(session); });
+		const started = Date.now();
+		const status = await coordinator.startMonitor(session, { condition: "MATCH", remindAfterMs: 600 });
+		assert.equal(status.remind_after_ms, 600);
+		await delay(350);
+		session.write(encoder.encode("MATCH early\n"));
+		await delay(600);
+		// Without the restart the reminder would have fired at 600ms.
+		assert.deepEqual(messages.map((m) => m.details.event), ["match"]);
+		await delay(500);
+		assert.deepEqual(messages.map((m) => m.details.event), ["match", "timeout"]);
+		const reminder = messages[1]!;
+		assert.ok(reminder.details.silent_ms! >= 600 && Date.now() - started >= 1200);
+		assert.equal(reminder.details.returns, 1, "a reminder is not a return");
+		assert.match(reminder.content, /has not returned for/);
+		assert.match(reminder.content, /MATCH early/, "the reminder quotes the current screen");
+		await delay(900);
+		assert.deepEqual(messages.map((m) => m.details.event), ["match", "timeout"], "one reminder per silent period");
+		assert.deepEqual(coordinator.monitorStatus(session.id), { condition: "MATCH", returns: 1, max_returns: 10, remind_after_ms: 600 });
+	});
+
+	it("rejects an invalid remind_after_ms without replacing the existing monitor", async (t) => {
+		const session = await readySession(9104);
+		const coordinator = new CompletionCoordinator({ send: () => {}, sendMonitor: () => {} });
+		t.after(async () => { coordinator.shutdown(); await close(session); });
+		await coordinator.startMonitor(session, { condition: "KEEP" });
+		for (const remindAfterMs of [0, 1.5, 2 ** 31]) {
+			await assert.rejects(coordinator.startMonitor(session, { remindAfterMs }), /invalid_remind_after_ms/);
+		}
+		assert.deepEqual(coordinator.monitorStatus(session.id), { condition: "KEEP", returns: 0, max_returns: 10, remind_after_ms: 1_200_000 });
+	});
+
+	it("prefers pending matches over a due reminder, and End over an undelivered reminder", async () => {
+		const fake: MonitorSession = {
+			id: 1, hasExited: false, exitCode: null, signal: null, terminalUrl: "term://fake", logPath: "/tmp/fake.log",
+			lastOutputAt: Date.now(), liveSnapshot: () => undefined, subscribeMonitor: async () => "accepted",
+		};
+		const sent: string[] = [];
+		let failTimeout = true;
+		const finished: boolean[] = [];
+		const subscription = new MonitorSubscription(fake, { kind: "regex", source: "M", regex: /M/ }, 10, 40,
+			(message) => {
+				sent.push(message.details.event);
+				if (message.details.event === "timeout" && failTimeout) { failTimeout = false; throw new Error("queue unavailable"); }
+			},
+			(sub, completed) => { finished.push(completed); sub.cancel(); }, () => {}, () => true);
+		subscription.startReminder();
+		subscription.lines(["M pending"]);
+		await delay(60);
+		// The reminder fell due while a batch was pending: the batch goes out as a match.
+		assert.deepEqual(sent, ["match"]);
+		await delay(80);
+		assert.deepEqual(sent, ["match", "timeout"], "the match restarted the period; its reminder failed");
+		subscription.end();
+		await delay(0);
+		subscription.retry();
+		await delay(0);
+		assert.deepEqual(sent, ["match", "timeout", "end"], "End replaces the undelivered reminder");
+		assert.deepEqual(finished, [true]);
+		subscription.cancel();
 	});
 });
 

@@ -90,6 +90,8 @@ const MAX_SESSIONS = 64;
 const WARNING_SESSIONS = 60;
 const LRU_PROTECTED_COUNT = 8;
 const OUTPUT_POLL_INTERVAL_MS = 250; // exec/input streaming updates
+// A screen that stays this quiet is examined for an unseen input prompt.
+const INPUT_WAIT_QUIET_MS = 5_000;
 // PTY dimension clamps for exec_command's cols/rows.
 const MIN_PTY_COLS = 20;
 const MAX_PTY_COLS = 500;
@@ -327,6 +329,7 @@ async function runExecCommand(
 		displayCommand: args.cmd,
 		windowsVerbatimArguments: shellCommand.windowsVerbatimArguments,
 		appearance: ctx.appearance,
+		inputWait: { quietMs: INPUT_WAIT_QUIET_MS, onAlert: (alert) => ctx.coordinator.alertInputWait(alert) },
 	});
 
 	if (session.failureMessage) {
@@ -853,6 +856,12 @@ export function activate(
 				{ triggerTurn: true, deliverAs: "followUp" },
 			);
 		},
+		sendInputWait: (message) => {
+			pi.sendMessage(
+				{ customType: "unified-exec-input-wait", content: message.content, display: true, details: message.details },
+				{ triggerTurn: true, deliverAs: "followUp" },
+			);
+		},
 		onSendError: (err) => {
 			ctx.ui?.notify(
 				`unified-exec: failed to deliver completion notification: ${err instanceof Error ? err.message : String(err)}`,
@@ -1185,11 +1194,13 @@ export function activate(
 	pi.registerTool({
 		name: "monitor",
 		label: "monitor",
-		description: "Wait for future output events or completion of an existing session. An optional JavaScript regex condition wakes the agent for each matched batch; omit it to await output closure once. Read state/content with read terminal_url (term://), and send input with write_stdin. Replaces any existing monitor; action cancel silently removes it. Default max_returns is 10 successful match messages.",
+		description: "Wait for future output events or completion of an existing session. An optional JavaScript regex condition wakes the agent for each matched batch; omit it to await output closure once. If the monitor returns nothing for remind_after_ms (default 20 minutes) it sends one reminder to check the session and stays active. Read state/content with read terminal_url (term://), and send input with write_stdin. Replaces any existing monitor; action cancel silently removes it. Default max_returns is 10 successful match messages.",
 		promptSnippet: "Await matching output or completion of an existing session",
 		promptGuidelines: [
 			"Monitor observes without consuming output. Use read term:// for history and screens, and log_path for raw bytes.",
 			"Only output after establishment participates. Match batches coalesce for about 250ms; the final allowed return ends the monitor, not the process.",
+			"A monitor that has not returned for remind_after_ms (default 20 minutes) sends one reminder with the session's current screen; each delivered match starts a new silent period. On a reminder, read the terminal and decide: answer a prompt with write_stdin, keep waiting by calling monitor again, or cancel. Pass a larger remind_after_ms only when a longer silence is expected.",
+			"Independently of monitors, a session whose screen settles on an unseen input prompt (a debconf/whiptail dialog, [Y/n], password, pager) produces a unified-exec input-wait alert.",
 			"Model kill_session, explicit cancel, replacement and session reset silently cancel monitoring. Already delivered follow-ups cannot be recalled.",
 		],
 		parameters: Type.Object({
@@ -1197,6 +1208,7 @@ export function activate(
 			action: Type.Optional(StringEnum(["start", "cancel"] as const, "start (default) establishes/replaces; cancel silently removes.")),
 			condition: Type.Optional(Type.String({ description: "JavaScript regular expression source, no / delimiters. Omit to wait only for completion." })),
 			max_returns: Type.Optional(Type.Number({ description: "Positive safe integer; default 10 successful matched batches. End does not count." })),
+			remind_after_ms: Type.Optional(Type.Number({ description: "Silence (no match or End delivered) before one reminder that the monitor has not returned; default 1200000 (20 minutes), integer 1–2147483647. The reminder does not count toward max_returns and does not end the monitor." })),
 		}),
 		outputSchema: monitorScriptResultSchema,
 		async execute(_toolCallId, params, signal) {
@@ -1207,7 +1219,7 @@ export function activate(
 				} else {
 					const session = ctx.store.get(params.session_id);
 					if (!session) throw new MonitorError("unknown_session", `No such session: ${params.session_id}`);
-					const monitor = await coordinator.startMonitor(session, params.condition, params.max_returns, signal);
+					const monitor = await coordinator.startMonitor(session, { condition: params.condition, maxReturns: params.max_returns, remindAfterMs: params.remind_after_ms }, signal);
 					details = { session_id: params.session_id, status: "started", monitor };
 				}
 			} catch (error) {
@@ -1345,7 +1357,7 @@ export function activate(
 							? ""
 							: `  [exited${s.exit_code !== undefined && s.exit_code !== null ? ` exit_code=${s.exit_code}` : ""}${s.signal ? ` signal=${s.signal}` : ""}; removed from store]`;
 						const wake = s.wake_armed ? " [wake]" : "";
-						const monitor = s.monitor ? ` [monitor ${s.monitor.returns}/${s.monitor.max_returns} condition=${JSON.stringify(s.monitor.condition)}]` : "";
+						const monitor = s.monitor ? ` [monitor ${s.monitor.returns}/${s.monitor.max_returns} condition=${JSON.stringify(s.monitor.condition)} remind_after=${formatElapsed(s.monitor.remind_after_ms)}]` : "";
 						return `  ${String(s.session_id).padStart(3)}  pid=${String(s.pid ?? "?").padStart(6)}  ${((s.elapsed_ms / 1000).toFixed(1) + "s").padStart(8)}${wake}${monitor}  ${oneLineCommand(s.command, 60)}${exitedSuffix}\n        shell: ${sanitizeMeta(s.shell ?? "")}\n        log: ${s.log_path}${s.terminal_url ? `\n        terminal_url: ${s.terminal_url}` : ""}`;
 					})
 				: ["  (no live sessions)"];

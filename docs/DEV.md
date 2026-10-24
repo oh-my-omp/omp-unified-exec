@@ -81,7 +81,8 @@ A sibling view, indexed by concern:
 | Tern terminal HUD: pill segment, Terminals view, terminal page | `fork-features/tern-terminal-hud.ts` |
 | Removal of the Tern plugin versions up to 0.14.7 installed | `fork-features/tern-plugin-removal.ts` |
 | `term://` resources, read handler and screenshots | `fork-features/terminal-resource.ts`, `fork-features/terminal-url.ts`, `fork-features/terminal-image.ts` |
-| Monitor conditions, batching and follow-ups | `fork-features/monitor-subscription.ts` |
+| Monitors: conditions, batching, End/match/reminder delivery | `fork-features/monitor-subscription.ts`; subscriptions owned by `src/completion.ts` (`startMonitor`) |
+| Input-wait alerts: prompt detection, quiet watcher, delivery | `fork-features/input-wait.ts`; `ExecSession.watchInputWait` in `src/session.ts`; `alertInputWait` in `src/completion.ts` |
 | Command approval and host session binding | `fork-features/command-approval.ts`, `fork-features/session-binding.ts` |
 | Structured output schemas and projections | `src/script-result.ts` |
 | Tool limits, early-exit grace, session-store limits | top of `src/index.ts` |
@@ -199,10 +200,11 @@ loop; see the existing `\x` and `\u` branches for the pattern.
 ### Change a documented constant
 
 The constants in the README's `## Constants` section live in the module that
-owns them: yield limits, early-exit grace and session-store limits at the top
-of `src/index.ts`, `TERMINAL_HISTORY_CELLS` in `src/terminal-screen.ts`, the
-output caps in the host's `DEFAULT_MAX_BYTES` / `DEFAULT_MAX_LINES`. When you
-touch one:
+owns them: yield limits, early-exit grace, session-store limits and
+`INPUT_WAIT_QUIET_MS` at the top of `src/index.ts`, `TERMINAL_HISTORY_CELLS`
+in `src/terminal-screen.ts`, `DEFAULT_REMIND_AFTER_MS` in
+`fork-features/monitor-subscription.ts`, the output caps in the host's
+`DEFAULT_MAX_BYTES` / `DEFAULT_MAX_LINES`. When you touch one:
 
 1. Update the value in its owning module.
 2. Update `## Constants` (and any prose quoting the value) in `README.md` and

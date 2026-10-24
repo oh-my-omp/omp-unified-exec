@@ -93,7 +93,12 @@ that same factory before omp modules load or any tools register.
   backgrounded process exits unobserved; `set_on_exit` disarms it.
 - **Await matching output.** `monitor` watches an existing session without
   consuming output, wakes for matching batches or completion, and defaults to
-  at most ten successful match returns.
+  at most ten successful match returns. A monitor that has not returned for 20
+  minutes reminds the agent once to check the session.
+- **Input-wait alerts.** With or without a monitor, a session whose screen
+  settles on a prompt the agent has not seen (a debconf/whiptail dialog such as
+  the sshd_config question during `apt upgrade`, `[Y/n]`, a password, a pager)
+  wakes the agent.
 - **omp-native presentation.** `exec_command`, `write_stdin` and
   `kill_session` render through omp's own bash card (command line, output,
   exit chip, error tone), in the ANSI TUI and in Tern alike.
@@ -427,6 +432,7 @@ the process or consuming ordinary observations.
 | `action` | `"start"` \| `"cancel"` | `"start"` | Start/replaces the session's one subscription, or silently cancel it. |
 | `condition` | string | omitted | JavaScript regex source (no `/` delimiters); omit to return only at output closure. |
 | `max_returns` | number | `10` | Positive safe integer, counting successful match messages, not lines or End. |
+| `remind_after_ms` | number | `1200000` | Integer 1–2147483647: silence before one reminder that the monitor has not returned. |
 
 Conditions see changed/new rendered logical lines, including prompts without a
 newline; wrapped physical rows are joined. On the alternate screen, the
@@ -447,7 +453,50 @@ human HUD/slash and LRU terminations identify their reason. End merges an
 already-armed ordinary completion wake. Model `kill_session`, explicit cancel,
 replacement, reset and shutdown end monitoring silently, including a failed
 model kill. Already-enqueued follow-ups cannot be recalled. Unknown/ended
-sessions, invalid regexes and invalid limits return typed errors.
+sessions, invalid regexes, invalid limits and invalid reminder intervals return
+typed errors.
+
+If no match or End has been delivered for `remind_after_ms` (20 minutes by
+default) since the monitor started or since its last delivered match, it sends
+one `unified-exec-monitor` follow-up with `event: "timeout"` and `silent_ms`:
+the monitor has not returned, the time since the last output, the screen kind
+and the last eight non-blank screen lines (labelled as command output), and
+the terminal's read address, asking the agent to check whether the session is
+waiting for input, stalled or slow. The reminder does not count toward
+`max_returns` and does not end the monitor; it is not repeated until a
+delivered match starts a new silent period, so a waiting agent calls `monitor`
+again for another deadline. A pending match goes out before a due reminder, and
+End replaces an undelivered one.
+
+### Input-wait alerts
+
+No terminal protocol tells a program's host that it is waiting for input.
+`apt upgrade` asks about a locally modified `sshd_config` through debconf
+(openssh-server's maintainer script uses ucf, which uses debconf); debconf talks
+to its frontend over its own pipe, and the whiptail/dialog frontend reaches the
+PTY only as ordinary drawing (alternate screen, hidden cursor, box characters).
+Over `ssh` the local process state says nothing either. Every running session
+therefore examines its rendered screen once output has been quiet for 5 seconds
+and sends a `unified-exec-input-wait` follow-up that wakes the model when all of
+these hold:
+
+- no `exec_command`/`write_stdin` call is attached (its result shows the
+  screen), and no tool result has shown this exact screen yet;
+- the screen shows a prompt:
+  - **dialog** — a `<Ok>`, `<Yes>`, `<No>` or `<Cancel>` button anywhere
+    (whiptail, dialog, debconf, needrestart);
+  - **inline** — the cursor waits at the end of a line containing `[Y/n]`-style
+    choices, `(yes/no)` or `(Y/I/N/O/D/Z)`, `[default=…]`, a line ending in
+    `password …:` / `passphrase …:`, or `press Enter/Return/any key`;
+  - **pager** — the cursor sits on the bottom row after `:`, `(END)` or
+    `--More--`;
+- that screen has not been alerted before.
+
+The alert names the session and command, quotes the prompt lines as command
+output, and gives the read address. It is heuristic: a screen read through
+`read term://…` does not count as shown, and shells, progress lines and
+prompts away from the cursor are ignored. A failed send is retried at the next
+tool boundary while the screen is unchanged and unseen.
 
 ### `kill_session`
 
@@ -467,7 +516,8 @@ path.
 Lists live sessions and reports each exited one a final time (with
 `running: false`, `exit_code`/`signal` and `log_path`) before pruning it. Each
 entry has the `shell` it started with, `wake_armed` and an active monitor's
-condition/returns/limit; the response carries the current host `tool_time_utc`.
+condition/returns/limit/reminder interval; the response carries the current host
+`tool_time_utc`.
 
 ## Command
 
@@ -500,6 +550,8 @@ MAX_SESSIONS                 = 64
 LRU_PROTECTED_COUNT          = 8
 DEFAULT_MAX_BYTES            = 50 KiB  (model-visible per-call cap)
 DEFAULT_MAX_LINES            = 2000
+DEFAULT_REMIND_AFTER_MS      = 1_200_000 (monitor silence before one reminder)
+INPUT_WAIT_QUIET_MS          = 5_000 (output silence before the screen is examined for a prompt)
 ```
 
 ## Semantics
@@ -640,7 +692,8 @@ fork-features/
 ├── terminal-resource.ts  # process-global terminal keys, live/frozen projections
 ├── terminal-url.ts       # omp `term://` read handler
 ├── terminal-image.ts     # terminal screenshots (SVG → PNG)
-├── monitor-subscription.ts # monitor conditions, batching and follow-ups
+├── monitor-subscription.ts # monitor conditions, batching, reminders and follow-ups
+├── input-wait.ts         # input prompt detection and input-wait alerts
 ├── tern-plugin-removal.ts# removes the Tern plugin earlier versions installed
 └── README.md             # fork customizations and requalification
 docs/
