@@ -31,10 +31,11 @@
 
 - `Publish to npm` 和 `Interaction limit reminder` 已用 `gh workflow disable` 禁用：fork 不向 npm 发布任何内容，提醒跟踪的是上游自己的互动限制。这是仓库状态，所以把 workflow 文件同步回来也不会重新启用它们。
 - `Sync upstream`（`.github/workflows/sync-upstream.yml`）每天通过以 `CI` 为门禁的 PR 把 `upstream/main` 合并进 `main`。
+- `Release`（`.github/workflows/release.yml`）为每次推送到 `main` 生成新的 patch 版本：`fork-features/release-version.ts` 升级 `package.json` 和 `package-lock.json` 的两个版本字段，把 `Changelog.md` 顶部的 `## Unreleased` 改名为 `## X.Y.Z - YYYY-MM-DD`，并在其上新开一个空的 `## Unreleased`；随后由 bot 向 `main` 提交 `chore: release X.Y.Z`。版本号不再手动修改。短时间内连续推送可能共用一个版本；`Changelog.md` 的第一节不是 `## Unreleased` 时，运行失败。
 
 ## 预期的同步冲突
 
-`name` 紧挨着 `version` 那一行，git 把相邻行的修改视为冲突。上游每次发布都会改 `version`，所以它的同步会以待审 PR 的形式到来。解决方法：保留 `"name": "omp-unified-exec"`，采用上游的 `version`。
+`name` 紧挨着 `version` 那一行，git 把相邻行的修改视为冲突。上游每次发布都会改 `version`，所以它的同步会以待审 PR 的形式到来。解决方法：保留 `"name": "omp-unified-exec"`，`package.json` 与 `package-lock.json` 中保留 fork 自己的 `version`；合并进入 `main` 后由 `Release` 升级。
 
 本仓库的 `exec_command` 只用 PTY（[#61](https://github.com/oh-my-omp/omp-unified-exec/issues/61)）：管道后端（`spawnPipes`、codex 首尾缓冲区的移植、`collectOutputUntilDeadline`、流式 `OutputTextSanitizer` 和管道 monitor 解码）、`tty` 参数与结果字段，以及移除宿主 `bash` 的参数都已删除，PowerShell 以 `-NoProfile -NoLogo -Command` 运行。上游对这些代码的改动会以 modify/delete 或内容冲突的形式到来。解决方法：保留删除，只把对 PTY 会话仍然成立的事实（shell 选择、信号、Windows 进程树、结果字段）搬进 PTY 代码；不要恢复管道路径、`tty` 参数、该参数或只为管道存在的 PowerShell 参数。
 

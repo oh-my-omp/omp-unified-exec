@@ -9,7 +9,8 @@ name: Sync upstream
 #     onto `sync/review`, opens a PR, and is LEFT OPEN for a human to resolve.
 #   - When everything merges cleanly there is just the one auto-merge PR and
 #     no review PR. Upstream release commits bump `version` next to this
-#     fork's renamed `name` in package.json, so they arrive as review PRs
+#     fork's renamed `name` in package.json, so they arrive as review PRs;
+#     keep the fork's version, and release.yml bumps it after the merge
 #     (see fork-features/README.md).
 #
 # Guarantees and the reasoning behind them:

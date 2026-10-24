@@ -42,13 +42,21 @@ retained as compatibility shims.
   workflow files back in does not re-enable them.
 - `Sync upstream` (`.github/workflows/sync-upstream.yml`) merges `upstream/main`
   into `main` daily through PRs gated on `CI`.
+- `Release` (`.github/workflows/release.yml`) gives every push to `main` a new
+  patch version: `fork-features/release-version.ts` bumps `package.json` and
+  both version fields of `package-lock.json`, and renames the top
+  `## Unreleased` section of `Changelog.md` to `## X.Y.Z - YYYY-MM-DD` under a
+  fresh `## Unreleased`; the bot commits `chore: release X.Y.Z` to `main`.
+  Versions are not edited by hand. A burst of pushes may share one version,
+  and the run fails if `Changelog.md` does not start with `## Unreleased`.
 
 ## Expected sync conflict
 
 `name` sits on the line next to `version`, and git treats edits to adjacent lines
 as a conflict. Every upstream release bumps `version`, so its sync arrives as a
-review PR. Resolve it by keeping `"name": "omp-unified-exec"` and taking upstream's
-`version`.
+review PR. Resolve it by keeping `"name": "omp-unified-exec"` and the fork's own
+`version` in `package.json` and `package-lock.json`; `Release` bumps it once the
+merge lands on `main`.
 
 `exec_command` is PTY-only here ([#61](https://github.com/oh-my-omp/omp-unified-exec/issues/61)):
 the pipe backend (`spawnPipes`, the port of codex's head/tail buffer,

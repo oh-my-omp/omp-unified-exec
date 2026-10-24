@@ -1,0 +1,85 @@
+name: Release
+
+# Every push to main gets a new patch version, committed straight back to main
+# as `chore: release X.Y.Z` by fork-features/release-version.ts:
+# package.json, both version fields of package-lock.json, and the top
+# `## Unreleased` section of Changelog.md renamed to the version.
+#
+# Users install from main (`omp install https://github.com/oh-my-omp/omp-unified-exec`),
+# so the release is the commit; there are no tags and nothing is published to npm.
+#
+#   - The release commit is pushed with GITHUB_TOKEN, which starts no workflow:
+#     neither this one again nor CI. It changes version metadata only.
+#   - `concurrency` runs releases one at a time and keeps only the newest
+#     pending run. Every run releases the current tip of main, so a burst of
+#     pushes may share one version; the latest main always gets one.
+#   - A run whose tip is already a release commit (an earlier run released this
+#     push along with its own) does nothing.
+#   - If main moved between checkout and push, the push that moved it has its
+#     own run, which releases it; this run ends successfully. Any other push
+#     failure fails the run.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      BOT_NAME: github-actions[bot]
+      BOT_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+
+      - name: Skip a tip that is already a release
+        id: tip
+        run: |
+          author=$(git log -1 --format=%ae)
+          subject=$(git log -1 --format=%s)
+          if [ "$author" = "$BOT_EMAIL" ] && printf '%s\n' "$subject" | grep -Eq '^chore: release [0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "main is already released by $subject"
+            echo "released=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.tip.outputs.released != 'true'
+        with:
+          bun-version: latest
+
+      - name: Bump the patch version
+        id: bump
+        if: steps.tip.outputs.released != 'true'
+        run: echo "version=$(bun fork-features/release-version.ts)" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push the release
+        if: steps.tip.outputs.released != 'true'
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          base=$(git rev-parse HEAD)
+          git config user.name "$BOT_NAME"
+          git config user.email "$BOT_EMAIL"
+          git commit -am "chore: release $VERSION"
+          if git push origin HEAD:main; then
+            echo "Released $VERSION"
+            exit 0
+          fi
+          git fetch origin main
+          if [ "$(git rev-parse origin/main)" != "$base" ]; then
+            echo "::notice::main moved past $base; the run for that push releases it."
+            exit 0
+          fi
+          exit 1
