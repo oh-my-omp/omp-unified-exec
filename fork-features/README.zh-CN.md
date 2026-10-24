@@ -25,7 +25,8 @@
 | 命令审批与宿主会话绑定（[#29](https://github.com/oh-my-omp/omp-unified-exec/issues/29)） | `fork-features/command-approval.ts`、`fork-features/session-binding.ts`、`fork-features/omp-presentation.ts`、`fork-features/omp-tools.d.ts`、`src/index.ts`、`tests/command-approval.test.ts` | `exec_command` 在执行之前用内置 bash 的决定逻辑检查原始 `cmd`。第一次 `session_start` 经 `AgentRegistry.global().get(ctx.agent.id)?.session` 取得会话并核对 `sessionManager` 身份；switch/branch 只复核身份。每次审批读取实际会话的实时 settings，不用全局 settings 或 cwd。Unbound 不读 settings，返回裸 `exec`，不禁用执行。其他工具保留宿主默认审批。 | 仅 fork |
 | 经 `exec_command` 执行的 `gh` 变更命令在 PTY 启动前使 omp 的 `issue://` / `pr://` 视图缓存失效（[#32](https://github.com/oh-my-omp/omp-unified-exec/issues/32)） | `fork-features/omp-presentation.ts`（`loadGithubCacheInvalidation`）、`fork-features/omp-tools.d.ts`；`src/index.ts` 中的 `runExecCommand` 与 `activate` | 交互式 `gh` 变更命令（merge 确认、comment 编辑器）需要终端，因此走 `exec_command`，宿主 bash 的失效从来看不到它们。factory 导入 omp 的 `tools/gh-cache-invalidation.invalidateGithubCacheForBashCommand`，在 spawn 之前以原始 `cmd` 调用，与 `BashTool.execute` 相同；检测逻辑与 SQLite 缓存都归宿主所有。omp 升级后重新验证该导出仍存在，且经 `exec_command` 的 `gh issue close` 使下一次 `issue://` 读取重新获取。 | 仅 fork |
 | 仅输入的 `write_stdin`；空轮询及其截止时间/配置路径已删除（[#44](https://github.com/oh-my-omp/omp-unified-exec/issues/44)） | `src/index.ts`、`src/completion.ts`、`src/long-wait.ts`、`src/format-time.ts`、`src/tool-result.ts`、`src/script-result.ts`、`fork-features/omp-presentation.ts`；删除 `src/time.ts` | 状态与内容用 `term://` 读取，事件与完成用 monitor 等待；写入要求解码后非空，否则返回类型化 `empty_poll_removed`，不消费观察。完成唤醒指向各终端读取地址；输入附着窗口与仅在人明确要求时启用 wake 的策略不变。 | 仅 fork |
-| 删除上游的 IV/DC 设计文档（`docs/DC-0001-agentic-workspace.md`、`docs/IV-0001-long-wait-and-wake-control.md`、`docs/IV-0002-output-lifecycle-and-rendering.md`）以及 `AGENTS.md` 中改动前先读它们的规则 | `docs/`、`AGENTS.md`、`README.md`、`README.zh-CN.md`、`docs/DEV.md` | 它们承载的是上游的设计与文档制度，已与 fork 严重脱节。fork 的可观察契约在 README 中，与上游的差异和重新验证方法在本文件中，不变量在代码与测试中。 | 仅 fork |
+| 删除上游的 IV/DC 设计文档（`docs/DC-0001-agentic-workspace.md`、`docs/IV-0001-long-wait-and-wake-control.md`、`docs/IV-0002-output-lifecycle-and-rendering.md`） | `docs/`、`README.md`、`README.zh-CN.md`、`docs/DEV.md` | 它们承载的是上游的设计与文档制度，已与 fork 严重脱节。fork 的可观察契约在 README 中，与上游的差异和重新验证方法在本文件中，不变量在代码与测试中。 | 仅 fork |
+| 为 fork 重写 `AGENTS.md`：本仓库的 changelog、双语文档、提交、定制与验证规则。上游改动前先读 IV/DC 文档的规则、Pi codemode 重新验证要求、pi-mono 克隆指引和前沿模型列表都已去掉 | `AGENTS.md` | 上游的文件指导的是一个 Pi 包的工作，其代码和文档已被 fork 删除；其模型列表列的是已被取代、本仓库也没有任何地方使用的模型。 | 仅 fork |
 | 会话日志名带上所属 omp 的 pid（`pi-unified-exec-<pid>-<sid>-<hex>.log`）；最后写入超过七天、且写入方确认已不存在的日志被替换为标准 gzip `<log>.gz`，从不删除 | `fork-features/log-archive.ts`、`fork-features/omp-presentation.ts`（`scheduleLogArchive`）、`src/session.ts`、`tests/log-archive.test.ts` | 上游让所有原始日志永远以未压缩形式保留。写入方不存在指：本进程已关闭该日志流（一份跨重载保留的进程级打开日志流记录），文件名中的 pid 已不存在，或日志最后写入于本次开机之前。仅凭 mtime 无法证明别的进程没有仍持有某个空闲会话的 fd，而在写入方仍存活时 unlink 会丢失其后续输出。gzip 先写入私有的 `wx` 临时文件，用 `link` 发布（从不覆盖已有归档），只有源文件的 device、inode、大小与 mtime 都未变时才 unlink 源文件。omp 在加载时扫描一次，之后由不阻止进程退出的定时器每天扫描一次。 | 仅 fork |
 
 已有工具名与仍保留的环境变量（`PI_UNIFIED_EXEC_*`）保持原名。只用于已删除路径的模块直接移除，不保留兼容 shim。
@@ -50,7 +51,9 @@
 
 `README.md` 和 `README.zh-CN.md` 归 fork 所有。同步改动到 README 时，保留 fork 的版本，只把在这里仍然成立的上游事实（工具参数、限制、语义）写进两个文件中 fork 对应的章节；两者保持逐节互译，`fork-features/README.md` 和 `fork-features/README.zh-CN.md` 也一样。
 
-上游的 IV/DC 设计文档及 `AGENTS.md` 中先读它们的规则已删除。上游对 `docs/IV-*`、`docs/DC-*` 或该规则的改动会以 modify/delete 或内容冲突的形式到来。解决方法：保留删除，只把在这里仍然成立的事实写进 README 或本文件，不恢复这些文档、指向它们的链接或先读规则。
+上游的 IV/DC 设计文档已删除。上游对 `docs/IV-*` 或 `docs/DC-*` 的改动会以 modify/delete 冲突的形式到来。解决方法：保留删除，只把在这里仍然成立的事实写进 README 或本文件，不恢复这些文档或指向它们的链接。
+
+`AGENTS.md` 归 fork 所有。上游对它的改动会以内容冲突的形式到来。解决方法：保留 fork 的文件，只搬入适用于本仓库的规则；不恢复先读 IV/DC 文档的规则、Pi codemode 重新验证要求、pi-mono 克隆指引或前沿模型列表。
 
 会话日志的命名与归档归 fork 所有。上游对 `ExecSession`（`src/session.ts`）中日志路径的改动会以内容冲突的形式到来。解决方法：保留 `fork-features/log-archive.ts` 中的 `sessionLogName` 与 `trackOpenLog`，只搬入上游关于写日志的事实。
 
