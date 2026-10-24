@@ -1,23 +1,22 @@
 /**
  * Unit tests for the CompletionCoordinator (src/completion.ts) — the
  * exactly-once observation invariant, observation leases, suppression paths,
- * batching, and bounded wake-message content. All tests use fake sessions and
- * a fake send; no subprocesses, no long waits (debounce is 5 ms).
+ * batching, and bounded notice metadata. All tests use fake sessions and
+ * a fake notice dispatcher; no subprocesses, no long waits (debounce is 5 ms).
  */
 
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import {
-	buildWakeMessage,
 	CompletionCoordinator,
 	type CompletionSessionLike,
-	type CompletionSnapshot,
 	sanitizeMeta,
-	type WakeMessage,
 } from "../src/completion.ts";
+import { buildNoticeMessage, NoticeDispatcher, type NoticeMessage, type TerminalNotice } from "../fork-features/terminal-notice.ts";
 
 class FakeSession implements CompletionSessionLike {
 	readonly id: number;
+	title = "Background sleep";
 	displayCommand = "sleep 99";
 	cwd = "/tmp/project";
 	startedAt = Date.now() - 1234;
@@ -52,20 +51,24 @@ class FakeSession implements CompletionSessionLike {
 }
 
 function makeCoordinator(opts: { failSends?: number } = {}) {
-	const sent: WakeMessage[] = [];
+	const sent: NoticeMessage[] = [];
 	const errors: unknown[] = [];
 	let remainingFailures = opts.failSends ?? 0;
-	const coordinator = new CompletionCoordinator({
-		send: (m) => {
+	const notices = new NoticeDispatcher({
+		send: (message) => {
 			if (remainingFailures > 0) {
 				remainingFailures--;
 				throw new Error("send failed");
 			}
-			sent.push(m);
+			sent.push(message);
 		},
-		debounceMs: 5,
-		onSendError: (e) => errors.push(e),
+		// The coordinator owns this fixture's flush timing; dispatcher retries
+		// happen only at the explicit safe boundaries exercised below.
+		setTimeoutFn: () => 1,
+		clearTimeoutFn: () => {},
+		onSendError: (error) => errors.push(error),
 	});
+	const coordinator = new CompletionCoordinator({ notices, debounceMs: 5 });
 	return { coordinator, sent, errors };
 }
 
@@ -304,7 +307,7 @@ describe("CompletionCoordinator", () => {
 		const s = new FakeSession(1);
 		coordinator.register(s);
 		s.exit(0);
-		coordinator.observeViaListing(1); // reaped by list_sessions before the debounce
+		coordinator.observeViaListing(1); // observed before the notice debounce
 		await settle();
 		assert.equal(sent.length, 0);
 	});
@@ -365,24 +368,23 @@ describe("CompletionCoordinator", () => {
 	});
 });
 
-describe("buildWakeMessage", () => {
-	it("caps the number of listed sessions", () => {
-		const snapshots: CompletionSnapshot[] = Array.from({ length: 40 }, (_, i) => ({
-			sessionId: i + 1,
-			command: `job ${i + 1}`,
-			cwd: "/tmp",
-			startedAtMs: 0,
-			elapsedMs: 1000,
-			exitCode: 0,
-			signal: null,
-			failureMessage: null,
-			logPath: `/tmp/log-${i + 1}.log`,
-			terminalUrl: `term://${i + 1}-fake`,
+describe("buildNoticeMessage", () => {
+	it("includes every terminal and groups multiple reasons under one heading", () => {
+		const notices: TerminalNotice[] = Array.from({ length: 40 }, (_, i) => ({
+			identity: { sessionId: i + 1, title: `Job ${i + 1}`, logPath: `/tmp/log-${i + 1}.log`, terminalUrl: `term://${i + 1}-fake` },
+			body: { kind: "exit_wake", command: `job ${i + 1}`, cwd: "/tmp", elapsedMs: 1000, exitCode: 0, signal: null, failure: null },
 		}));
-		const msg = buildWakeMessage(snapshots);
-		assert.match(msg.content, /40 background sessions exited/);
-		assert.match(msg.content, /and 24 more/);
-		assert.ok(msg.details.sessions.length <= 16);
+		notices.push({ identity: notices[39]!.identity, body: { kind: "abnormal_return", command: "job 40", reason: "failed" } });
+		const msg = buildNoticeMessage(notices);
+		assert.match(msg.content, /40 terminals: 41 notices/);
+		assert.equal(msg.details.notices.length, 41);
+		assert.deepEqual(msg.details.notices.slice(39).map(({ session_id, title, kind }) => ({ session_id, title, kind })), [
+			{ session_id: 40, title: "Job 40", kind: "exit_wake" },
+			{ session_id: 40, title: "Job 40", kind: "abnormal_return" },
+		]);
+		assert.equal(msg.content.split('- session_id=40 title="Job 40"').length, 2, "one terminal heading for both notices");
+		assert.match(msg.content, /on_exit wake/);
+		assert.match(msg.content, /returned abnormally: failed/);
 	});
 });
 

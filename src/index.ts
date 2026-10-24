@@ -4,7 +4,7 @@
  *
  * Tools exposed to the LLM (the host's `bash` stays active for short one-shot
  * commands):
- *   - exec_command(cmd, workdir?, shell?, cols?, rows?, yield_time_ms?, on_exit?)
+ *   - exec_command(cmd, title, workdir?, shell?, cols?, rows?, yield_time_ms?, on_exit?)
  *   - write_stdin(session_id, chars?, chars_b64?, yield_time_ms?)
  *   - set_on_exit(session_id, on_exit)            [disarm/re-arm wake without kill]
  *   - monitor(session_id, condition?, …)         [future-output wakes]
@@ -25,6 +25,10 @@
  *     session; the next turn can still drive it.
  *   - Sessions are terminated on session_shutdown (codex parity); a process
  *     that exits is never restarted.
+ *   - A background terminal stays listed after its command returns until the
+ *     terminal lifecycle reclaims it (fork-features/terminal-lifecycle.ts);
+ *     every follow-up about a terminal is a terminal notice
+ *     (fork-features/terminal-notice.ts).
  *   - Every byte the child writes goes to a per-session log file at
  *     <tmpdir>/pi-unified-exec-<pid>-<sid>-<random>.log. The LLM sees the rendered
  *     screen (capped at ~50 KiB / 2000 lines); the raw stream stays in the log.
@@ -41,6 +45,8 @@ import { type ActivatedExtension, withHostPresentation } from "../fork-features/
 import { approvalCommand, approveBoundCommand, type CommandApprovalHost } from "../fork-features/command-approval.ts";
 import { bindingContext, bindSession, type HostBindingState, recheckBinding } from "../fork-features/session-binding.ts";
 import { MonitorError } from "../fork-features/monitor-subscription.ts";
+import { type LifecycleClock, type ReclaimResult, TerminalLifecycle } from "../fork-features/terminal-lifecycle.ts";
+import { MAX_TITLE_CHARS, NoticeDispatcher, outcomeText, parseTerminalTitle } from "../fork-features/terminal-notice.ts";
 import { type CollectResult, NO_OUTPUT } from "./collect.ts";
 import { CompletionCoordinator, type OnExitPolicy, sanitizeMeta } from "./completion.ts";
 import { formatElapsed, nowUtcIso } from "./format-time.ts";
@@ -93,6 +99,8 @@ const LRU_PROTECTED_COUNT = 8;
 const OUTPUT_POLL_INTERVAL_MS = 250; // exec/input streaming updates
 // A screen that stays this quiet is examined for an unseen input prompt.
 const INPUT_WAIT_QUIET_MS = 5_000;
+// Probe interval while confirming that a reclaimed terminal's leftover process group is gone.
+const GROUP_PROBE_MS = 50;
 // PTY dimension clamps for exec_command's cols/rows.
 const MIN_PTY_COLS = 20;
 const MAX_PTY_COLS = 500;
@@ -151,6 +159,10 @@ interface ExtensionCtx {
 	store: SessionStore;
 	/** Agent-level wake scheduling for on_exit: "wake" (see completion.ts). */
 	coordinator: CompletionCoordinator;
+	/** The one delivery path for terminal notices. */
+	notices: NoticeDispatcher;
+	/** Owns background terminals from their session_id to their reclaim. */
+	lifecycle: TerminalLifecycle;
 	ui: ExtensionContext["ui"] | undefined;
 	widgetVisible: boolean;
 	exitUnsubscribers: Map<number, () => void>;
@@ -175,6 +187,7 @@ interface ExtensionCtx {
 
 type ExecCommandArgs = {
 	cmd: string;
+	title: string;
 	workdir?: string;
 	shell?: string;
 	cols?: number;
@@ -257,11 +270,16 @@ async function runExecCommand(
 	signal: AbortSignal | undefined,
 	onUpdate: AgentToolUpdateCallback<ProcessUpdateDetails> | undefined,
 	cwd: string,
+	toolCallId: string,
 ): Promise<ResponseShape> {
 	const finalizeResponse = (input: FinalizeInput): ResponseShape =>
 		finalizeProcessResult({ ...input, operation: "exec_command" });
 	if (ctx.shuttingDown) {
 		throw new Error("unified-exec: session is shutting down; not starting new commands.");
+	}
+	const title = parseTerminalTitle(args.title);
+	if (title === undefined) {
+		throw new Error(`exec_command: title is required — a short nonblank name for this terminal (at most ${MAX_TITLE_CHARS} characters shown); notices and list_sessions identify the terminal by it.`);
 	}
 
 	let shellBin = args.shell;
@@ -328,6 +346,7 @@ async function runExecCommand(
 		cols: args.cols !== undefined ? clamp(Math.floor(args.cols), MIN_PTY_COLS, MAX_PTY_COLS) : undefined,
 		rows: args.rows !== undefined ? clamp(Math.floor(args.rows), MIN_PTY_ROWS, MAX_PTY_ROWS) : undefined,
 		displayCommand: args.cmd,
+		title,
 		windowsVerbatimArguments: shellCommand.windowsVerbatimArguments,
 		appearance: ctx.appearance,
 		inputWait: { quietMs: INPUT_WAIT_QUIET_MS, onAlert: (alert) => ctx.coordinator.alertInputWait(alert) },
@@ -426,16 +445,12 @@ async function runExecCommand(
 			// Suppresses the wake for live victims; keeps a tombstone for a
 			// naturally-exited wake session so its completion is not silently lost.
 			ctx.coordinator.handleEviction(pruned);
+			ctx.lifecycle.evicted(pruned, ctx.store.maxSessions);
 			ctx.ui?.notify(`unified-exec: evicted session ${pruned.id} (LRU, over cap ${ctx.store.maxSessions})`, "warning");
 		}
 		if (count >= WARNING_SESSIONS) {
 			ctx.ui?.notify(`unified-exec: ${count}/${ctx.store.maxSessions} sessions open`, "warning");
 		}
-		// Note: sessions stay in the store until a later tool call observes the
-		// exit: write_stdin returns the final exit_code/output, and list_sessions
-		// reports exited sessions one last time (with exit info) before removing
-		// them. Matches codex's lazy-drain so exit information is never silently
-		// lost across turns.
 
 		// Wait until the yield deadline (or abort/exit). Stream updates meanwhile.
 		const deadlineMs = start + yieldTimeMs;
@@ -453,6 +468,11 @@ async function runExecCommand(
 			// check, the coordinator's exit listener (which fires even for
 			// already-exited sessions) still delivers the completion exactly once.
 			if (wantsWake) ctx.coordinator.register(session);
+			// From here the terminal lifecycle owns it until reclaim. A shell that
+			// already exited (its terminal held open) has returned, and this result
+			// shows it.
+			ctx.lifecycle.track(session);
+			ctx.lifecycle.noteToolRead(toolCallId, session.id);
 			return finalizeResponse({
 				wallTimeSec: wallSec,
 				collected,
@@ -536,7 +556,9 @@ async function runWriteStdin(
 				// Session already exited; return its final state.
 				const collected = await session.collect({ deadlineMs: Date.now() + 50, externalAbort: signal });
 				const armed = ctx.coordinator.isArmed(session.id);
-				removeSession(ctx, session.id);
+				// The terminal stays listed until its lifecycle reclaims it; this
+				// result shows the returned terminal, which counts as a read.
+				ctx.lifecycle.noteToolRead(toolCallId, session.id);
 				ctx.coordinator.markPendingTerminal(session.id, toolCallId);
 				const wallSec = (Date.now() - start) / 1000;
 				return finalizeResponse({
@@ -567,7 +589,7 @@ async function runWriteStdin(
 
 		if (session.hasExited) {
 			const armed = ctx.coordinator.isArmed(session.id);
-			removeSession(ctx, session.id);
+			ctx.lifecycle.noteToolRead(toolCallId, session.id);
 			// Terminal result constructed: keep the lease until Pi finalizes it
 			// (tool_execution_end) so an error/cancelled finalization keeps the
 			// completion wake-eligible.
@@ -592,6 +614,8 @@ async function runWriteStdin(
 		// (if armed) stays eligible.
 		const armed = ctx.coordinator.isArmed(session.id);
 		ctx.coordinator.releaseObservation(session.id, toolCallId);
+		// A shell that already exited (terminal held open) has returned; the result shows it.
+		ctx.lifecycle.noteToolRead(toolCallId, session.id);
 		return finalizeResponse({
 			wallTimeSec: wallSec,
 			collected,
@@ -628,7 +652,7 @@ function terminalWriteExtra(wakeWasArmed: boolean): Partial<ResponseShape> {
 }
 
 
-/** Result of terminating a session via kill_session or the sessions command. */
+/** Result of terminating a session via kill_session, a human kill or a reclaim. */
 interface TerminateOutcome {
 	session: ExecSession;
 	escalated: boolean;
@@ -638,26 +662,35 @@ interface TerminateOutcome {
 }
 
 /**
- * Kill a session (initial signal → 2s grace → SIGKILL escalation), drain its
- * trailing output, and remove it from the store — but ONLY on confirmed
- * exit. A kill that doesn't land (taskkill failure, access denied,
- * unkillable state) keeps the session in the store and returns
- * killed: false, so ownership of a live process is never silently dropped.
- * Shared by the kill_session tool and the /unified-exec-sessions command.
+ * Who ends the session. A kill by the model or a human is a normal ending:
+ * the terminal stays listed and its lifecycle reclaims it later (a
+ * terminal the lifecycle does not own leaves at once). A reclaim removes it.
+ */
+type TerminateOrigin =
+	| { readonly kind: "model"; readonly toolCallId: string }
+	| { readonly kind: "human" }
+	| { readonly kind: "reclaim" };
+
+/**
+ * Kill a session (initial signal → 2s grace → SIGKILL escalation) and drain
+ * its trailing output. A kill that doesn't land (taskkill failure, access
+ * denied, unkillable state) keeps the session and returns killed: false, so
+ * ownership of a live process is never silently dropped.
  */
 async function terminateSessionById(
 	ctx: ExtensionCtx,
 	sid: number,
 	initial: NodeJS.Signals,
-	origin: "model" | "human" = "human",
+	origin: TerminateOrigin,
 ): Promise<TerminateOutcome | undefined> {
-	if (origin === "model") ctx.coordinator.cancelMonitor(sid);
+	if (origin.kind !== "human") ctx.coordinator.cancelMonitor(sid);
 	const session = ctx.store.get(sid);
 	if (!session) return undefined;
-	// Explicit kill (model tool or human slash command): suppress the wake
-	// BEFORE signaling so the induced exit can never race a wake enqueue.
+	// Explicit kill: suppress the wake BEFORE signaling so the induced exit can
+	// never race a wake enqueue, and mark the coming return as a normal ending.
 	ctx.coordinator.suppress(sid);
-	if (origin === "human") ctx.coordinator.monitorEndReason(sid, "human_terminated");
+	ctx.lifecycle.noteKill(sid);
+	if (origin.kind === "human") ctx.coordinator.monitorEndReason(sid, "human_terminated");
 	session.kill(initial);
 	// Event-driven wait (resolves the instant the exit fires): up to 2s.
 	await waitForExitOrDeadline({ exited: session.exited, durationMs: 2000 });
@@ -675,14 +708,40 @@ async function terminateSessionById(
 	const killed = session.hasExited;
 	if (killed) {
 		ctx.coordinator.confirmKill(sid);
-		removeSession(ctx, sid);
+		if (origin.kind === "reclaim" || !ctx.lifecycle.isTracked(sid)) removeSession(ctx, sid);
+		// The model's kill result shows the final screen; a human ended it while looking at it.
+		else if (origin.kind === "model") ctx.lifecycle.noteToolRead(origin.toolCallId, sid);
+		else ctx.lifecycle.markRead(sid);
 	} else {
 		// The kill did NOT land — the process is still alive and still owned.
 		// Restore its prior wake eligibility.
 		ctx.coordinator.restoreAfterFailedKill(sid);
 		ctx.coordinator.monitorEndReason(sid, "natural");
+		ctx.lifecycle.killFailed(sid);
 	}
 	return { session, escalated, collected, killed };
+}
+
+/**
+ * After its terminal closed, a session's process group can still have
+ * members: on macOS the terminal closes with the shell while background jobs
+ * keep running. Reclaim ends them too — SIGTERM, then SIGKILL — and confirms
+ * the group is empty. No exit event exists for processes that are not our
+ * child, so the confirmation probes the group with signal 0.
+ */
+async function killLeftoverGroup(session: ExecSession): Promise<"none" | "killed" | "survived"> {
+	if (!session.hasExited || !session.signalProcessGroup(0)) return "none";
+	const goneWithin = async (ms: number): Promise<boolean> => {
+		for (let waited = 0; waited < ms; waited += GROUP_PROBE_MS) {
+			if (!session.signalProcessGroup(0)) return true;
+			await sleep(GROUP_PROBE_MS);
+		}
+		return !session.signalProcessGroup(0);
+	};
+	session.signalProcessGroup("SIGTERM");
+	if (await goneWithin(2000)) return "killed";
+	session.signalProcessGroup("SIGKILL");
+	return (await goneWithin(500)) ? "killed" : "survived";
 }
 
 function runningSessions(ctx: ExtensionCtx): ExecSession[] {
@@ -711,7 +770,7 @@ function formatRunningSessionsWidget(ctx: ExtensionCtx, sessions: ExecSession[])
 		...shown.map((s) => {
 			const wake = ctx.coordinator.isArmed(s.id) ? " [wake]" : "";
 			const held = s.shellExited ? " (shell exited, terminal held)" : "";
-			return `  #${s.id} ${formatElapsed(now - s.startedAt)}${wake}${held} ${oneLineCommand(s.displayCommand, 72)} (${s.cwd})`;
+			return `  #${s.id} ${formatElapsed(now - s.startedAt)}${wake}${held} ${oneLineCommand(s.title, 40)} — ${oneLineCommand(s.displayCommand, 60)} (${s.cwd})`;
 		}),
 	];
 	if (sessions.length > shown.length) lines.push(`  … ${sessions.length - shown.length} more; use list_sessions`);
@@ -750,9 +809,8 @@ function updateRunningSessionsUi(ctx: ExtensionCtx, opts: { showWidget?: boolean
 function watchSessionExit(ctx: ExtensionCtx, session: ExecSession): void {
 	ctx.exitUnsubscribers.get(session.id)?.();
 	const unsubscribe = session.onExit(() => {
-		// Preserve lazy-drain semantics: an exited session stays in the store until
-		// write_stdin/list_sessions/kill_session observes it. The UI only reflects
-		// currently running processes.
+		// An exited session stays in the store until its lifecycle reclaims it.
+		// The UI only reflects currently running processes.
 		updateRunningSessionsUi(ctx);
 	});
 	ctx.exitUnsubscribers.set(session.id, unsubscribe);
@@ -828,50 +886,56 @@ function startStreaming(
 	};
 }
 
-/** Activate the tool core; the default factory supplies omp's appearance and live shell setting. */
+/**
+ * Activate the tool core; the default factory supplies omp's appearance and
+ * live shell setting. `lifecycleClock` replaces the host clock for terminal
+ * TTLs and the minute sweep.
+ */
 export function activate(
 	pi: ExtensionAPI,
 	appearance: () => TerminalAppearance = () => "dark",
 	shellPath?: () => string | undefined,
 	approvalHost?: CommandApprovalHost,
 	invalidateGithubCache?: (command: string) => void,
+	lifecycleClock: LifecycleClock = {},
 ): ActivatedExtension {
 	let binding: HostBindingState = { kind: "pending" };
-	const coordinator = new CompletionCoordinator({
+	const notices = new NoticeDispatcher({
+		// If pi is idle this starts a model turn; if a run is active it is
+		// queued as a follow-up — never steering/interrupting the current turn.
 		send: (message) => {
-			// If pi is idle this starts a model turn; if a run is active it is
-			// queued as a follow-up — never steering/interrupting the current turn.
 			pi.sendMessage(
-				{
-					customType: "unified-exec-completed",
-					content: message.content,
-					display: true,
-					details: message.details,
-				},
-				{ triggerTurn: true, deliverAs: "followUp" },
-			);
-		},
-		sendMonitor: (message) => {
-			pi.sendMessage(
-				{ customType: "unified-exec-monitor", content: message.content, display: true, details: message.details },
-				{ triggerTurn: true, deliverAs: "followUp" },
-			);
-		},
-		sendInputWait: (message) => {
-			pi.sendMessage(
-				{ customType: "unified-exec-input-wait", content: message.content, display: true, details: message.details },
+				{ customType: "unified-exec-notice", content: message.content, display: true, details: message.details },
 				{ triggerTurn: true, deliverAs: "followUp" },
 			);
 		},
 		onSendError: (err) => {
 			ctx.ui?.notify(
-				`unified-exec: failed to deliver completion notification: ${err instanceof Error ? err.message : String(err)}`,
+				`unified-exec: failed to deliver a terminal notice: ${err instanceof Error ? err.message : String(err)}`,
 				"warning",
 			);
 		},
 	});
+	const coordinator = new CompletionCoordinator({ notices });
+	const lifecycle = new TerminalLifecycle({
+		...lifecycleClock,
+		notices,
+		reclaim: async (id): Promise<ReclaimResult> => {
+			const session = ctx.store.get(id);
+			if (!session) return { kind: "gone", killedProcesses: false };
+			const terminalOpen = !session.hasExited;
+			const leftover = await killLeftoverGroup(session);
+			if (leftover === "survived") return { kind: "held" };
+			const outcome = await terminateSessionById(ctx, id, "SIGTERM", { kind: "reclaim" });
+			updateRunningSessionsUi(ctx);
+			if (outcome && !outcome.killed) return { kind: "held" };
+			return { kind: "gone", killedProcesses: terminalOpen || leftover === "killed" };
+		},
+	});
 	const ctx: ExtensionCtx = {
 		coordinator,
+		notices,
+		lifecycle,
 		store: new SessionStore({
 			maxSessions: MAX_SESSIONS, lruProtectedCount: LRU_PROTECTED_COUNT,
 			onEvict: (session, reason) => {
@@ -890,9 +954,11 @@ export function activate(
 		invalidateGithubCache,
 	};
 
-	// Observation finalization: "observed" is committed at pi's finalized
-	// tool-result event, not merely when the handler returns — see completion.ts.
+	// Observation finalization: "observed" (and a tool result's read of a
+	// returned terminal) is committed at pi's finalized tool-result event, not
+	// merely when the handler returns — see completion.ts.
 	pi.on("tool_execution_end", async (event) => {
+		ctx.lifecycle.commitToolReads(event.toolCallId, event.isError === true);
 		ctx.coordinator.handleToolExecutionEnd(event.toolCallId, event.isError === true);
 	});
 	pi.on("agent_settled", async () => {
@@ -903,7 +969,10 @@ export function activate(
 		if (approvalHost && binding.kind === "pending") binding = bindSession(approvalHost, bindingContext(eventCtx));
 		ctx.ui = eventCtx.ui;
 		ctx.shuttingDown = false; // reload/new/resume re-arms the extension
-		ctx.coordinator.reset(); // never resurrect wakes from a previous session
+		// Never resurrect notices or wakes from a previous session.
+		ctx.notices.reset();
+		ctx.coordinator.reset();
+		ctx.lifecycle.restart();
 		updateRunningSessionsUi(ctx);
 	});
 
@@ -928,9 +997,12 @@ export function activate(
 		// including sessions still inside exec_command's early-exit grace
 		// window (spawned but not yet inserted into the store).
 		ctx.shuttingDown = true;
-		// Cancel wake timers/listeners first: no stale prompt may ever be
-		// injected into a new or closed session.
+		// Cancel lifecycle sweeps, wake timers/listeners and pending notices
+		// first: shutdown's own kills create no notices, and no stale prompt may
+		// ever be injected into a new or closed session.
+		ctx.lifecycle.shutdown();
 		ctx.coordinator.shutdown();
+		ctx.notices.stop();
 		const drained = ctx.store.terminateAll();
 		for (const s of ctx.pendingSessions) {
 			void s.releaseForShutdown();
@@ -973,10 +1045,6 @@ export function activate(
 		description: "List live unified-exec sessions and optionally kill one (or all)",
 		handler: async (_args, cmdCtx) => {
 			ctx.ui = cmdCtx.ui;
-			// Reap silently-exited sessions first so the picker only shows live ones.
-			for (const s of ctx.store.values()) {
-				if (s.hasExited) removeSession(ctx, s.id);
-			}
 			updateRunningSessionsUi(ctx);
 			const sessions = runningSessions(ctx);
 			if (sessions.length === 0) {
@@ -987,7 +1055,7 @@ export function activate(
 			const labels = sessions.map((s) => {
 				const wake = ctx.coordinator.isArmed(s.id) ? " [wake]" : "";
 				const held = s.shellExited ? " (shell exited, terminal held)" : "";
-				return `#${s.id} ${formatElapsed(now - s.startedAt)}${wake}${held} ${oneLineCommand(s.displayCommand, 60)}`;
+				return `#${s.id} ${formatElapsed(now - s.startedAt)}${wake}${held} ${oneLineCommand(s.title, 40)} — ${oneLineCommand(s.displayCommand, 60)}`;
 			});
 			const KILL_ALL = `Kill all ${sessions.length} ${plural(sessions.length, "session")}`;
 			const choice = await cmdCtx.ui.select(
@@ -999,7 +1067,7 @@ export function activate(
 			let killed = 0;
 			let failed = 0;
 			for (const s of targets) {
-				const outcome = await terminateSessionById(ctx, s.id, "SIGTERM");
+				const outcome = await terminateSessionById(ctx, s.id, "SIGTERM", { kind: "human" });
 				if (outcome?.killed) killed++;
 				else if (outcome) failed++;
 			}
@@ -1022,7 +1090,7 @@ export function activate(
 			formatApprovalDetails: (args: unknown) => [`Command: ${approvalHost.helpers.truncateForPrompt(approvalCommand(args, "(missing)"))}`],
 		} : {}),
 		description:
-			'Run a command in a PTY session for long-running, interactive (REPLs, TUIs, ssh, sudo), concurrent or dev-daemon work; use bash for short one-shot commands. There is no command deadline and nothing restarts a process that exits. Returns `session_id` if still running (drive with write_stdin, observe with monitor or read terminal_url) or `exit_code` if it finished within yield_time_ms. on_exit defaults to "none". Only pass on_exit: "wake" when the human explicitly wants auto-resume on unobserved exit — stale wakes interrupt later work. Use set_on_exit to disarm or re-arm a running session.',
+			'Run a command in a PTY session for long-running, interactive (REPLs, TUIs, ssh, sudo), concurrent or dev-daemon work; use bash for short one-shot commands. title is required: a short name for the terminal, used by list_sessions and every notice about it. There is no command deadline and nothing restarts a process that exits. Returns `session_id` if still running (drive with write_stdin, observe with monitor or read terminal_url) or `exit_code` if it finished within yield_time_ms. A background terminal stays listed after its command returns until it is reclaimed: an abnormal return is reported at once, and 30 minutes after the return or the last read a notice reminds you to read it (never read) or announces a 5-minute grace before reclaim (read). on_exit defaults to "none". Only pass on_exit: "wake" when the human explicitly wants auto-resume on unobserved exit — stale wakes interrupt later work. Use set_on_exit to disarm or re-arm a running session.',
 		promptSnippet: "Run a long-running or interactive command in a PTY session",
 		promptGuidelines: [
 			"Use bash for short one-shot commands. Use exec_command for long-running commands, interactive programs (REPLs, TUIs, ssh, sudo), concurrent computation and dev-time daemons: it runs in a PTY, has no command deadline, and never restarts a process that exits.",
@@ -1030,11 +1098,13 @@ export function activate(
 			"The 10s default yield suits most starts; interactive processes return a session_id you then drive with write_stdin.",
 			"For a long non-interactive command, start with a short yield to obtain a session_id. Read terminal_url for progress; use monitor with a condition for future progress lines, or without one to await completion. Use write_stdin only to send input. omp manages cache warming independently.",
 			'on_exit defaults to "none". Prefer monitor or human follow-up. Use on_exit: "wake" ONLY when the human explicitly wants auto-resume on unobserved completion — not for indefinite processes (dev servers, watchers). If you armed wake by mistake or the job is wrong/abandoned, call set_on_exit(session_id, on_exit: "none") promptly (does not kill the process). kill_session still kills and suppresses wake. Combining wake with an input-bearing write_stdin is safe: direct completion consumes the wake.',
+			"Every terminal notice names the terminal by session_id and title with a short reason. After a background command returns, read its terminal_url (or receive its final screen from write_stdin/kill_session): a terminal is reclaimed only after it was read. 30 minutes after the return or the last read, a never-read terminal gets one read reminder; a read one gets a reclaim-due notice, and unless it is read again within 5 minutes its remaining processes (including background jobs holding the terminal) are killed and it leaves list_sessions. Reading during those 5 minutes keeps it for another 30. Its term:// stays readable after reclaim. Kills by you or a human are normal endings; non-zero exits, signals and failures are reported at once.",
 			"Output is rendered terminal state, not raw bytes. Running results show unseen history plus the current screen and cursor; unchanged running screens report screen_changed:false. Completed results show only the frozen final active screen. Read terminal_url for what the terminal shows (retained history, or a full-screen program's screen such as tmux while it runs), /screen for active text, or /screen.png for cell colours and styling; raw bytes remain in log_path.",
 		],
 		outputSchema: processScriptResultSchema,
 		parameters: Type.Object({
 			cmd: Type.String({ description: "Shell command to execute." }),
+			title: Type.String({ description: `Required start title naming this terminal in list_sessions, the Terminals view and every notice (one line, nonblank; at most ${MAX_TITLE_CHARS} characters are kept).` }),
 			workdir: Type.Optional(Type.String({ description: "Working directory. Defaults to the session cwd." })),
 			shell: Type.Optional(
 				Type.String({
@@ -1064,9 +1134,9 @@ export function activate(
 				),
 			),
 		}),
-		async execute(_toolCallId, params, signal, onUpdate, eventCtx) {
+		async execute(toolCallId, params, signal, onUpdate, eventCtx) {
 			ctx.ui ??= eventCtx.ui;
-			const shape = await runExecCommand(ctx, params, signal, onUpdate, eventCtx.cwd);
+			const shape = await runExecCommand(ctx, params, signal, onUpdate, eventCtx.cwd, toolCallId);
 			updateRunningSessionsUi(ctx);
 			return {
 				content: [{ type: "text", text: renderProcessResultText(shape) }],
@@ -1239,7 +1309,7 @@ export function activate(
 		name: "kill_session",
 		label: "kill_session",
 		description:
-			"Terminate a session (SIGTERM, escalates to SIGKILL after 2s; on Windows any signal force-kills the process tree). Use when the process won't exit via Ctrl-C. session_id is invalid after confirmed exit. Also suppresses any armed on_exit wake and silently cancels its monitor before signaling, even if termination fails.",
+			"Terminate a session (SIGTERM, escalates to SIGKILL after 2s; on Windows any signal force-kills the process tree). Use when the process won't exit via Ctrl-C. A kill is a normal ending: the killed terminal stays listed until the terminal lifecycle reclaims it (this result shows its final screen, which counts as a read). Also suppresses any armed on_exit wake and silently cancels its monitor before signaling, even if termination fails.",
 		promptSnippet: "Terminate a session",
 		outputSchema: killScriptResultSchema,
 		parameters: Type.Object({
@@ -1248,12 +1318,12 @@ export function activate(
 				Type.String({ description: 'Initial signal (default "SIGTERM"). Examples: SIGINT, SIGHUP, SIGKILL.' }),
 			),
 		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, eventCtx) {
+		async execute(toolCallId, params, _signal, _onUpdate, eventCtx) {
 			ctx.ui ??= eventCtx.ui;
 			const sid = (params as { session_id: number; signal?: string }).session_id;
 			const initial = normalizeSignal((params as { signal?: string }).signal);
 			const startedAt = Date.now();
-			const outcome = await terminateSessionById(ctx, sid, initial, "model");
+			const outcome = await terminateSessionById(ctx, sid, initial, { kind: "model", toolCallId });
 			if (!outcome) {
 				return {
 					content: [{ type: "text", text: `No such session: ${sid}` }],
@@ -1306,73 +1376,67 @@ export function activate(
 	pi.registerTool({
 		name: "list_sessions",
 		label: "list_sessions",
-		description: "List all live unified-exec sessions in this omp run.",
-		promptSnippet: "List live sessions",
+		description: "List this omp run's unified-exec terminals: running ones, and returned ones not yet reclaimed, with their titles and lifecycle state.",
+		promptSnippet: "List terminals",
 		outputSchema: listSessionsScriptResultSchema,
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, eventCtx) {
 			ctx.ui ??= eventCtx.ui;
-			// Reap any sessions that have exited silently (e.g., completed between
-			// tool calls without anyone observing them) — but report each of them
-			// one final time with exit info instead of dropping them on the floor.
-			// This mirrors codex's `refresh_process_state` filter while preserving
-			// our "exit information is never silently lost" guarantee.
-			const reaped: ExecSession[] = [];
-			for (const s of ctx.store.values()) {
-				if (s.hasExited) {
-					// Reporting terminal completion here counts as direct observation:
-					// suppress a not-yet-queued wake (an already-queued wake stays a
-					// single notification — never a second one).
-					ctx.coordinator.observeViaListing(s.id);
-					removeSession(ctx, s.id);
-					reaped.push(s);
-				}
-			}
+			// Reporting a terminal's exit here counts as direct observation of its
+			// completion: a wake not yet sent is suppressed. It is not a read of
+			// its output; the terminal stays listed until its lifecycle reclaims it.
+			for (const s of ctx.store.values()) if (s.hasExited) ctx.coordinator.observeViaListing(s.id);
 			updateRunningSessionsUi(ctx);
 			const now = Date.now();
-			const live = ctx.store.values();
-			const sessions = [...live, ...reaped]
+			const stored = ctx.store.values();
+			const sessions = stored
 				.sort((a, b) => a.id - b.id)
-				.map((s) => ({
-					session_id: s.id,
-					command: s.displayCommand,
-					cwd: s.cwd,
-					shell: s.shell,
-					pid: s.pid,
-					started_at_ms: s.startedAt,
-					elapsed_ms: now - s.startedAt,
-					running: !s.hasExited,
-					wake_armed: ctx.coordinator.isArmed(s.id),
-					monitor: ctx.coordinator.monitorStatus(s.id),
-					exit_code: s.hasExited ? s.exitCode : undefined,
-					signal: s.hasExited ? (s.signal ?? undefined) : undefined,
-					failure_message: s.failureMessage ?? undefined,
-					output_bytes_total: s.totalBytesSeen,
-					log_path: s.logPath,
-					terminal_url: s.terminalUrl,
-				}));
+				.map((s) => {
+					const life = ctx.lifecycle.status(s.id);
+					return {
+						session_id: s.id,
+						title: s.title,
+						command: s.displayCommand,
+						cwd: s.cwd,
+						shell: s.shell,
+						pid: s.pid,
+						started_at_ms: s.startedAt,
+						elapsed_ms: now - s.startedAt,
+						running: !s.hasExited,
+						wake_armed: ctx.coordinator.isArmed(s.id),
+						monitor: ctx.coordinator.monitorStatus(s.id),
+						lifecycle: life ? { returned: outcomeText(life.outcome), read: life.read, phase: life.phase } : undefined,
+						exit_code: s.hasExited ? s.exitCode : undefined,
+						signal: s.hasExited ? (s.signal ?? undefined) : undefined,
+						failure_message: s.failureMessage ?? undefined,
+						output_bytes_total: s.totalBytesSeen,
+						log_path: s.logPath,
+						terminal_url: s.terminalUrl,
+					};
+				});
+			const runningCount = sessions.filter((s) => s.running).length;
+			const returnedCount = sessions.filter((s) => s.lifecycle !== undefined).length;
 			const toolTimeUtc = nowUtcIso();
 			const lines = sessions.length
 				? sessions.map((s) => {
-						const exitedSuffix = s.running
+						const exited = s.running
 							? ""
-							: `  [exited${s.exit_code !== undefined && s.exit_code !== null ? ` exit_code=${s.exit_code}` : ""}${s.signal ? ` signal=${s.signal}` : ""}; removed from store]`;
+							: `  [exited${s.exit_code !== undefined && s.exit_code !== null ? ` exit_code=${s.exit_code}` : ""}${s.signal ? ` signal=${s.signal}` : ""}]`;
+						const life = s.lifecycle ? `  [returned ${s.lifecycle.returned}; ${s.lifecycle.read ? "read" : "unread"}; ${s.lifecycle.phase}]` : "";
 						const wake = s.wake_armed ? " [wake]" : "";
 						const monitor = s.monitor ? ` [monitor ${s.monitor.returns}/${s.monitor.max_returns} condition=${JSON.stringify(s.monitor.condition)} remind_after=${formatElapsed(s.monitor.remind_after_ms)}]` : "";
-						return `  ${String(s.session_id).padStart(3)}  pid=${String(s.pid ?? "?").padStart(6)}  ${((s.elapsed_ms / 1000).toFixed(1) + "s").padStart(8)}${wake}${monitor}  ${oneLineCommand(s.command, 60)}${exitedSuffix}\n        shell: ${sanitizeMeta(s.shell ?? "")}\n        log: ${s.log_path}${s.terminal_url ? `\n        terminal_url: ${s.terminal_url}` : ""}`;
+						return `  ${String(s.session_id).padStart(3)}  ${JSON.stringify(s.title)}  pid=${String(s.pid ?? "?").padStart(6)}  ${((s.elapsed_ms / 1000).toFixed(1) + "s").padStart(8)}${wake}${monitor}  ${oneLineCommand(s.command, 60)}${exited}${life}\n        shell: ${sanitizeMeta(s.shell ?? "")}\n        log: ${s.log_path}${s.terminal_url ? `\n        terminal_url: ${s.terminal_url}` : ""}`;
 					})
-				: ["  (no live sessions)"];
-			const header = reaped.length
-				? `unified-exec sessions (${live.length} live, ${reaped.length} just exited):`
-				: `unified-exec sessions (${live.length}):`;
+				: ["  (no terminals)"];
+			const header = `unified-exec terminals (${runningCount} running, ${returnedCount} returned):`;
 			return {
 				// Report the host clock alongside this inventory snapshot.
 				content: [{ type: "text", text: `${header}\n${lines.join("\n")}\ntool_time_utc: ${toolTimeUtc}` }],
-				details: { sessions, active_count: live.length, just_exited_count: reaped.length, tool_time_utc: toolTimeUtc },
+				details: { sessions, running_count: runningCount, returned_count: returnedCount, tool_time_utc: toolTimeUtc },
 				structuredContent: listSessionsScriptResult({
 					sessions,
-					active_count: live.length,
-					just_exited_count: reaped.length,
+					running_count: runningCount,
+					returned_count: returnedCount,
 					tool_time_utc: toolTimeUtc,
 				}),
 			};
@@ -1383,7 +1447,7 @@ export function activate(
 		store: ctx.store,
 		// A human kill from the Tern HUD: same path as the slash command.
 		kill: async (id) => {
-			const outcome = await terminateSessionById(ctx, id, "SIGTERM");
+			const outcome = await terminateSessionById(ctx, id, "SIGTERM", { kind: "human" });
 			updateRunningSessionsUi(ctx);
 			return outcome?.killed === true;
 		},

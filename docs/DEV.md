@@ -69,20 +69,22 @@ A sibling view, indexed by concern:
 | Per-call observation (`CollectResult`: screen, final screen or none) | `src/collect.ts`; produced by `ExecSession.collect` in `src/session.ts` |
 | Event-driven, monotonic waits: collection, shutdown and kill confirmation | `src/long-wait.ts` |
 | Human duration labels and host UTC time | `src/format-time.ts` |
-| `on_exit: "wake"` completion scheduling (exactly-once) | `src/completion.ts` (`setOnExit`, tombstones, flush) |
+| `on_exit: "wake"` completion scheduling (exactly-once) and monitor ownership | `src/completion.ts` (`setOnExit`, tombstones, flush) |
+| Terminal notices: ADT, formatter, merging dispatcher (`unified-exec-notice`) | `fork-features/terminal-notice.ts` |
+| Terminal lifecycle: return, reads, TTL, grace, reclaim, minute sweep | `fork-features/terminal-lifecycle.ts`; reclaim and leftover-group kill in `src/index.ts`; `onShellExit`/`onTerminalRead`/`signalProcessGroup` in `src/session.ts` |
 | Rendered terminal screen: emulator, history + screen observations, snapshots | `src/terminal-screen.ts` (owned by `ExecSession`) |
 | On-disk raw log file mirroring | `src/session.ts` (`logStream`) |
 | Terminal-inert result/partial text | `src/output-safety.ts` |
 | Bounded process/kill details + LLM-visible text | `src/tool-result.ts` (host-compatible `truncateTail`) |
 | C-style escape decoding for `chars` | `src/unescape.ts` |
-| Bun.Terminal backend, runtime admission, spawn preflight, Windows tree-kill | `src/pty.ts` |
+| Bun.Terminal backend, runtime admission, spawn preflight, shell-exit events, process-group signals, Windows tree-kill | `src/pty.ts` |
 | Shell selection & argv construction | `src/shell.ts` |
 | omp-only host admission, bash delegation, argument/result display adapters, live `shellPath` registry lookup | `fork-features/omp-presentation.ts` |
 | Tern terminal HUD: pill segment, Terminals view, terminal page | `fork-features/tern-terminal-hud.ts` |
 | Removal of the Tern plugin versions up to 0.14.7 installed | `fork-features/tern-plugin-removal.ts` |
 | `term://` resources, read handler and screenshots | `fork-features/terminal-resource.ts`, `fork-features/terminal-url.ts`, `fork-features/terminal-image.ts` |
-| Monitors: conditions, batching, End/match/reminder delivery | `fork-features/monitor-subscription.ts`; subscriptions owned by `src/completion.ts` (`startMonitor`) |
-| Input-wait alerts: prompt detection, quiet watcher, delivery | `fork-features/input-wait.ts`; `ExecSession.watchInputWait` in `src/session.ts`; `alertInputWait` in `src/completion.ts` |
+| Monitors: conditions, batching, End/match/reminder notices | `fork-features/monitor-subscription.ts`; subscriptions owned by `src/completion.ts` (`startMonitor`) |
+| Input-wait alerts: prompt detection, quiet watcher, notice | `fork-features/input-wait.ts`; `ExecSession.watchInputWait` in `src/session.ts`; `alertInputWait` in `src/completion.ts` |
 | Session log naming, open-log tracking and seven-day gzip compression | `fork-features/log-archive.ts`; `ExecSession.spawn` in `src/session.ts`; scheduled by `withHostPresentation` |
 | Command approval and host session binding | `fork-features/command-approval.ts`, `fork-features/session-binding.ts` |
 | Structured output schemas and projections | `src/script-result.ts` |
@@ -126,7 +128,7 @@ For a fresh non-interactive tool execution:
 
 ```bash
 omp --no-extensions -e "$PWD/src/index.ts" --mode json --no-session \
-  -p 'Call exec_command with {"cmd":"echo omp-only-ok"}. Reply done.'
+  -p 'Call exec_command with {"cmd":"echo omp-only-ok","title":"smoke"}. Reply done.'
 ```
 
 ## Running specific test files
@@ -150,8 +152,8 @@ bun tests/bun-pty-runtime.mjs
 bun build --compile tests/bun-pty-runtime.mjs --outfile /tmp/bun-pty-runtime
 /tmp/bun-pty-runtime
 
-# Shared waits and wake delivery
-bun test ./tests/long-wait.test.ts ./tests/wake-e2e.test.ts
+# Shared waits, wake delivery and the terminal lifecycle
+bun test ./tests/long-wait.test.ts ./tests/wake-e2e.test.ts ./tests/terminal-lifecycle.test.ts
 
 # Display adapters and direct host-admission checks
 bun test ./tests/omp-presentation.test.ts
@@ -204,7 +206,9 @@ The constants in the README's `## Constants` section live in the module that
 owns them: yield limits, early-exit grace, session-store limits and
 `INPUT_WAIT_QUIET_MS` at the top of `src/index.ts`, `TERMINAL_HISTORY_CELLS`
 in `src/terminal-screen.ts`, `DEFAULT_REMIND_AFTER_MS` in
-`fork-features/monitor-subscription.ts`, the output caps in the host's
+`fork-features/monitor-subscription.ts`, `RECLAIM_TTL_MS`,
+`RECLAIM_GRACE_MS` and `LIFECYCLE_SWEEP_MS` in
+`fork-features/terminal-lifecycle.ts`, the output caps in the host's
 `DEFAULT_MAX_BYTES` / `DEFAULT_MAX_LINES`. When you touch one:
 
 1. Update the value in its owning module.
@@ -264,7 +268,8 @@ Tern terminal HUD (pill segment, Terminals view, terminal page):
   `[still running]\nsession_id: …` verbatim, the renderer is failing
   and falling back to omp's default. Check `fork-features/omp-presentation.ts`.
 - **`list_sessions` tool** (invokable from the LLM side) is the
-  quickest way to audit what's live.
+  quickest way to audit what's stored, including each returned terminal's
+  lifecycle phase and whether it has been read.
 - **omp's `/reload` output** echoes the extensions it loaded — check
   that this extension is among them.
 

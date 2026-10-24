@@ -2,7 +2,8 @@ import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { detectInputPrompt, type InputPrompt, type InputWaitAlert, type InputWaitMessage } from "../fork-features/input-wait.ts";
+import { detectInputPrompt, inputWaitNotice, type InputPrompt, type InputWaitAlert } from "../fork-features/input-wait.ts";
+import { buildNoticeMessage, NoticeDispatcher, type NoticeMessage } from "../fork-features/terminal-notice.ts";
 import { CompletionCoordinator } from "../src/completion.ts";
 import { ExecSession } from "../src/session.ts";
 import { TerminalScreen } from "../src/terminal-screen.ts";
@@ -91,11 +92,9 @@ const PROMPTER = [
 ].join("");
 
 function prompter(id: number, alerts: InputWaitAlert[]): ExecSession {
-	return ExecSession.spawn(id, {
-		command: [process.execPath, "-e", PROMPTER],
+	return ExecSession.spawn(id, { title: "Test terminal", command: [process.execPath, "-e", PROMPTER],
 		cwd: process.cwd(), env: { ...process.env },
-		inputWait: { quietMs: 150, onAlert: (alert) => alerts.push(alert) },
-	});
+		inputWait: { quietMs: 150, onAlert: (alert) => alerts.push(alert) }, });
 }
 
 async function close(session: ExecSession): Promise<void> {
@@ -112,16 +111,20 @@ describe("session input-wait alerts", () => {
 		await delay(600);
 		assert.equal(alerts.length, 1, "one alert per prompt screen");
 		const [first] = alerts;
-		assert.equal(first!.message.details.prompt, "inline");
-		assert.deepEqual(first!.message.details.lines, ["Proceed? [Y/n]"]);
-		assert.match(first!.message.content, /session_id=9201 appears to be waiting for input/);
+		assert.equal(first!.notice.body.kind, "input_wait");
+		assert.ok(first!.notice.body.kind === "input_wait");
+		assert.equal(first!.notice.body.prompt, "inline");
+		assert.deepEqual(first!.notice.body.lines, ["Proceed? [Y/n]"]);
+		assert.match(buildNoticeMessage([first!.notice]).content, /appears to be waiting for input/);
+		assert.equal(first!.notice.identity.sessionId, 9201);
 		assert.equal(first!.current(), true);
 
 		session.write(encoder.encode("y"));
 		await delay(600);
 		assert.equal(alerts.length, 2);
 		assert.equal(first!.current(), false, "a newer screen replaces the old alert");
-		assert.deepEqual(alerts[1]!.message.details.lines.at(-1), "Next? [y/N]");
+		assert.ok(alerts[1]!.notice.body.kind === "input_wait");
+		assert.deepEqual(alerts[1]!.notice.body.lines.at(-1), "Next? [y/N]");
 
 		await session.collect({ deadlineMs: Date.now() });
 		assert.equal(alerts[1]!.current(), false, "a consuming observation showed the prompt");
@@ -139,48 +142,55 @@ describe("session input-wait alerts", () => {
 	});
 
 	it("alerts through the coordinator while a non-matching monitor watches the same session", async (t) => {
-		const delivered: InputWaitMessage[] = [];
-		const coordinator = new CompletionCoordinator({ send: () => {}, sendMonitor: () => {}, sendInputWait: (message) => { delivered.push(message); } });
-		const session = ExecSession.spawn(9203, {
-			command: [process.execPath, "-e", PROMPTER],
+		const delivered: NoticeMessage[] = [];
+		const coordinator = new CompletionCoordinator({ notices: new NoticeDispatcher({ send: (message) => { delivered.push(message); }, debounceMs: 5 }) });
+		const session = ExecSession.spawn(9203, { title: "Test terminal", command: [process.execPath, "-e", PROMPTER],
 			cwd: process.cwd(), env: { ...process.env },
-			inputWait: { quietMs: 150, onAlert: (alert) => coordinator.alertInputWait(alert) },
-		});
+			inputWait: { quietMs: 150, onAlert: (alert) => coordinator.alertInputWait(alert) }, });
 		t.after(async () => { coordinator.shutdown(); await close(session); });
 		await coordinator.startMonitor(session, { condition: "NEVER_PRINTED" });
 		await delay(600);
-		assert.deepEqual(delivered.map((m) => m.details.lines.at(-1)), ["Proceed? [Y/n]"]);
+		assert.deepEqual(delivered.flatMap((m) => m.details.notices).map(({ body }) => {
+			assert.ok(body.kind === "input_wait");
+			return body.lines.at(-1);
+		}), ["Proceed? [Y/n]"]);
 		assert.equal(coordinator.monitorStatus(session.id)?.returns, 0);
 	});
 });
 
 describe("input-wait delivery", () => {
-	it("retries a failed alert at the next flush and drops one whose screen is no longer current", () => {
-		const sent: InputWaitMessage[] = [];
+	it("retries a failed alert at the next flush and drops one whose screen is no longer current", async () => {
+		const sent: NoticeMessage[] = [];
 		let fail = true;
 		const errors: unknown[] = [];
-		const coordinator = new CompletionCoordinator({
-			send: () => {},
-			sendInputWait: (message) => {
+		const notices = new NoticeDispatcher({
+			send: (message) => {
 				if (fail) { fail = false; throw new Error("queue unavailable"); }
 				sent.push(message);
 			},
 			onSendError: (error) => errors.push(error),
 		});
-		const message = (id: number): InputWaitMessage => ({
-			content: `alert ${id}`,
-			details: { session_id: id, prompt: "inline", screen: "normal", lines: [], quiet_ms: 5000, log_path: "/tmp/x.log" },
+		const coordinator = new CompletionCoordinator({ notices });
+		const notice = (id: number) => inputWaitNotice({
+			sessionId: id, title: `Prompt ${id}`, command: "ask",
+			prompt: { kind: "inline", lines: [`alert ${id}`] }, screen: "normal", quietMs: 5000,
+			terminalUrl: `term://${id}`, logPath: "/tmp/x.log",
 		});
 		let current = true;
-		coordinator.alertInputWait({ sessionId: 1, message: message(1), current: () => true });
+		coordinator.alertInputWait({ notice: notice(1), current: () => true });
+		coordinator.flushPending();
 		assert.equal(errors.length, 1);
 		coordinator.flushPending();
-		assert.deepEqual(sent.map((m) => m.content), ["alert 1"]);
+		await Promise.resolve();
+		assert.deepEqual(sent.flatMap((m) => m.details.notices).map((n) => n.session_id), [1]);
+		assert.match(sent[0]!.content, /alert 1/);
 		coordinator.flushPending();
 		assert.equal(sent.length, 1, "a delivered alert is not sent again");
 
 		fail = true;
-		coordinator.alertInputWait({ sessionId: 2, message: message(2), current: () => current });
+		coordinator.alertInputWait({ notice: notice(2), current: () => current });
+		coordinator.flushPending();
+		assert.equal(errors.length, 2);
 		current = false;
 		coordinator.flushPending();
 		assert.equal(sent.length, 1, "a stale alert is dropped");

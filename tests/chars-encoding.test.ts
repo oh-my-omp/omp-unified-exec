@@ -84,10 +84,8 @@ type ExecCaller = {
  * test byte reaches the line discipline in canonical mode.
  */
 async function startRawCat(h: ExecCaller, out: string): Promise<number> {
-	const r1 = await h.call("exec_command", {
-		cmd: `stty raw -echo; printf raw-ready; exec cat > '${out}'`,
-		yield_time_ms: 300,
-	});
+	const r1 = await h.call("exec_command", { title: "Test command", cmd: `stty raw -echo; printf raw-ready; exec cat > '${out}'`,
+		yield_time_ms: 300, });
 	const { session_id: sid, log_path: logPath } = r1.details;
 	assert.ok(typeof sid === "number", `expected session_id; got ${JSON.stringify(r1.details)}`);
 	assert.ok(typeof logPath === "string");
@@ -222,7 +220,7 @@ describe("write_stdin chars encoding", () => {
 	it("passing both chars and chars_b64 rejects the call", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r1 = await h.call("exec_command", { cmd: "cat > /dev/null", yield_time_ms: 200 });
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "cat > /dev/null", yield_time_ms: 200 });
 		const sid = r1.details.session_id as number;
 		await assert.rejects(
 			() => h.call("write_stdin", { session_id: sid, chars: "hi", chars_b64: "aGk=" }),
@@ -235,7 +233,7 @@ describe("write_stdin chars encoding", () => {
 	it("malformed base64 rejects the call", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r1 = await h.call("exec_command", { cmd: "cat > /dev/null", yield_time_ms: 200 });
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "cat > /dev/null", yield_time_ms: 200 });
 		const sid = r1.details.session_id as number;
 		await assert.rejects(
 			() => h.call("write_stdin", { session_id: sid, chars_b64: "not@valid!" }),

@@ -83,11 +83,9 @@ describe("unified-exec PTY mode", () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		try {
-			const r = await h.call("exec_command", {
-				cmd: "tty && echo seen=$TERM",
+			const r = await h.call("exec_command", { title: "Test command", cmd: "tty && echo seen=$TERM",
 
-				yield_time_ms: 1500,
-			});
+				yield_time_ms: 1500, });
 			// If short-lived: exit_code is set; long-running: session_id. Either way output should
 			// include "tty" / "dev/" to confirm a PTY was allocated.
 			assert.ok(r.details.output.toLowerCase().includes("/dev/"), `output=${r.details.output}`);
@@ -106,11 +104,9 @@ describe("unified-exec PTY mode", () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		try {
-			const r1 = await h.call("exec_command", {
-				cmd: "python3 -q",
+			const r1 = await h.call("exec_command", { title: "Test command", cmd: "python3 -q",
 
-				yield_time_ms: 800,
-			});
+				yield_time_ms: 800, });
 			const sid = r1.details.session_id;
 			// hasRealPython3 already gated this test, so a missing session_id
 			// means the REPL exited or failed to spawn — a real failure, not
@@ -155,7 +151,7 @@ describe("unified-exec PTY mode", () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		try {
-			const r1 = await h.call("exec_command", { cmd: fixture, yield_time_ms: 1500 });
+			const r1 = await h.call("exec_command", { title: "Test command", cmd: fixture, yield_time_ms: 1500 });
 			const sid = r1.details.session_id;
 			assert.equal(typeof sid, "number", `fixture did not stay alive: ${JSON.stringify(r1.details)}`);
 
@@ -186,12 +182,10 @@ describe("unified-exec PTY mode", () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		try {
-			const r = await h.call("exec_command", {
-				cmd: "echo tty-one& echo tty-two",
+			const r = await h.call("exec_command", { title: "Test command", cmd: "echo tty-one& echo tty-two",
 				shell: "cmd",
 
-				yield_time_ms: 20000,
-			});
+				yield_time_ms: 20000, });
 			assert.equal(r.details.exit_code, 0, JSON.stringify(r.details));
 			assert.ok(r.details.output.includes("tty-one"), `output=${r.details.output}`);
 			assert.ok(r.details.output.includes("tty-two"), `output=${r.details.output}`);
@@ -204,11 +198,9 @@ describe("unified-exec PTY mode", () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		try {
-			const r1 = await h.call("exec_command", {
-				cmd: "while true; do echo alive; sleep 0.2; done",
+			const r1 = await h.call("exec_command", { title: "Test command", cmd: "while true; do echo alive; sleep 0.2; done",
 
-				yield_time_ms: 400,
-			});
+				yield_time_ms: 400, });
 			const sid = r1.details.session_id;
 			assert.ok(typeof sid === "number");
 

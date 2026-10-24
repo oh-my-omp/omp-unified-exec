@@ -136,7 +136,9 @@ export type TerminalState =
 
 export interface TerminalEntry {
 	readonly id: number;
-	/** The command on one line, cut at COMMAND_MAX, for list labels and the page head. */
+	/** The start title exec_command was given, sanitized, for list labels and the page head. */
+	readonly title: string;
+	/** The command on one line, cut at COMMAND_MAX. */
 	readonly command: string;
 	/** The whole command, sanitized, for the view's command block. */
 	readonly script: string;
@@ -161,6 +163,7 @@ function terminalEntry(session: ExecSession, screen: StyledScreen): TerminalEntr
 		: { kind: "exited", exitCode: session.exitCode, signal: session.signal, failure: session.failureMessage, exitedAt };
 	return {
 		id: session.id,
+		title: oneLine(session.title),
 		command: oneLine(session.displayCommand),
 		script: sanitizeOutputText(session.displayCommand),
 		state,
@@ -308,12 +311,12 @@ function describeListItem(entry: TerminalEntry, now: number): HudNode {
 		k: "item",
 		key: itemId(entry.id),
 		p: {
-			label: [{ t: entry.command, s: "mono" }],
+			label: [{ t: entry.title }],
 			value: [{ t: elapsed, s: "mono" }],
 			icon: "terminal",
 			tone: look.tone,
-			title: `${entry.command}\n${look.label} · exec · #${entry.id}`,
-			aria: `${entry.command}, ${look.label.toLowerCase()}, ${elapsed}`,
+			title: `${entry.title}\n${entry.command}\n${look.label} · exec · #${entry.id}`,
+			aria: `${entry.title}, ${look.label.toLowerCase()}, ${elapsed}`,
 		},
 	};
 }
@@ -442,7 +445,7 @@ export function terminalPageFrame(entry: TerminalEntry | undefined, id: number):
 		head: [
 			{ t: "Terminals · ", s: "muted" },
 			{ t: `#${id} ` },
-			...(entry ? [{ t: entry.command, s: "mono" }, { t: "  " }, { t: stateText(entry.state), s: stateTone(entry.state) }] : [{ t: "removed", s: "muted" }]),
+			...(entry ? [{ t: entry.title }, { t: "  " }, { t: stateText(entry.state), s: stateTone(entry.state) }] : [{ t: "removed", s: "muted" }]),
 		],
 	};
 }

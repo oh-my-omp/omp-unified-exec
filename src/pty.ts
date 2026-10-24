@@ -50,6 +50,8 @@ export interface SpawnedChild {
 	 * gone.
 	 */
 	readonly processExited: boolean;
+	/** The direct child's exit status once `processExited`; the terminal may still be open. */
+	readonly processExit: ProcessExit | undefined;
 	/** Write raw bytes to the PTY input side. */
 	write(data: Uint8Array): boolean;
 	/** Subscribe to data chunks (combined stdout+stderr). Returns unsubscribe. */
@@ -57,11 +59,24 @@ export interface SpawnedChild {
 	/** Subscribe to the child's exit event. Fires at most once. */
 	onExit(handler: ExitCallback): void;
 	/**
+	 * Subscribe to the direct child's exit, which can precede the terminal
+	 * close by any amount; fires once, from a microtask if it already happened.
+	 */
+	onProcessExit(handler: (exit: ProcessExit) => void): () => void;
+	/**
 	 * Send a signal to the process group. Keeps reaching the group after the
 	 * shell exits while a member still holds the terminal; no-ops once the
 	 * session has finalized.
 	 */
 	kill(signal?: NodeJS.Signals): void;
+	/**
+	 * Signal whatever is left of the process group, even after the terminal
+	 * closed (on macOS the terminal closes with the shell while background
+	 * group members keep running); 0 only probes. Returns whether any member
+	 * received it. POSIX only: Windows has no group to reach once the root
+	 * has exited.
+	 */
+	signalGroup(signal: NodeJS.Signals | 0): boolean;
 }
 
 // ---------------- Bun runtime admission ----------------
@@ -209,7 +224,7 @@ export function spawnChild(opts: SpawnOptions): SpawnedChild {
 
 // ---------------- Bun PTY impl ----------------
 
-type ProcessExit = {
+export type ProcessExit = {
 	exitCode: number | null;
 	signal: NodeJS.Signals | null;
 	failureMessage?: string;
@@ -233,6 +248,7 @@ export function spawnBunPty(runtime: BunRuntime, opts: SpawnOptions): SpawnedChi
 
 	const dataHandlers = new Set<(chunk: Uint8Array) => void>();
 	const exitHandlers = new Set<ExitCallback>();
+	const processExitHandlers = new Set<(exit: ProcessExit) => void>();
 	let processExited = false;
 	let terminalClosed = false;
 	let finalized = false;
@@ -301,6 +317,15 @@ export function spawnBunPty(runtime: BunRuntime, opts: SpawnOptions): SpawnedChi
 				...(error ? { failureMessage: `process error: ${error.message}` } : {}),
 			};
 			if (terminal?.closed) terminalClosed = true;
+			const exit = processExit;
+			for (const handler of processExitHandlers) {
+				try {
+					handler(exit);
+				} catch {
+					// ignore handler errors
+				}
+			}
+			processExitHandlers.clear();
 			finalize();
 		},
 	});
@@ -311,6 +336,9 @@ export function spawnBunPty(runtime: BunRuntime, opts: SpawnOptions): SpawnedChi
 		pid: child.pid,
 		get processExited() {
 			return processExited;
+		},
+		get processExit() {
+			return processExit;
 		},
 		write(data) {
 			const activeTerminal = terminal;
@@ -349,6 +377,20 @@ export function spawnBunPty(runtime: BunRuntime, opts: SpawnOptions): SpawnedChi
 			}
 			exitHandlers.add(handler);
 		},
+		onProcessExit(handler) {
+			if (processExit) {
+				const exit = processExit;
+				let active = true;
+				queueMicrotask(() => {
+					if (active) handler(exit);
+				});
+				return () => {
+					active = false;
+				};
+			}
+			processExitHandlers.add(handler);
+			return () => processExitHandlers.delete(handler);
+		},
 		kill(signal = "SIGTERM") {
 			if (finalized) return;
 			if (IS_WINDOWS) {
@@ -366,6 +408,15 @@ export function spawnBunPty(runtime: BunRuntime, opts: SpawnOptions): SpawnedChi
 				process.kill(-child.pid, signal);
 			} catch {
 				// the group is gone
+			}
+		},
+		signalGroup(signal) {
+			if (IS_WINDOWS) return false;
+			try {
+				process.kill(-child.pid, signal);
+				return true;
+			} catch {
+				return false;
 			}
 		},
 	};

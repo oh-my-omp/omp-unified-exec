@@ -29,6 +29,7 @@ let nextId = 1000;
 
 function spawnShell(cmd: string, workdir: string): ExecSession {
 	const opts: SessionSpawnOptions = {
+		title: "Held-open shell",
 		command: ["bash", "-c", cmd],
 		cwd: workdir,
 		env: process.env,

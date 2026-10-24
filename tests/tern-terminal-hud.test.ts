@@ -38,6 +38,7 @@ function onlyNode(node: HudNode, kind: string): HudNode {
 function entry(id: number, state: TerminalState): TerminalEntry {
 	return {
 		id,
+		title: `Terminal ${id}`,
 		command: `command-${id}`,
 		script: `command-${id}\n  --flag ${id}`,
 		state,
@@ -338,7 +339,7 @@ describe("terminal HUD view description", () => {
 });
 
 describe("terminal HUD page description", () => {
-	it("frames a full terminal overlay with session id, command, and state in the head", () => {
+	it("frames a full terminal overlay with session id, title, and state in the head", () => {
 		for (const state of [{ kind: "running" }, exited(0)] satisfies TerminalState[]) {
 			const value = entry(7, state);
 			assert.deepEqual(terminalPageFrame(value, value.id), {
@@ -347,7 +348,7 @@ describe("terminal HUD page description", () => {
 				head: [
 					{ t: "Terminals · ", s: "muted" },
 					{ t: "#7 " },
-					{ t: value.command, s: "mono" },
+					{ t: value.title },
 					{ t: "  " },
 					{ t: state.kind === "running" ? "running" : "exit 0", s: state.kind === "running" ? "accent" : "success" },
 				],
@@ -565,9 +566,7 @@ function makeHarness(t: TestContext, initiallyNative = false, ModeClass: new () 
 			for (const listener of nativeListeners) listener(on);
 		},
 		spawn(command = [process.execPath, "-e", "process.stdin.resume()"], cols = 80, insert = true) {
-			const session = ExecSession.spawn(store.allocateId(), {
-				command, cwd: process.cwd(), env: process.env, cols, rows: 24,
-			});
+			const session = ExecSession.spawn(store.allocateId(), { title: "Test terminal", command, cwd: process.cwd(), env: process.env, cols, rows: 24, });
 			sessions.push(session);
 			assert.equal(session.failureMessage, null, "child spawn succeeds");
 			if (insert) store.insert(session);
@@ -872,7 +871,7 @@ describe("terminal HUD lifecycle with real sessions", () => {
 				return span.t;
 			}).join("");
 			assert.ok(headText.includes(`#${selected.id}`));
-			assert.ok(headText.includes("process.stdin.resume()"));
+			assert.ok(headText.includes(selected.title));
 			assert.ok(headText.includes("running"));
 			const view = page.describe();
 			assert.equal(onlyNode(view, "ansi").key, `page-s${selected.id}`);

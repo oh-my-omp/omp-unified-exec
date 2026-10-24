@@ -15,13 +15,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { sessionLogName, trackOpenLog } from "../fork-features/log-archive.ts";
-import { discardLiveTerminal, freezeTerminal, readTerminal, registerTerminal } from "../fork-features/terminal-resource.ts";
-import { buildInputWaitMessage, detectInputPrompt, type InputWaitAlert } from "../fork-features/input-wait.ts";
+import { detachTerminalReader, discardLiveTerminal, freezeTerminal, readTerminal, registerTerminal } from "../fork-features/terminal-resource.ts";
+import { detectInputPrompt, inputWaitNotice, type InputWaitAlert } from "../fork-features/input-wait.ts";
 import type { MonitorListener, MonitorSourceHandle, MonitorStart } from "../fork-features/monitor-subscription.ts";
 import { type CollectResult, type FinalScreenOutput, NO_OUTPUT, type NoOutput } from "./collect.ts";
 import { waitForExitOrDeadline } from "./long-wait.ts";
 import { Gate, Notify } from "./notify.ts";
-import { DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS, type SpawnedChild, spawnChild } from "./pty.ts";
+import { DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS, type ProcessExit, type SpawnedChild, spawnChild } from "./pty.ts";
 import { type StyledScreen, type TerminalAppearance, TerminalScreen, type TerminalSnapshot } from "./terminal-screen.ts";
 
 export interface SessionSpawnOptions {
@@ -31,6 +31,8 @@ export interface SessionSpawnOptions {
 	cols?: number;
 	rows?: number;
 	displayCommand?: string; // human-readable command for list_sessions/UI
+	/** The start title exec_command was given; names the terminal in lists and notices. */
+	title: string;
 	windowsVerbatimArguments?: boolean; // Windows cmd.exe quoting (see shell.ts)
 	/** The background the session's screen is shown on (default dark), answered to OSC 10/11. */
 	appearance?: () => TerminalAppearance;
@@ -61,6 +63,7 @@ export class ExecSession {
 		return this.command[0];
 	}
 	readonly displayCommand: string;
+	readonly title: string;
 	readonly cwd: string;
 	readonly startedAt: number;
 	readonly pid: number | undefined;
@@ -95,6 +98,7 @@ export class ExecSession {
 		exitedAt: null,
 	};
 	private readonly exitListeners = new Set<(session: ExecSession) => void>();
+	private readonly readListeners = new Set<() => void>();
 	private lastUsedAt: number;
 	private child!: SpawnedChild;
 
@@ -102,6 +106,7 @@ export class ExecSession {
 		this.id = id;
 		this.command = opts.command;
 		this.displayCommand = opts.displayCommand ?? opts.command.join(" ");
+		this.title = opts.title;
 		this.cwd = opts.cwd;
 		this.startedAt = Date.now();
 		this.lastUsedAt = this.startedAt;
@@ -163,7 +168,9 @@ export class ExecSession {
 		// a child that waits for the answer would otherwise stall.
 		const screen = new TerminalScreen(cols, rows, (reply) => void self.write(reply), opts.appearance);
 		self.screen = screen;
-		const key = registerTerminal(id, screen);
+		const key = registerTerminal(id, screen, () => {
+			for (const listener of self.readListeners) listener();
+		});
 		self.terminalKey = key;
 		// The output gate closes after the final child bytes and log flush.
 		// freezeTerminal then waits for parsing without consuming observation.
@@ -239,9 +246,8 @@ export class ExecSession {
 			if (fingerprint === alerted) return;
 			alerted = fingerprint;
 			onAlert({
-				sessionId: this.id,
-				message: buildInputWaitMessage({
-					sessionId: this.id, command: this.displayCommand, prompt, screen: probe.kind, quietMs,
+				notice: inputWaitNotice({
+					sessionId: this.id, title: this.title, command: this.displayCommand, prompt, screen: probe.kind, quietMs,
 					terminalUrl: this.terminalUrl, logPath: this.logPath,
 				}),
 				current: () => !this.hasExited && this.screen === screen && screen.unseen(probe.revision),
@@ -299,6 +305,17 @@ export class ExecSession {
 			});
 		}
 		return () => this.exitListeners.delete(listener);
+	}
+
+	/** Called for each term:// read of this terminal while it is stored; returns the unsubscribe. */
+	onTerminalRead(listener: () => void): () => void {
+		this.readListeners.add(listener);
+		return () => this.readListeners.delete(listener);
+	}
+
+	/** Called once when the shell itself exits, which may be long before the terminal closes. */
+	onShellExit(listener: (exit: ProcessExit) => void): () => void {
+		return this.child?.onProcessExit(listener) ?? (() => {});
 	}
 
 	/** What a streaming update shows now, without consuming anything (undefined after a spawn failure). */
@@ -409,14 +426,22 @@ export class ExecSession {
 
 	/** Normal removal waits for output closure and the one session-owned freeze. */
 	async release(): Promise<void> {
+		this.detachReader();
 		await this.terminalFinalized;
 		await this.detachScreen()?.release();
 	}
 
 	/** Shutdown need not retain an unfinished projection; completed resources survive. */
 	async releaseForShutdown(): Promise<void> {
+		this.detachReader();
 		if (this.terminalKey !== undefined && discardLiveTerminal(this.terminalKey)) this.terminalKey = undefined;
 		await this.detachScreen()?.release();
+	}
+
+	/** The retained terminal outlives the session; it must not keep reporting reads to it (or keep it reachable). */
+	private detachReader(): void {
+		this.readListeners.clear();
+		if (this.terminalKey !== undefined) detachTerminalReader(this.terminalKey);
 	}
 
 	/**
@@ -454,6 +479,16 @@ export class ExecSession {
 	 */
 	get shellExited(): boolean {
 		return this.child.processExited;
+	}
+
+	/** Signal what is left of the process group after the terminal closed; 0 only probes. Returns whether any member got it. */
+	signalProcessGroup(signal: NodeJS.Signals | 0): boolean {
+		return this.child?.signalGroup(signal) ?? false;
+	}
+
+	/** The shell's own exit status once it has exited, even while the terminal is held open. */
+	get shellExit(): ProcessExit | undefined {
+		return this.child?.processExit;
 	}
 
 	get exitCode(): number | null {

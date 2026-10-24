@@ -175,7 +175,7 @@ describe("registered tools return structuredContent", { skip: IS_WINDOWS }, () =
 
 	it("exec_command keeps model content unchanged and mirrors details.output", async () => {
 		const { call } = makeHarness();
-		const result = await call("exec_command", { cmd: "printf 'a\\nb\\n'; exit 3", yield_time_ms: 5000 });
+		const result = await call("exec_command", { title: "Test command", cmd: "printf 'a\\nb\\n'; exit 3", yield_time_ms: 5000 });
 		assert.equal(result.content[0].text, renderProcessResultText(result.details));
 		assert.ok(Value.Check(processScriptResultSchema, result.structuredContent));
 		assertPlainJson(result.structuredContent);
@@ -186,7 +186,7 @@ describe("registered tools return structuredContent", { skip: IS_WINDOWS }, () =
 
 	it("write_stdin, list_sessions, set_on_exit and kill_session cover live and unknown sessions", { timeout: 15_000 }, async () => {
 		const { call } = makeHarness();
-		const started = await call("exec_command", { cmd: "echo ready; sleep 30", yield_time_ms: 300 });
+		const started = await call("exec_command", { title: "Test command", cmd: "echo ready; sleep 30", yield_time_ms: 300 });
 		const sid = started.structuredContent.session_id;
 		assert.equal(typeof sid, "number");
 		assert.equal(started.structuredContent.status, "running");
@@ -210,7 +210,11 @@ describe("registered tools return structuredContent", { skip: IS_WINDOWS }, () =
 		const killed = await call("kill_session", { session_id: sid });
 		assert.ok(Value.Check(killScriptResultSchema, killed.structuredContent));
 		assert.equal(killed.structuredContent.status, "killed");
-		const unknownKill = await call("kill_session", { session_id: sid });
+		const retained = await call("list_sessions", {});
+		assert.equal(retained.structuredContent.running_count, 0);
+		assert.equal(retained.structuredContent.returned_count, 1);
+		assert.ok(retained.structuredContent.sessions.some((s: { session_id: number; running: boolean }) => s.session_id === sid && !s.running));
+		const unknownKill = await call("kill_session", { session_id: 999_999 });
 		assert.ok(Value.Check(killScriptResultSchema, unknownKill.structuredContent));
 		assert.equal(unknownKill.structuredContent.found, false);
 	});

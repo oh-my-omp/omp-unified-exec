@@ -147,7 +147,7 @@ describe("unified-exec e2e", () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		try {
-			const started = await h.call("exec_command", { cmd: "sleep 0.5; echo unobserved-marker; exec cat", yield_time_ms: 250 });
+			const started = await h.call("exec_command", { title: "Test command", cmd: "sleep 0.5; echo unobserved-marker; exec cat", yield_time_ms: 250 });
 			const sid = started.details.session_id;
 			const url: string = started.details.terminal_url;
 			assert.ok(await waitFor(async () => (await readTerminal(url.slice(7))).screenLines.some((line) => line.includes("unobserved-marker"))));
@@ -184,13 +184,13 @@ describe("unified-exec e2e", () => {
 	it("Windows: shell=powershell and shell=cmd get shell-appropriate flags", { skip: !IS_WINDOWS, timeout: 45_000 }, async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r1 = await h.call("exec_command", { cmd: "Write-Output ps-ok", shell: "powershell", yield_time_ms: 20000 });
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "Write-Output ps-ok", shell: "powershell", yield_time_ms: 20000 });
 		assert.equal(r1.details.exit_code, 0, `powershell details=${JSON.stringify(r1.details)}`);
 		assert.ok(
 			r1.details.output.includes("ps-ok"),
 			`powershell output=${JSON.stringify(r1.details.output)} session_id=${r1.details.session_id}`,
 		);
-		const r2 = await h.call("exec_command", { cmd: "echo cmd-ok", shell: "cmd", yield_time_ms: 20000 });
+		const r2 = await h.call("exec_command", { title: "Test command", cmd: "echo cmd-ok", shell: "cmd", yield_time_ms: 20000 });
 		assert.equal(r2.details.exit_code, 0, `cmd details=${JSON.stringify(r2.details)}`);
 		assert.ok(r2.details.output.includes("cmd-ok"), `cmd output=${JSON.stringify(r2.details.output)}`);
 		await h.emit("session_shutdown");
@@ -203,11 +203,9 @@ describe("unified-exec e2e", () => {
 			await h.emit("session_start");
 			for (const defaultShell of ["/bin/sh", "definitely-not-a-real-default-shell-xyz"]) {
 				process.env.SHELL = defaultShell;
-				const result = await h.call("exec_command", {
-					cmd: 'printf "bash-version:%s\\n" "${BASH_VERSION:?not running bash}"',
+				const result = await h.call("exec_command", { title: "Test command", cmd: 'printf "bash-version:%s\\n" "${BASH_VERSION:?not running bash}"',
 					shell: "bash",
-					yield_time_ms: 2000,
-				});
+					yield_time_ms: 2000, });
 				assert.equal(result.details.exit_code, 0, JSON.stringify(result.details));
 				assert.match(result.details.output, /bash-version:\d/);
 				const shell: unknown = result.details.shell;
@@ -234,7 +232,7 @@ describe("unified-exec e2e", () => {
 			await h.emit("session_start");
 			process.env.SHELL = "bash";
 			assert.equal(reads, 0, "activation must not snapshot shellPath");
-			const first = await h.call("exec_command", { cmd: 'printf "interpreter:%s\\n" "$0"' });
+			const first = await h.call("exec_command", { title: "Test command", cmd: 'printf "interpreter:%s\\n" "$0"' });
 			assert.equal(first.details.exit_code, 0, JSON.stringify(first.details));
 			assert.match(first.details.output, /interpreter:\/bin\/sh/);
 			assertReportedShell(first, "/bin/sh");
@@ -242,9 +240,7 @@ describe("unified-exec e2e", () => {
 
 			hostShell = "bash";
 			process.env.SHELL = "/bin/sh";
-			const second = await h.call("exec_command", {
-				cmd: 'printf "bash-version:%s\\n" "${BASH_VERSION:?not running bash}"',
-			});
+			const second = await h.call("exec_command", { title: "Test command", cmd: 'printf "bash-version:%s\\n" "${BASH_VERSION:?not running bash}"', });
 			assert.equal(second.details.exit_code, 0, JSON.stringify(second.details));
 			assert.match(second.details.output, /bash-version:\d/);
 			assert.ok(isAbsolute(second.details.shell));
@@ -252,20 +248,20 @@ describe("unified-exec e2e", () => {
 			assert.equal(reads, 2);
 
 			hostShell = "definitely-not-a-real-host-shell-xyz";
-			const explicit = await h.call("exec_command", { cmd: "echo explicit-wins", shell: "/bin/sh" });
+			const explicit = await h.call("exec_command", { title: "Test command", cmd: "echo explicit-wins", shell: "/bin/sh" });
 			assert.equal(explicit.details.exit_code, 0, JSON.stringify(explicit.details));
 			assert.match(explicit.details.output, /explicit-wins/);
 			assertReportedShell(explicit, "/bin/sh");
 			assert.equal(reads, 2, "explicit shell must bypass host settings");
 
-			const failed = await h.call("exec_command", { cmd: "echo fallback-must-not-run" });
+			const failed = await h.call("exec_command", { title: "Test command", cmd: "echo fallback-must-not-run" });
 			assert.match(failed.details.failure_message, /ENOENT/);
 			assert.doesNotMatch(failed.details.output, /fallback-must-not-run/);
 			assertReportedShell(failed, hostShell);
 			assert.equal(reads, 3);
 
 			for (hostShell of [undefined, "", " \t\n"]) {
-				const fallback = await h.call("exec_command", { cmd: "echo environment-shell" });
+				const fallback = await h.call("exec_command", { title: "Test command", cmd: "echo environment-shell" });
 				assert.equal(fallback.details.exit_code, 0, JSON.stringify(fallback.details));
 				assert.match(fallback.details.output, /environment-shell/);
 				assertReportedShell(fallback, "/bin/sh");
@@ -285,15 +281,9 @@ describe("unified-exec e2e", () => {
 			await h.emit("session_start");
 			process.env.SHELL = " \t/bin/sh \n";
 			const initialUpdates: Array<{ details: { shell?: string } }> = [];
-			const started = await h.call(
-				"exec_command",
-				{
-					cmd: 'stty -echo; printf "interpreter:%s\\n" "$0"; while IFS= read -r line; do printf "reply:%s\\n" "$line"; done',
-					yield_time_ms: 1000,
-				},
-				undefined,
-				(partial: { details: { shell?: string } }) => initialUpdates.push(partial),
-			);
+			const started = await h.call("exec_command", { title: "Test command", cmd: 'stty -echo; printf "interpreter:%s\\n" "$0"; while IFS= read -r line; do printf "reply:%s\\n" "$line"; done',
+					yield_time_ms: 1000, }, undefined,
+				(partial: { details: { shell?: string } }) => initialUpdates.push(partial),);
 			const sid: unknown = started.details.session_id;
 			assert.equal(typeof sid, "number", JSON.stringify(started.details));
 			assert.ok(typeof sid === "number");
@@ -305,10 +295,8 @@ describe("unified-exec e2e", () => {
 			// A new default invocation must use the changed environment, not the
 			// earlier /bin/sh selection or a cached platform fallback.
 			process.env.SHELL = "bash";
-			const next = await h.call("exec_command", {
-				cmd: 'printf "new-bash-version:%s\\n" "${BASH_VERSION:?not running bash}"',
-				yield_time_ms: 2000,
-			});
+			const next = await h.call("exec_command", { title: "Test command", cmd: 'printf "new-bash-version:%s\\n" "${BASH_VERSION:?not running bash}"',
+				yield_time_ms: 2000, });
 			assert.equal(next.details.exit_code, 0, JSON.stringify(next.details));
 			assert.match(next.details.output, /new-bash-version:\d/);
 			const nextShell: unknown = next.details.shell;
@@ -370,7 +358,7 @@ describe("unified-exec e2e", () => {
 			{ cmd: "echo piped-x | findstr piped", expect: ["piped-x"] }, // pipe
 		];
 		for (const { cmd, expect } of cases) {
-			const r = await h.call("exec_command", { cmd, shell: "cmd", yield_time_ms: 20000 });
+			const r = await h.call("exec_command", { title: "Test command", cmd, shell: "cmd", yield_time_ms: 20000 });
 			assert.equal(r.details.exit_code, 0, `cmd=${cmd} details=${JSON.stringify(r.details)}`);
 			for (const e of expect) {
 				assert.ok(r.details.output.includes(e), `cmd=${cmd} expected "${e}" in output=${r.details.output}`);
@@ -382,7 +370,7 @@ describe("unified-exec e2e", () => {
 	it("short-lived command returns exit_code and no session_id", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r = await h.call("exec_command", { cmd: "echo hello && echo world" });
+		const r = await h.call("exec_command", { title: "Test command", cmd: "echo hello && echo world" });
 		assert.equal(r.details.exit_code, 0);
 		assert.equal(r.details.session_id, undefined);
 		assert.ok(r.details.output.includes("hello"));
@@ -395,10 +383,8 @@ describe("unified-exec e2e", () => {
 		await h.emit("session_start");
 		// 3 ticks @ 200ms = 600ms runtime. Yield at 250ms -> session_id returned.
 		// Then wait 800ms so the process exits, then read its retained terminal.
-		const r1 = await h.call("exec_command", {
-			cmd: "for i in 1 2 3; do echo tock $i; sleep 0.2; done",
-			yield_time_ms: 250,
-		});
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "for i in 1 2 3; do echo tock $i; sleep 0.2; done",
+			yield_time_ms: 250, });
 		assert.ok(
 			typeof r1.details.session_id === "number",
 			`first yield should return session_id; got ${JSON.stringify(r1.details)}`,
@@ -420,10 +406,8 @@ describe("unified-exec e2e", () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		// 5 ticks, 0.3s apart = ~1.5s total. Yield at 600ms.
-		const r1 = await h.call("exec_command", {
-			cmd: "for i in 1 2 3 4 5; do echo tick $i; sleep 0.3; done",
-			yield_time_ms: 600,
-		});
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "for i in 1 2 3 4 5; do echo tick $i; sleep 0.3; done",
+			yield_time_ms: 600, });
 		assert.equal(r1.details.exit_code, undefined, "should still be running");
 		assert.ok(typeof r1.details.session_id === "number", `got session_id=${r1.details.session_id}`);
 		const sid = r1.details.session_id;
@@ -432,7 +416,7 @@ describe("unified-exec e2e", () => {
 
 		const monitoring = await h.call("monitor", { session_id: sid });
 		assert.equal(monitoring.details.status, "started");
-		assert.ok(await waitFor(() => h.sentMessages.some((m) => m.customType === "unified-exec-monitor" && m.content.includes("ended:"))));
+		assert.ok(await waitFor(() => h.sentMessages.some((m) => m.customType === "unified-exec-notice" && m.content.includes("monitor ended:"))));
 		const projection = await readTerminal(r1.details.terminal_url.slice(7));
 		assert.ok(projection.screenLines.some((line) => line.includes("tick 5")));
 		const listed = await h.call("list_sessions", {});
@@ -444,10 +428,8 @@ describe("unified-exec e2e", () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		// Disable terminal echo so the observed line must come from cat.
-		const r1 = await h.call("exec_command", {
-			cmd: "stty -echo; exec cat",
-			yield_time_ms: 300,
-		});
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "stty -echo; exec cat",
+			yield_time_ms: 300, });
 		assert.ok(typeof r1.details.session_id === "number", `got ${JSON.stringify(r1.details)}`);
 		const sid = r1.details.session_id;
 
@@ -474,10 +456,8 @@ describe("unified-exec e2e", () => {
 	it("kill_session terminates a stuck process", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r1 = await h.call("exec_command", {
-			cmd: "sleep 60",
-			yield_time_ms: 300,
-		});
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "sleep 60",
+			yield_time_ms: 300, });
 		assert.ok(typeof r1.details.session_id === "number");
 		const sid = r1.details.session_id;
 
@@ -497,10 +477,8 @@ describe("unified-exec e2e", () => {
 		try {
 			// Yield before the burst so kill_session, rather than exec_command,
 			// owns the buffered output that exercises this regression.
-			const started = await h.call("exec_command", {
-				cmd: 'sleep 0.8; for i in $(seq 1 4000); do echo "kill-line-${i}-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; done; sleep 60',
-				yield_time_ms: 250,
-			});
+			const started = await h.call("exec_command", { title: "Test command", cmd: 'sleep 0.8; for i in $(seq 1 4000); do echo "kill-line-${i}-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; done; sleep 60',
+				yield_time_ms: 250, });
 			const sid = started.details.session_id;
 			assert.ok(typeof sid === "number", JSON.stringify(started.details));
 			const logPath = started.details.log_path;
@@ -546,11 +524,9 @@ describe("unified-exec e2e", () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		// Trap SIGTERM so bash ignores it; SIGKILL should still work.
-		const r1 = await h.call("exec_command", {
-			cmd: "trap '' TERM; sleep 60",
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "trap '' TERM; sleep 60",
 			shell: "bash",
-			yield_time_ms: 300,
-		});
+			yield_time_ms: 300, });
 		const sid = r1.details.session_id;
 		assert.ok(typeof sid === "number");
 		const r2 = await h.call("kill_session", { session_id: sid });
@@ -559,7 +535,7 @@ describe("unified-exec e2e", () => {
 			// force tree-kill (taskkill /T /F) and escalation is skipped (a
 			// second identical taskkill can't behave differently). Don't assert
 			// on exit timing (taskkill on a loaded runner can exceed the 2s
-			// window) — assert the session is gone from the store instead.
+			// window) — assert the retained session is no longer running instead.
 			assert.equal(r2.details.escalated, false, `details=${JSON.stringify(r2.details)}`);
 			const l = await h.call("list_sessions", {});
 			assert.ok(
@@ -578,11 +554,9 @@ describe("unified-exec e2e", () => {
 		await h.emit("session_start");
 		let bg = 0;
 		try {
-			const r1 = await h.call("exec_command", {
-				cmd: "(trap '' HUP; exec sleep 300) & echo bg=$!; sleep 0.5",
+			const r1 = await h.call("exec_command", { title: "Test command", cmd: "(trap '' HUP; exec sleep 300) & echo bg=$!; sleep 0.5",
 				shell: "/bin/sh",
-				yield_time_ms: 1500,
-			});
+				yield_time_ms: 1500, });
 			bg = Number(/bg=(\d+)/.exec(r1.details.output)?.[1]);
 			assert.ok(bg > 0, r1.details.output);
 			assert.match(r1.details.note ?? "", /shell has exited/, JSON.stringify(r1.details));
@@ -605,10 +579,10 @@ describe("unified-exec e2e", () => {
 	it("list_sessions enumerates live sessions", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r1 = await h.call("exec_command", { cmd: "sleep 10", yield_time_ms: 300 });
-		const r2 = await h.call("exec_command", { cmd: "sleep 11", yield_time_ms: 300 });
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "sleep 10", yield_time_ms: 300 });
+		const r2 = await h.call("exec_command", { title: "Test command", cmd: "sleep 11", yield_time_ms: 300 });
 		const l = await h.call("list_sessions", {});
-		assert.equal(l.details.active_count, 2, `details=${JSON.stringify(l.details)}`);
+		assert.equal(l.details.running_count, 2, `details=${JSON.stringify(l.details)}`);
 		const ids = l.details.sessions.map((s: any) => s.session_id);
 		assert.ok(ids.includes(r1.details.session_id));
 		assert.ok(ids.includes(r2.details.session_id));
@@ -621,7 +595,7 @@ describe("unified-exec e2e", () => {
 	it("session_tree surfaces running sessions in the TUI", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r1 = await h.call("exec_command", { cmd: "sleep 10", yield_time_ms: 300 });
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "sleep 10", yield_time_ms: 300 });
 		const sid = r1.details.session_id;
 		assert.ok(typeof sid === "number");
 
@@ -647,7 +621,7 @@ describe("unified-exec e2e", () => {
 	it("running-session footer clears automatically when a background process exits", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r1 = await h.call("exec_command", { cmd: "sleep 0.4", yield_time_ms: 250 });
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "sleep 0.4", yield_time_ms: 250 });
 		const sid = r1.details.session_id;
 		assert.ok(typeof sid === "number", `details=${JSON.stringify(r1.details)}`);
 		assert.equal(h.uiEvents.statuses.get("unified-exec.sessions"), "unified-exec: 1 session running");
@@ -667,7 +641,7 @@ describe("unified-exec e2e", () => {
 	it("post-tree running-session widget clears automatically when the process exits", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r1 = await h.call("exec_command", { cmd: "sleep 0.4", yield_time_ms: 250 });
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "sleep 0.4", yield_time_ms: 250 });
 		const sid = r1.details.session_id;
 		assert.ok(typeof sid === "number", `details=${JSON.stringify(r1.details)}`);
 
@@ -688,8 +662,8 @@ describe("unified-exec e2e", () => {
 	it("running-session UI decrements when one of multiple sessions exits", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const short = await h.call("exec_command", { cmd: "sleep 1.2", yield_time_ms: 250 });
-		const long = await h.call("exec_command", { cmd: "sleep 10", yield_time_ms: 250 });
+		const short = await h.call("exec_command", { title: "Test command", cmd: "sleep 1.2", yield_time_ms: 250 });
+		const long = await h.call("exec_command", { title: "Test command", cmd: "sleep 10", yield_time_ms: 250 });
 		const shortSid = short.details.session_id;
 		const longSid = long.details.session_id;
 		assert.ok(typeof shortSid === "number", `short=${JSON.stringify(short.details)}`);
@@ -707,8 +681,8 @@ describe("unified-exec e2e", () => {
 		assert.ok(widget.includes(`#${longSid}`), `widget=${widget}`);
 		assert.ok(!widget.includes(`#${shortSid}`), `widget=${widget}`);
 
-		const reaped = await h.call("list_sessions", {});
-		assert.equal(reaped.details.sessions.find((s: { session_id: number }) => s.session_id === shortSid)?.exit_code, 0);
+		const listed = await h.call("list_sessions", {});
+		assert.equal(listed.details.sessions.find((s: { session_id: number }) => s.session_id === shortSid)?.exit_code, 0);
 		await h.call("kill_session", { session_id: longSid });
 		await h.emit("session_shutdown");
 	});
@@ -716,13 +690,13 @@ describe("unified-exec e2e", () => {
 	it("session_shutdown terminates all live sessions", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r1 = await h.call("exec_command", { cmd: "sleep 10", yield_time_ms: 200 });
-		const r2 = await h.call("exec_command", { cmd: "sleep 11", yield_time_ms: 200 });
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "sleep 10", yield_time_ms: 200 });
+		const r2 = await h.call("exec_command", { title: "Test command", cmd: "sleep 11", yield_time_ms: 200 });
 		assert.ok(r1.details.session_id);
 		assert.ok(r2.details.session_id);
 		await h.emit("session_shutdown");
 		const l = await h.call("list_sessions", {});
-		assert.equal(l.details.active_count, 0);
+		assert.equal(l.details.running_count, 0);
 	});
 
 	it("session_shutdown racing exec_command creation does not orphan the child", async () => {
@@ -732,7 +706,7 @@ describe("unified-exec e2e", () => {
 		// and untracked.
 		const h = makeHarness();
 		await h.emit("session_start");
-		const inflight = h.call("exec_command", { cmd: "sleep 30", yield_time_ms: 500 });
+		const inflight = h.call("exec_command", { title: "Test command", cmd: "sleep 30", yield_time_ms: 500 });
 		await new Promise((r) => setTimeout(r, 40)); // inside the grace window
 		await h.emit("session_shutdown");
 		const r = await inflight;
@@ -755,7 +729,7 @@ describe("unified-exec e2e", () => {
 		const marker = `30.${process.pid}${Date.now() % 1000}`;
 		const h = makeHarness();
 		await h.emit("session_start");
-		const inflight = h.call("exec_command", { cmd: `trap '' TERM HUP; sleep ${marker}`, shell: "/bin/bash", yield_time_ms: 500 });
+		const inflight = h.call("exec_command", { title: "Test command", cmd: `trap '' TERM HUP; sleep ${marker}`, shell: "/bin/bash", yield_time_ms: 500 });
 		await new Promise((r) => setTimeout(r, 40)); // inside the grace window
 		await h.emit("session_shutdown");
 		const r = await inflight;
@@ -780,7 +754,7 @@ describe("unified-exec e2e", () => {
 		try {
 			const h = makeHarness();
 			await h.emit("session_start");
-			const r1 = await h.call("exec_command", { cmd: "trap '' TERM HUP; echo trap-ready; sleep 30", yield_time_ms: 250 });
+			const r1 = await h.call("exec_command", { title: "Test command", cmd: "trap '' TERM HUP; echo trap-ready; sleep 30", yield_time_ms: 250 });
 			const sid = r1.details.session_id;
 			assert.ok(typeof sid === "number", JSON.stringify(r1.details));
 			const logPath: string = r1.details.log_path;
@@ -805,10 +779,10 @@ describe("unified-exec e2e", () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		await h.emit("session_shutdown");
-		await assert.rejects(() => h.call("exec_command", { cmd: "echo nope" }), /shutting down/);
+		await assert.rejects(() => h.call("exec_command", { title: "Test command", cmd: "echo nope" }), /shutting down/);
 		// A new session_start re-arms the extension (reload/new/resume).
 		await h.emit("session_start");
-		const r = await h.call("exec_command", { cmd: "echo back" });
+		const r = await h.call("exec_command", { title: "Test command", cmd: "echo back" });
 		assert.equal(r.details.exit_code, 0);
 		await h.emit("session_shutdown");
 	});
@@ -817,7 +791,7 @@ describe("unified-exec e2e", () => {
 		it(`session_shutdown reason=${reason} terminates live sessions`, async () => {
 			const h = makeHarness();
 			await h.emit("session_start");
-			const r = await h.call("exec_command", { cmd: "sleep 10", yield_time_ms: 200 });
+			const r = await h.call("exec_command", { title: "Test command", cmd: "sleep 10", yield_time_ms: 200 });
 			assert.ok(r.details.session_id);
 			await h.emit("session_shutdown", {
 				type: "session_shutdown",
@@ -825,7 +799,7 @@ describe("unified-exec e2e", () => {
 				targetSessionFile: reason === "new" || reason === "resume" || reason === "fork" ? "/tmp/next.jsonl" : undefined,
 			});
 			const l = await h.call("list_sessions", {});
-			assert.equal(l.details.active_count, 0);
+			assert.equal(l.details.running_count, 0);
 		});
 	}
 
@@ -833,11 +807,7 @@ describe("unified-exec e2e", () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		const ac = new AbortController();
-		const promise = h.call(
-			"exec_command",
-			{ cmd: "sleep 10", yield_time_ms: 30_000 },
-			ac.signal,
-		);
+		const promise = h.call("exec_command", { title: "Test command", cmd: "sleep 10", yield_time_ms: 30_000 }, ac.signal,);
 		setTimeout(() => ac.abort(), 100);
 		const t0 = Date.now();
 		const r = await promise;
@@ -873,7 +843,7 @@ describe("unified-exec e2e", () => {
 	it("response includes cwd, command, yield_time_ms in details and header", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r = await h.call("exec_command", { cmd: "echo ok", yield_time_ms: 2000 });
+		const r = await h.call("exec_command", { title: "Test command", cmd: "echo ok", yield_time_ms: 2000 });
 		assert.equal(r.details.exit_code, 0);
 		assert.equal(r.details.cwd, process.cwd());
 		assert.equal(r.details.command, "echo ok");
@@ -886,7 +856,7 @@ describe("unified-exec e2e", () => {
 	it("short command includes a persistent log_path in details", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r = await h.call("exec_command", { cmd: "echo hello" });
+		const r = await h.call("exec_command", { title: "Test command", cmd: "echo hello" });
 		assert.equal(r.details.exit_code, 0);
 
 		assert.ok(typeof r.details.log_path === "string" && r.details.log_path.length > 0, `log_path missing: ${JSON.stringify(r.details)}`);
@@ -902,9 +872,9 @@ describe("unified-exec e2e", () => {
 	it("list_sessions entries include log_path", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r1 = await h.call("exec_command", { cmd: "sleep 10", yield_time_ms: 200 });
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "sleep 10", yield_time_ms: 200 });
 		const l = await h.call("list_sessions", {});
-		assert.equal(l.details.active_count, 1);
+		assert.equal(l.details.running_count, 1);
 		const entry = l.details.sessions[0];
 		assert.equal(entry.session_id, r1.details.session_id);
 		assert.equal(entry.log_path, r1.details.log_path);
@@ -916,7 +886,7 @@ describe("unified-exec e2e", () => {
 	it("kill_session details include log_path", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r1 = await h.call("exec_command", { cmd: "sleep 10", yield_time_ms: 200 });
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "sleep 10", yield_time_ms: 200 });
 		const sid = r1.details.session_id;
 		const r2 = await h.call("kill_session", { session_id: sid });
 		assert.equal(r2.details.log_path, r1.details.log_path);
@@ -932,6 +902,7 @@ describe("unified-exec e2e", () => {
 			for (const explicit of [false, true]) {
 				process.env.SHELL = explicit ? (IS_WINDOWS ? "cmd" : "/bin/sh") : missingShell;
 				const args = {
+					title: "Unavailable shell",
 					cmd: "echo fallback-must-not-run",
 					...(explicit ? { shell: missingShell } : {}),
 				};
@@ -949,7 +920,7 @@ describe("unified-exec e2e", () => {
 					assertReportedShell(result, missingShell);
 				}
 				const listed = await h.call("list_sessions", {});
-				assert.equal(listed.details.active_count, 0);
+				assert.equal(listed.details.running_count, 0);
 			}
 		} finally {
 			if (previous === undefined) delete process.env.SHELL;
@@ -966,7 +937,7 @@ describe("unified-exec e2e", () => {
 			const h = makeHarness();
 			h.stubCtx.cwd = root;
 			await h.emit("session_start");
-			const ok = await h.call("exec_command", { cmd: "pwd", workdir: "sub" });
+			const ok = await h.call("exec_command", { title: "Test command", cmd: "pwd", workdir: "sub" });
 			assert.equal(ok.details.cwd, join(root, "sub"), JSON.stringify(ok.details));
 			assert.equal(ok.details.exit_code, 0, JSON.stringify(ok.details));
 			for (const [workdir, message] of [
@@ -974,7 +945,7 @@ describe("unified-exec e2e", () => {
 				["f", `Working directory is not a directory: ${join(root, "f")}`],
 			] as const) {
 				const marker = join(root, `ran-${workdir}`);
-				const r = await h.call("exec_command", { cmd: `echo > "${marker}"`, workdir });
+				const r = await h.call("exec_command", { title: "Test command", cmd: `echo > "${marker}"`, workdir });
 				assert.equal(r.details.session_id, undefined, JSON.stringify(r.details));
 				assert.equal(r.details.failure_message, message, JSON.stringify(r.details));
 				assert.equal(existsSync(marker), false, "nothing may run for an unusable workdir");
@@ -989,7 +960,7 @@ describe("unified-exec e2e", () => {
 	it("kill_session normalizes signal names (lowercase, no SIG prefix)", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r1 = await h.call("exec_command", { cmd: "sleep 60", yield_time_ms: 300 });
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "sleep 60", yield_time_ms: 300 });
 		const sid = r1.details.session_id;
 		assert.ok(typeof sid === "number");
 		const r2 = await h.call("kill_session", { session_id: sid, signal: "term" });
@@ -1005,32 +976,36 @@ describe("unified-exec e2e", () => {
 		await h.emit("session_shutdown");
 	});
 
-	it("list_sessions reports just-exited sessions once with exit info, then removes them", async () => {
+	it("list_sessions retains returned sessions with exit info until lifecycle reclamation", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r1 = await h.call("exec_command", { cmd: "sleep 0.3", yield_time_ms: 250 });
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "sleep 0.3", yield_time_ms: 250 });
 		const sid = r1.details.session_id;
 		assert.ok(typeof sid === "number", JSON.stringify(r1.details));
 		// Wait for the observed exit (the running-sessions status clears), not a fixed delay.
 		assert.ok(await waitFor(() => h.uiEvents.statuses.get("unified-exec.sessions") === undefined), "exit was not observed");
 
 		const l1 = await h.call("list_sessions", {});
-		assert.equal(l1.details.active_count, 0, JSON.stringify(l1.details));
+		assert.equal(l1.details.running_count, 0, JSON.stringify(l1.details));
 		const entry = l1.details.sessions.find((s: any) => s.session_id === sid);
-		assert.ok(entry, `exited session should be reported once: ${JSON.stringify(l1.details)}`);
+		assert.ok(entry, `returned session should remain listed: ${JSON.stringify(l1.details)}`);
 		assert.equal(entry.running, false);
 		assert.equal(entry.exit_code, 0);
-		assert.ok(l1.content[0].text.includes("exited"), l1.content[0].text);
+		assert.equal(entry.title, "Test command");
+		assert.equal(l1.details.returned_count, 1);
+		assert.equal(entry.lifecycle.returned, "normally");
 
 		const l2 = await h.call("list_sessions", {});
-		assert.equal(l2.details.sessions.length, 0, JSON.stringify(l2.details));
+		assert.equal(l2.details.sessions.length, 1, JSON.stringify(l2.details));
+		assert.equal(l2.details.sessions[0].session_id, sid);
+		assert.equal(l2.details.sessions[0].running, false);
 		await h.emit("session_shutdown");
 	});
 
 	it("session_shutdown SIGKILLs children that trap SIGTERM", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r1 = await h.call("exec_command", { cmd: "trap '' TERM; sleep 30", shell: "bash", yield_time_ms: 300 });
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "trap '' TERM; sleep 30", shell: "bash", yield_time_ms: 300 });
 		const sid = r1.details.session_id;
 		assert.ok(typeof sid === "number", JSON.stringify(r1.details));
 		const l = await h.call("list_sessions", {});
@@ -1046,12 +1021,8 @@ describe("unified-exec e2e", () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		const updates: any[] = [];
-		const r = await h.call(
-			"exec_command",
-			{ cmd: "for i in 1 2 3 4; do echo beat-$i; sleep 0.25; done", yield_time_ms: 1500 },
-			undefined,
-			(partial: any) => updates.push(partial),
-		);
+		const r = await h.call("exec_command", { title: "Test command", cmd: "for i in 1 2 3 4; do echo beat-$i; sleep 0.25; done", yield_time_ms: 1500 }, undefined,
+			(partial: any) => updates.push(partial),);
 		assert.ok(updates.length >= 2, `expected >=2 partial updates; got ${updates.length}`);
 		const first = updates[0];
 		const last = updates[updates.length - 1];
@@ -1071,7 +1042,7 @@ describe("unified-exec e2e", () => {
 	it("/unified-exec-sessions command kills a selected session", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const r1 = await h.call("exec_command", { cmd: "sleep 30", yield_time_ms: 250 });
+		const r1 = await h.call("exec_command", { title: "Test command", cmd: "sleep 30", yield_time_ms: 250 });
 		const sid = r1.details.session_id;
 		assert.ok(typeof sid === "number");
 
@@ -1079,7 +1050,7 @@ describe("unified-exec e2e", () => {
 		await h.invokeCommand("unified-exec-sessions");
 
 		const l = await h.call("list_sessions", {});
-		assert.equal(l.details.active_count, 0, JSON.stringify(l.details));
+		assert.equal(l.details.running_count, 0, JSON.stringify(l.details));
 		assert.ok(
 			h.uiEvents.notifications.some((n) => n.message.includes("killed 1")),
 			JSON.stringify(h.uiEvents.notifications),
@@ -1090,14 +1061,14 @@ describe("unified-exec e2e", () => {
 	it("/unified-exec-sessions command can kill all sessions", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		await h.call("exec_command", { cmd: "sleep 30", yield_time_ms: 250 });
-		await h.call("exec_command", { cmd: "sleep 31", yield_time_ms: 250 });
+		await h.call("exec_command", { title: "Test command", cmd: "sleep 30", yield_time_ms: 250 });
+		await h.call("exec_command", { title: "Test command", cmd: "sleep 31", yield_time_ms: 250 });
 
 		h.uiEvents.selectResponses.push((options) => options.find((o) => o.startsWith("Kill all")));
 		await h.invokeCommand("unified-exec-sessions");
 
 		const l = await h.call("list_sessions", {});
-		assert.equal(l.details.active_count, 0, JSON.stringify(l.details));
+		assert.equal(l.details.running_count, 0, JSON.stringify(l.details));
 		await h.emit("session_shutdown");
 	});
 

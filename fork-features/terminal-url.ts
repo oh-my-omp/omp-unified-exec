@@ -1,6 +1,6 @@
 import { sanitizeOutputText } from "../src/output-safety.ts";
 import { writeTerminalImage } from "./terminal-image.ts";
-import { getTerminalResource, parseTerminalTarget, readTerminal, terminalText } from "./terminal-resource.ts";
+import { getTerminalResource, noteTerminalRead, parseTerminalTarget, readTerminal, terminalText } from "./terminal-resource.ts";
 
 const handlerBrand = Symbol.for("omp-unified-exec.term-handler");
 
@@ -37,7 +37,9 @@ export async function initializeTerminalUrls(): Promise<void> {
 		async resolve(url) {
 			const projection = await readTerminal(url.hostname);
 			const target = parseTerminalTarget(url.pathname);
-			return { url: url.href, content: sanitizeOutputText(terminalText(projection, target)), contentType: "text/plain", immutable: false };
+			const content = sanitizeOutputText(terminalText(projection, target));
+			noteTerminalRead(url.hostname);
+			return { url: url.href, content, contentType: "text/plain", immutable: false };
 		},
 		async locate(url) {
 			if (url.pathname !== "/screen.png") return null;
@@ -45,7 +47,9 @@ export async function initializeTerminalUrls(): Promise<void> {
 			// cursor policy halfway through a single screenshot read.
 			const resource = getTerminalResource(url.hostname);
 			const projection = resource.kind === "live" ? await resource.screen.project() : resource.projection;
-			return writeTerminalImage(projection, resource.kind === "live");
+			const image = await writeTerminalImage(projection, resource.kind === "live");
+			noteTerminalRead(url.hostname);
+			return image;
 		},
 	};
 	const host = router as TerminalUrlRouter;

@@ -181,26 +181,34 @@ export const monitorScriptResultSchema = Type.Union([
 ]);
 export type MonitorScriptResult = Static<typeof monitorScriptResultSchema>;
 
+const lifecycleSchema = Type.Object({
+	returned: Type.String({ description: "How the command returned: normally, or abnormally with the reason." }),
+	read: Type.Boolean({ description: "Whether the returned terminal has been read (term:// or a tool result showing it)." }),
+	phase: Type.Union([Type.Literal("ttl"), Type.Literal("unread_reminded"), Type.Literal("grace"), Type.Literal("reclaiming")]),
+});
+
 export const listSessionsScriptResultSchema = Type.Object({
 	sessions: Type.Array(
 		Type.Object({
 			session_id: Type.Number(),
+			title: Type.String(),
 			command: Type.String(),
 			cwd: Type.Optional(Type.String()),
 			shell: Type.Optional(Type.String()),
 			pid: Type.Optional(Type.Number()),
 			elapsed_ms: Type.Number(),
-			running: Type.Boolean({ description: "False for sessions that just exited; they are removed after this listing." }),
+			running: Type.Boolean({ description: "False once the terminal has closed; it stays listed until reclaimed." }),
 			wake_armed: Type.Boolean(),
 			monitor: Type.Optional(monitorStatusSchema),
+			lifecycle: Type.Optional(lifecycleSchema),
 			exit_code: Type.Optional(Type.Number()),
 			signal: Type.Optional(Type.String()),
 			log_path: Type.Optional(Type.String()),
 			terminal_url: Type.Optional(Type.String()),
 		}),
 	),
-	active_count: Type.Number(),
-	just_exited_count: Type.Number(),
+	running_count: Type.Number(),
+	returned_count: Type.Number(),
 	tool_time_utc: Type.String(),
 });
 export type ListSessionsScriptResult = Static<typeof listSessionsScriptResultSchema>;
@@ -208,6 +216,7 @@ export type ListSessionsScriptResult = Static<typeof listSessionsScriptResultSch
 export function listSessionsScriptResult(value: {
 	sessions: ReadonlyArray<{
 		session_id: number;
+		title: string;
 		command: string;
 		cwd?: string;
 		shell?: string;
@@ -216,19 +225,21 @@ export function listSessionsScriptResult(value: {
 		running: boolean;
 		wake_armed: boolean;
 		monitor?: MonitorStatus;
+		lifecycle?: { returned: string; read: boolean; phase: "ttl" | "unread_reminded" | "grace" | "reclaiming" };
 		exit_code?: number | null;
 		signal?: string;
 		log_path?: string;
 		terminal_url?: string;
 	}>;
-	active_count: number;
-	just_exited_count: number;
+	running_count: number;
+	returned_count: number;
 	tool_time_utc: string;
 }): ListSessionsScriptResult {
 	return {
 		sessions: value.sessions.map((s) =>
 			compact({
 				session_id: s.session_id,
+				title: safeMeta(s.title),
 				command: safeMeta(s.command),
 				cwd: optionalMeta(s.cwd),
 				shell: optionalMeta(s.shell),
@@ -237,14 +248,15 @@ export function listSessionsScriptResult(value: {
 				running: s.running,
 				wake_armed: s.wake_armed,
 				monitor: s.monitor,
+				lifecycle: s.lifecycle ? { ...s.lifecycle, returned: safeMeta(s.lifecycle.returned) } : undefined,
 				exit_code: s.exit_code ?? undefined,
 				signal: optionalMeta(s.signal),
 				log_path: optionalMeta(s.log_path),
 				terminal_url: s.terminal_url,
 			}),
 		),
-		active_count: value.active_count,
-		just_exited_count: value.just_exited_count,
+		running_count: value.running_count,
+		returned_count: value.returned_count,
 		tool_time_utc: value.tool_time_utc,
 	};
 }

@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 
 import type { TerminalProjection, TerminalScreen } from "../src/terminal-screen.ts";
 
+/** `onRead` reports each term:// read to the terminal's owner; a reload's stale owner just ignores it. */
 export type TerminalResource =
-	| { readonly kind: "live"; readonly screen: TerminalScreen }
-	| { readonly kind: "frozen"; readonly projection: TerminalProjection };
+	| { readonly kind: "live"; readonly screen: TerminalScreen; readonly onRead?: () => void }
+	| { readonly kind: "frozen"; readonly projection: TerminalProjection; readonly onRead?: () => void };
 
 interface TerminalRegistry {
 	readonly resources: Map<string, TerminalResource>;
@@ -25,10 +26,21 @@ export class TerminalResourceError extends Error {
 	}
 }
 
-export function registerTerminal(id: number, screen: TerminalScreen): string {
+export function registerTerminal(id: number, screen: TerminalScreen, onRead?: () => void): string {
 	const key = `${id}-${randomUUID()}`;
-	terminalRegistry.resources.set(key, { kind: "live", screen });
+	terminalRegistry.resources.set(key, { kind: "live", screen, onRead });
 	return key;
+}
+
+/** A term:// read delivered this terminal's content to a reader. */
+export function noteTerminalRead(key: string): void {
+	try { terminalRegistry.resources.get(key)?.onRead?.(); } catch { /* the owner's bookkeeping must not fail a read */ }
+}
+
+/** The owner stops counting reads; the content stays readable. */
+export function detachTerminalReader(key: string): void {
+	const resource = terminalRegistry.resources.get(key);
+	if (resource?.onRead) terminalRegistry.resources.set(key, { ...resource, onRead: undefined });
 }
 
 export function getTerminalResource(key: string): TerminalResource {
@@ -50,9 +62,11 @@ export async function freezeTerminal(key: string): Promise<void> {
 	const live = terminalRegistry.resources.get(key);
 	if (!live || live.kind === "frozen") return;
 	const projection = await live.screen.project();
-	// Shutdown may have discarded this activation's live resource during the copy.
-	if (terminalRegistry.resources.get(key) === live) {
-		terminalRegistry.resources.set(key, { kind: "frozen", projection });
+	// Shutdown may have discarded this activation's live resource during the
+	// copy, and the owner may have detached its reader meanwhile.
+	const current = terminalRegistry.resources.get(key);
+	if (current?.kind === "live" && current.screen === live.screen) {
+		terminalRegistry.resources.set(key, { kind: "frozen", projection, onRead: current.onRead });
 	}
 }
 

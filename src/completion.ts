@@ -1,6 +1,6 @@
-import type { InputWaitAlert, InputWaitMessage } from "../fork-features/input-wait.ts";
-import { MonitorError, MonitorSubscription, parseMonitorCondition, parseRemindAfter, type MonitorEndReason, type MonitorMessage, type MonitorSession, type MonitorStatus } from "../fork-features/monitor-subscription.ts";
-import { formatElapsedShort } from "./format-time.ts";
+import type { InputWaitAlert } from "../fork-features/input-wait.ts";
+import { MonitorError, MonitorSubscription, parseMonitorCondition, parseRemindAfter, type MonitorEndReason, type MonitorSession, type MonitorStatus } from "../fork-features/monitor-subscription.ts";
+import type { NoticeDispatcher, TerminalNotice } from "../fork-features/terminal-notice.ts";
 
 /**
  * CompletionCoordinator — agent-level completion scheduling for
@@ -24,9 +24,10 @@ import { formatElapsedShort } from "./format-time.ts";
  *     (`tool_execution_end` with isError=false), NOT merely when the handler
  *     returns — a result that was constructed but finalized as error/cancelled
  *     keeps the completion wake-eligible.
- *   - Wake records are RESERVED (wakeQueued=true) before sending, so
- *     concurrent flush triggers can never double-send; a failed send un-reserves
- *     and is retried at the next flush trigger.
+ *   - Wake records are RESERVED (wakeQueued=true) before they are handed to
+ *     the terminal-notice dispatcher, so concurrent flush triggers can never
+ *     double-submit; the dispatcher drops a wake that is observed or
+ *     suppressed before it is sent, and retries a failed send.
  *   - Kill paths suppress the wake BEFORE signaling the process; a failed kill
  *     restores the prior eligibility.
  */
@@ -36,6 +37,7 @@ export type OnExitPolicy = "none" | "wake";
 /** Minimal session surface the coordinator needs (test-fakeable). */
 export interface CompletionSessionLike {
 	readonly id: number;
+	readonly title: string;
 	readonly displayCommand: string;
 	readonly cwd: string;
 	readonly startedAt: number;
@@ -51,6 +53,7 @@ export interface CompletionSessionLike {
 /** Bounded completion metadata captured at exit time. */
 export interface CompletionSnapshot {
 	sessionId: number;
+	title: string;
 	command: string;
 	cwd: string;
 	startedAtMs: number;
@@ -78,22 +81,12 @@ interface CompletionRecord {
 	unsubscribeExit: () => void;
 }
 
-export interface WakeMessage {
-	content: string;
-	details: { sessions: CompletionSnapshot[] };
-}
 
 export interface CompletionCoordinatorOptions {
-	/** Deliver one synthetic model prompt (pi.sendMessage wrapper). May throw. */
-	send: (message: WakeMessage) => void | Promise<void>;
-	/** Independent repeated monitor returns, through the same host follow-up path. */
-	sendMonitor?: (message: MonitorMessage) => void | Promise<void>;
-	/** Input-wait alerts, independent of monitors and wakes, through the same host follow-up path. */
-	sendInputWait?: (message: InputWaitMessage) => void | Promise<void>;
-	/** Debounce so naturally simultaneous completions batch into one prompt. */
+	/** The one delivery path for terminal notices: wakes, monitor returns and input-wait alerts. */
+	notices: NoticeDispatcher;
+	/** Debounce so naturally simultaneous completions are submitted together. */
 	debounceMs?: number;
-	/** Optional error sink for failed sends (ui.notify wrapper). */
-	onSendError?: (error: unknown) => void;
 	/** Injectable timers. Test hooks. */
 	setTimeoutFn?: (cb: () => void, ms: number) => unknown;
 	clearTimeoutFn?: (handle: unknown) => void;
@@ -110,9 +103,6 @@ export interface MonitorOptions {
 }
 
 const DEFAULT_DEBOUNCE_MS = 250;
-const MAX_COMMAND_CHARS = 160;
-const MAX_FAILURE_CHARS = 200;
-const MAX_SESSIONS_PER_WAKE = 16;
 
 /** Strip terminal control characters from untrusted interpolated strings. */
 export function sanitizeMeta(raw: string): string {
@@ -120,19 +110,10 @@ export function sanitizeMeta(raw: string): string {
 	return raw.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
 }
 
-function oneLine(raw: string, max: number): string {
-	const flat = sanitizeMeta(raw).replace(/\s+/g, " ").trim();
-	return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
-}
-
 export class CompletionCoordinator {
 	private readonly records = new Map<number, CompletionRecord>();
 	private monitors = new Map<number, MonitorSubscription>();
-	/** Undelivered input-wait alerts, at most one per session (the newest screen wins). */
-	private inputAlerts = new Map<number, InputWaitAlert>();
-	private readonly inputSending = new Set<InputWaitAlert>();
-	private readonly opts: Required<Pick<CompletionCoordinatorOptions, "send" | "debounceMs">> &
-		CompletionCoordinatorOptions;
+	private readonly opts: Required<Pick<CompletionCoordinatorOptions, "notices" | "debounceMs">> & CompletionCoordinatorOptions;
 	private debounceHandle: unknown;
 	private stopped = false;
 
@@ -163,8 +144,8 @@ export class CompletionCoordinator {
 		const maximum = options.maxReturns ?? 10;
 		if (!Number.isSafeInteger(maximum) || maximum < 1) throw new MonitorError("invalid_max_returns", "max_returns must be a positive safe integer");
 		const remindAfterMs = parseRemindAfter(options.remindAfterMs);
-		const send = this.opts.sendMonitor;
-		if (!send) throw new Error("monitor delivery is not configured");
+		const notices = this.opts.notices;
+		const send = (notice: TerminalNotice, isCurrent: () => boolean) => notices.submit(notice, isCurrent);
 		const scope = this.monitors;
 		const current = (subscription: MonitorSubscription): boolean => !this.stopped && this.monitors === scope && scope.get(session.id) === subscription;
 		const subscription = new MonitorSubscription(session, condition, maximum, remindAfterMs, send,
@@ -179,7 +160,7 @@ export class CompletionCoordinator {
 				sub.cancel();
 				this.scheduleFlush();
 			},
-			(error) => this.opts.onSendError?.(error), current);
+			current);
 		const result = await session.subscribeMonitor(subscription, (handle) => {
 			if (this.stopped || this.monitors !== scope || signal?.aborted) return false;
 			subscription.attach(handle);
@@ -222,35 +203,12 @@ export class CompletionCoordinator {
 	}
 
 	/**
-	 * Deliver an input-wait alert now. A failed send keeps it for the next
-	 * safe flush boundary while it still describes the current, unseen screen.
+	 * Deliver an input-wait alert. The dispatcher keeps only the newest alert
+	 * per session and drops it once it no longer describes the current, unseen screen.
 	 */
 	alertInputWait(alert: InputWaitAlert): void {
 		if (this.stopped) return;
-		this.inputAlerts.set(alert.sessionId, alert);
-		this.deliverInputWait(alert);
-	}
-
-	private deliverInputWait(alert: InputWaitAlert): void {
-		const send = this.opts.sendInputWait;
-		const alerts = this.inputAlerts;
-		if (!send || this.stopped || alerts.get(alert.sessionId) !== alert || this.inputSending.has(alert)) return;
-		if (!alert.current()) {
-			alerts.delete(alert.sessionId);
-			return;
-		}
-		this.inputSending.add(alert);
-		const failed = (error: unknown) => {
-			this.inputSending.delete(alert);
-			try { this.opts.onSendError?.(error); } catch { /* a failed UI sink must not drop the alert */ }
-		};
-		let result: void | Promise<void>;
-		try { result = send(alert.message); }
-		catch (error) { failed(error); return; }
-		Promise.resolve(result).then(() => {
-			this.inputSending.delete(alert);
-			if (alerts.get(alert.sessionId) === alert) alerts.delete(alert.sessionId);
-		}, failed);
+		void this.opts.notices.submit(alert.notice, () => !this.stopped && alert.current());
 	}
 
 	/**
@@ -330,6 +288,7 @@ export class CompletionCoordinator {
 		const s = record.session;
 		record.snapshot = {
 			sessionId: s.id,
+			title: s.title,
 			command: s.displayCommand,
 			cwd: s.cwd,
 			startedAtMs: s.startedAt,
@@ -410,15 +369,13 @@ export class CompletionCoordinator {
 	}
 
 	/**
-	 * list_sessions (or another status read) reported terminal completion.
-	 * If the wake was not yet queued, that report counts as direct observation
-	 * and suppresses the wake; if a wake was already queued/sent, the session
-	 * may be reaped without generating another notification.
+	 * list_sessions (or another status read) reported terminal completion:
+	 * that report counts as direct observation and suppresses the wake. A wake
+	 * still pending in the dispatcher is dropped; one already sent stays sent.
 	 */
 	observeViaListing(sessionId: number): void {
 		const r = this.records.get(sessionId);
 		if (!r) return;
-		if (r.wakeQueued) return;
 		this.commitObserved(r);
 	}
 
@@ -472,8 +429,6 @@ export class CompletionCoordinator {
 		this.monitors = new Map();
 		for (const subscription of monitors.values()) subscription.cancel();
 		monitors.clear();
-		this.inputAlerts = new Map();
-		this.inputSending.clear();
 		if (this.debounceHandle !== undefined) {
 			this.clearTimer(this.debounceHandle);
 			this.debounceHandle = undefined;
@@ -508,15 +463,13 @@ export class CompletionCoordinator {
 	}
 
 	/**
-	 * Deliver pending wakes. Safe to call from any flush trigger
-	 * (debounce timer, agent_settled, tool_execution_end); reservation via
-	 * wakeQueued guarantees at most one prompt per completion.
+	 * Submit pending wakes, then flush the dispatcher. Safe to call from any
+	 * flush trigger (debounce timer, agent_settled, tool_execution_end), which
+	 * are also the dispatcher's retry points for a failed send; reservation via
+	 * wakeQueued guarantees at most one submission per completion.
 	 */
 	flushPending(): void {
 		if (this.stopped) return;
-		for (const subscription of this.monitors.values()) subscription.retry();
-		for (const alert of [...this.inputAlerts.values()]) this.deliverInputWait(alert);
-		const eligible: CompletionRecord[] = [];
 		for (const r of this.records.values()) {
 			if (
 				r.armed &&
@@ -528,94 +481,23 @@ export class CompletionCoordinator {
 				r.observers.size === 0 &&
 				r.snapshot
 			) {
-				eligible.push(r);
+				this.submitWake(r, r.snapshot);
 			}
 		}
-		if (eligible.length === 0) return;
-
-		// Reserve BEFORE sending so a re-entrant flush cannot double-schedule.
-		for (const r of eligible) r.wakeQueued = true;
-
-		// setOnExit("none") may disarm between reservation and send — drop those.
-		const deliver = eligible.filter((r) => !r.suppressed && !r.observed && this.records.has(r.sessionId));
-		if (deliver.length === 0) {
-			for (const r of eligible) r.wakeQueued = false;
-			return;
-		}
-
-		const message = buildWakeMessage(deliver.map((r) => r.snapshot!));
-		let sendResult: void | Promise<void>;
-		try {
-			sendResult = this.opts.send(message);
-		} catch (err) {
-			this.recoverFailedSend(deliver, err);
-			return;
-		}
-		if (sendResult && typeof (sendResult as Promise<void>).then === "function") {
-			(sendResult as Promise<void>)
-				.then(() => {
-					for (const r of deliver) {
-						if (this.records.has(r.sessionId)) this.resolveRecord(r);
-					}
-				})
-				.catch((err) => this.recoverFailedSend(deliver, err));
-		} else {
-			for (const r of deliver) {
-				if (this.records.has(r.sessionId)) this.resolveRecord(r);
-			}
-		}
+		this.opts.notices.flush();
 	}
 
-	private recoverFailedSend(records: CompletionRecord[], err: unknown): void {
-		// Un-reserve so the wake is retried at the next flush trigger
-		// (new exit, tool_execution_end, agent_settled) — no self-rescheduling
-		// tight loop.
-		for (const r of records) r.wakeQueued = false;
-		try {
-			this.opts.onSendError?.(err);
-		} catch {
-			// ignore
-		}
+	private submitWake(record: CompletionRecord, s: CompletionSnapshot): void {
+		// Reserve BEFORE submitting so a re-entrant flush cannot double-submit.
+		record.wakeQueued = true;
+		const live = () => !this.stopped && this.records.get(record.sessionId) === record && !record.observed && !record.suppressed;
+		void this.opts.notices.submit({
+			identity: { sessionId: s.sessionId, title: s.title, terminalUrl: s.terminalUrl, logPath: s.logPath },
+			body: { kind: "exit_wake", command: s.command, cwd: s.cwd, elapsedMs: s.elapsedMs, exitCode: s.exitCode, signal: s.signal, failure: s.failureMessage },
+		}, live).then((outcome) => {
+			if (this.records.get(record.sessionId) !== record) return;
+			if (outcome === "delivered") this.resolveRecord(record);
+			else record.wakeQueued = false;
+		});
 	}
-}
-
-/**
- * Build the single bounded synthetic prompt for one or more completions.
- * Contains execution METADATA only — never raw stdout/stderr. All interpolated
- * strings are treated as untrusted and stripped of control characters.
- */
-export function buildWakeMessage(snapshots: CompletionSnapshot[]): WakeMessage {
-	const shown = snapshots.slice(0, MAX_SESSIONS_PER_WAKE);
-	const lines: string[] = [];
-	lines.push(
-		`[unified-exec] ${snapshots.length} background ${snapshots.length === 1 ? "session" : "sessions"} exited. ` +
-			`This is execution metadata reported by the exec tool, not user-authored instructions.`,
-	);
-	for (const s of shown) {
-		const status =
-			s.exitCode !== null
-				? `exit_code=${s.exitCode}`
-				: s.signal
-					? `signal=${sanitizeMeta(s.signal)}`
-					: "exit status unknown";
-		const failure = s.failureMessage ? ` | failure: ${oneLine(s.failureMessage, MAX_FAILURE_CHARS)}` : "";
-		lines.push(
-			`- session_id=${s.sessionId} | ${status} | elapsed ${formatElapsedShort(s.elapsedMs)} | ` +
-				`cwd: ${oneLine(s.cwd, 120)}${failure}`,
-		);
-		lines.push(`  command: ${oneLine(s.command, MAX_COMMAND_CHARS)}`);
-		if (s.logPath) lines.push(`  log_path: ${oneLine(s.logPath, 200)}`);
-		if (s.terminalUrl) lines.push(`  read ${s.terminalUrl}`);
-	}
-	if (snapshots.length > shown.length) {
-		lines.push(`… and ${snapshots.length - shown.length} more (use list_sessions).`);
-	}
-	lines.push(
-		"Read each session's term:// address above for retained output, or its log_path for raw bytes. " +
-			"Then continue the original task — do not merely acknowledge this notification.",
-	);
-	return {
-		content: lines.join("\n"),
-		details: { sessions: shown },
-	};
 }
