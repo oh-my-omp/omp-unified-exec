@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+## 0.14.10 - 2026-10-24
+
 - Fix the Tern Terminals view's `Open` button doing nothing on click: its action id was `open`, which Tern 0.9.5 handles itself (it opens the node's `href`/`path` and, with neither, drops the click before omp sees it). The button now sends `unified-exec.terminal.open`; Enter and double-click were unaffected. The `❯` beside the selected row's icon is Tern's Console-style selection marker, drawn the same way in omp's native Background jobs view, and stays as Tern draws it.
 
 ## 0.14.9 - 2026-10-24

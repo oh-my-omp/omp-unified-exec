@@ -1,6 +1,6 @@
 {
 	"name": "omp-unified-exec",
-	"version": "0.14.9",
+	"version": "0.14.10",
 	"description": "Long-lived PTY sessions for omp: send input with write_stdin, read terminal state via term://, and await events or completion with monitor. Full raw output logged to disk.",
 	"keywords": [
 		"omp",
