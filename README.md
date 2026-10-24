@@ -149,9 +149,6 @@ omp's shared widget container: during omp's awaited factory it asks Tern's
 it is linked), and confirms Tern no longer lists it. Without `tern` nothing
 runs; if an available Tern fails, loading fails with its diagnostics.
 
-Design, decisions and Tern qualification evidence:
-[docs/IV-0002-output-lifecycle-and-rendering.md](docs/IV-0002-output-lifecycle-and-rendering.md).
-
 ## Tools
 
 ### `exec_command`
@@ -351,8 +348,7 @@ and `monitor`.
    End merges an already-armed wake into the same notification.
 
 The attachment window never kills a process. Cache warming during waits is the
-host's business, not this package's. Raw logs are unbounded on disk; archive
-quotas are [follow-up work](docs/IV-0002-output-lifecycle-and-rendering.md#output-archive-safety).
+host's business, not this package's. Raw logs are unbounded on disk.
 
 #### Control bytes and escapes in `chars`
 
@@ -648,9 +644,6 @@ fork-features/
 ├── tern-plugin-removal.ts# removes the Tern plugin earlier versions installed
 └── README.md             # fork customizations and requalification
 docs/
-├── IV-0001-long-wait-and-wake-control.md
-├── IV-0002-output-lifecycle-and-rendering.md
-├── DC-0001-agentic-workspace.md
 ├── DEV.md                # maintainer guide
 └── assets/               # README demos (demo*.gif, demo*.mp4)
 ```
@@ -673,7 +666,8 @@ as described in [fork-features/README.md](fork-features/README.md).
 
 ## Development and upstream
 
-[docs/DEV.md](docs/DEV.md) covers the dev loop, test recipes and codex sources.
+[docs/DEV.md](docs/DEV.md) covers the dev loop, focused test recipes, omp
+compatibility checks and re-recording the README demos.
 The fork's publish workflow is disabled. Upstream changes arrive through the
 daily `Sync upstream` workflow; how fork changes are kept apart from upstream
 and resolved on sync is in [fork-features/README.md](fork-features/README.md).

@@ -49,17 +49,17 @@ npm run check                       # clean strict typecheck
 npm test                            # typecheck + all tests
 ```
 
-Expect zero failures on Linux/macOS. Platform-specific cases and the explicit
-omp install gate may skip; PTY availability never does. Windows fixture
-portability remains tracked in [#46](https://github.com/oh-my-omp/omp-unified-exec/issues/46).
+Expect zero failures on Linux, macOS and Windows; CI runs the full suite on all
+three. Platform-specific cases and the explicit omp install gate may skip; PTY
+availability never does.
 The Node admission regression compiles the actual
 TypeScript entry before executing it in Node, whose strip-only loader cannot
 parse the HUD's parameter properties.
 
 ## Repo layout
 
-See [Layout](../README.md#layout) for the `src/` layout. A
-sibling view, indexed by concern:
+See [Layout](../README.md#layout) for the `src/` and `fork-features/` layout.
+A sibling view, indexed by concern:
 
 | Concern | File(s) |
 |---|---|
@@ -78,13 +78,17 @@ sibling view, indexed by concern:
 | Bun.Terminal backend, runtime admission, spawn preflight, Windows tree-kill | `src/pty.ts` |
 | Shell selection & argv construction | `src/shell.ts` |
 | omp-only host admission, bash delegation, argument/result display adapters, live `shellPath` registry lookup | `fork-features/omp-presentation.ts` |
+| Tern terminal HUD: pill segment, Terminals view, terminal page | `fork-features/tern-terminal-hud.ts` |
+| Removal of the Tern plugin versions up to 0.14.7 installed | `fork-features/tern-plugin-removal.ts` |
+| `term://` resources, read handler and screenshots | `fork-features/terminal-resource.ts`, `fork-features/terminal-url.ts`, `fork-features/terminal-image.ts` |
+| Monitor conditions, batching and follow-ups | `fork-features/monitor-subscription.ts` |
+| Command approval and host session binding | `fork-features/command-approval.ts`, `fork-features/session-binding.ts` |
 | Structured output schemas and projections | `src/script-result.ts` |
-| Initiative / doctrine docs | `docs/IV-*.md`, `docs/DC-*.md` |
-| Constants mirroring codex | top of `src/index.ts` |
+| Tool limits, early-exit grace, session-store limits | top of `src/index.ts` |
 
 ## Dev loop
 
-1. Edit files under `src/`.
+1. Edit files under `src/` or `fork-features/`.
 2. `npm run check` (catch type errors early).
 3. `bun test ./tests/<relevant>.test.ts` (fast inner loop).
 4. `npm test` before committing.
@@ -192,15 +196,19 @@ to test generic tool behavior.
 Multi-char escapes (like `\xHH`, `\u{…}`) live in the main decode
 loop; see the existing `\x` and `\u` branches for the pattern.
 
-### Change a codex-facing constant
+### Change a documented constant
 
-All constants live at the top of `src/index.ts` with a comment block
-stating whether they mirror codex or diverge. When you touch one:
+The constants in the README's `## Constants` section live in the module that
+owns them: yield limits, early-exit grace and session-store limits at the top
+of `src/index.ts`, `TERMINAL_HISTORY_CELLS` in `src/terminal-screen.ts`, the
+output caps in the host's `DEFAULT_MAX_BYTES` / `DEFAULT_MAX_LINES`. When you
+touch one:
 
-1. Update the value.
-2. Update the `## Constants` section in `README.md`.
-3. Check whether any e2e test depends on the old value (search for
-   the number literal).
+1. Update the value in its owning module.
+2. Update `## Constants` (and any prose quoting the value) in `README.md` and
+   `README.zh-CN.md`.
+3. Check whether any test depends on the old value (search for the number
+   literal).
 
 ### Add a new output-result field
 
@@ -209,10 +217,14 @@ stating whether they mirror codex or diverge. When you touch one:
 2. Populate it in `finalizeProcessResult()` / `finalizeKillResult()`.
 3. Add it to `renderProcessResultText()` / `renderKillResultText()` only when
    the model needs the field in textual content (details are TUI/session data).
-4. If the TUI should show it, update the display adapter in
+4. Add it to the TypeBox schema, type and projection in `src/script-result.ts`
+   so `structuredContent` carries it, and assert the projection in
+   `tests/script-result.test.ts`.
+5. If the TUI should show it, update the display adapter in
    `fork-features/omp-presentation.ts`.
-5. Add a pure assertion in `tests/tool-result.test.ts` and an end-to-end
-   assertion in `tests/e2e.test.ts` when process lifecycle matters.
+6. Add a pure assertion in `tests/tool-result.test.ts` and an end-to-end
+   assertion in `tests/e2e.test.ts` when process lifecycle matters; update the
+   response example and API tables in both READMEs.
 
 Never put an unbounded value in `content` or details and expect
 `renderResult` to hide it: model bounds must hold independently of display.
@@ -223,17 +235,24 @@ defense for legacy results and fallback content.
 
 ### Tune TUI rendering
 
-`fork-features/omp-presentation.ts` adapts exec/write/kill to omp's exported
-bash renderer, including Tern's describe hooks. Other tools use omp's default
-cards. Keep model content and persisted details unchanged by display adapters.
-Update `tests/omp-presentation.test.ts`, then exercise the actual omp ANSI TUI
-and Tern path. A missing or reshaped required omp module must fail factory
-loading before tools register, not fall back to another host's rendering.
+Tool result cards: `fork-features/omp-presentation.ts` adapts exec/write/kill
+to omp's exported bash renderer, including Tern's describe hooks. Other tools
+use omp's default cards. Keep model content and persisted details unchanged by
+display adapters. Update `tests/omp-presentation.test.ts`, then exercise the
+actual omp ANSI TUI and Tern path. A missing or reshaped required omp module
+must fail factory loading before tools register, not fall back to another
+host's rendering.
+
+Tern terminal HUD (pill segment, Terminals view, terminal page):
+`fork-features/tern-terminal-hud.ts`, covered by the real-PTY
+`tests/tern-terminal-hud.test.ts`; requalify in a real Tern window as
+[fork-features/README.md](../fork-features/README.md) describes.
 
 ## Debugging aids
 
-- **Per-session log files** at `/tmp/pi-unified-exec-<sid>-*.log`
-  capture the complete raw byte stream the child wrote. Tail them to
+- **Per-session log files** at `pi-unified-exec-<sid>-*.log` in the system
+  temporary directory (`/tmp` or `%TEMP%`) capture the complete raw byte
+  stream the child wrote. Inspect them with a non-executing viewer to
   diagnose ANSI / control-sequence issues.
 - **`details.output` vs `content[0].text`**: the LLM reads
   `content[0].text` (structured); the TUI renderer reads
@@ -243,7 +262,7 @@ loading before tools register, not fall back to another host's rendering.
 - **`list_sessions` tool** (invokable from the LLM side) is the
   quickest way to audit what's live.
 - **omp's `/reload` output** echoes the extensions it loaded — check
-  that `unified-exec` (or `src/index.ts` under it) is listed.
+  that this extension is among them.
 
 ## Checking omp compatibility
 
@@ -329,17 +348,12 @@ inside that package set.
 
 ## Commit conventions
 
-Match the existing history:
+Match the existing history: Conventional Commit types (`feat`, `fix`, `docs`,
+`test`, `refactor`, `ci`, `chore`; `!` marks a breaking change) with a terse
+present-tense summary and the issue number:
 
 ```
-unified-exec: <terse present-tense summary>
-
-<paragraph(s) of what and why, wrapped to ~72 cols>
-
-- bullet of file/change
-- bullet of file/change
-
-<N>/<N> tests pass; clean typecheck.
+fix: sample alternate rows before cursor-moving CSIs too (#84)
 ```
 
 Keep each commit focused (one feature / fix). `git log --oneline` for
@@ -347,11 +361,15 @@ prior commits gives a sense of scope.
 
 ## Sources to read before changing core behavior
 
-- Codex's `unified_exec` implementation is the reference for session
-  semantics:
-  [`codex-rs/core/src/unified_exec/`](https://github.com/openai/codex/tree/main/codex-rs/core/src/unified_exec)
+- This fork's behavior is defined by the READMEs, the fork customizations and
+  expected sync conflicts in
+  [fork-features/README.md](../fork-features/README.md), the implementation
+  and its tests. Upstream and codex diverge from it (PTY-only sessions, input-only
+  `write_stdin`, `term://`, `monitor`, host shell selection, omp presentation);
+  do not port their behavior back over a fork deletion.
+- Codex's `unified_exec`
+  ([`codex-rs/core/src/unified_exec/`](https://github.com/openai/codex/tree/main/codex-rs/core/src/unified_exec))
+  is useful for comparing shared session semantics and candidate fixes.
 - omp's built-in `bash` renderer and extension APIs:
   [oh-my-pi source](https://github.com/can1357/oh-my-pi), especially
   `packages/tui/src/tools` and `packages/coding-agent/src/extensibility`.
-
-Both source trees are worth keeping open in split panes while you work.

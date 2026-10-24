@@ -60,9 +60,6 @@ HUD 直接读取会话，不保存任何副本。它只在 omp 原生渲染时�
 
 **不需要 Tern 插件。** 视图和终端页使用 omp 自己的 overlay role（`omp.overlay.jobs`、`omp.overlay.console`），所以视图、终端页和终端分段都由 Tern 的自带样式绘制。这些 role 是 omp 与 Tern 的展示层契约，升级时需重新验证。本扩展会移除早期版本安装的 `omp-unified-exec` Tern 插件，因为它的样式表仍会移动 omp 共享的 widget 容器：在 omp 等待的扩展 factory 中，先执行 Tern 的 `plugin list`，再执行 `plugin remove`（Tern 回答它是链接时改用 `plugin unlink`），然后确认 Tern 不再列出它。没有 `tern` 时什么也不做；Tern 可用但失败时，加载失败并给出它的诊断信息。
 
-设计、决策和 Tern 实测记录：
-[docs/IV-0002-output-lifecycle-and-rendering.md](docs/IV-0002-output-lifecycle-and-rendering.md)。
-
 ## 工具
 
 ### `exec_command`
@@ -205,7 +202,7 @@ Live 读取使用宿主当前外观并画出描边光标；Frozen 读取保留�
 3. `on_exit` 默认 `"none"`。只有人明确希望自动恢复时才用 `"wake"`；`set_on_exit(session_id, on_exit: "none")` 可在不杀进程的情况下取消。
 4. 被带输入工具结果直接观察到的退出会消耗掉唤醒；连接窗口到期或取消则保留唤醒。Monitor End 会把已启用的普通唤醒合并进同一条通知。
 
-连接等待窗口到期永远不会杀掉进程。等待期间的缓存预热由宿主负责，与本包无关。原始日志在磁盘上不设上限；归档配额是[后续工作](docs/IV-0002-output-lifecycle-and-rendering.md#output-archive-safety)。
+连接等待窗口到期永远不会杀掉进程。等待期间的缓存预热由宿主负责，与本包无关。原始日志在磁盘上不设上限。
 
 #### `chars` 里的控制字节和转义
 
@@ -429,9 +426,6 @@ fork-features/
 ├── tern-plugin-removal.ts# removes the Tern plugin earlier versions installed
 └── README.md             # fork customizations and requalification
 docs/
-├── IV-0001-long-wait-and-wake-control.md
-├── IV-0002-output-lifecycle-and-rendering.md
-├── DC-0001-agentic-workspace.md
 ├── DEV.md                # maintainer guide
 └── assets/               # README demos (demo*.gif, demo*.mp4)
 ```
@@ -448,6 +442,6 @@ bun test ./tests/tern-terminal-hud.test.ts ./tests/omp-presentation.test.ts
 
 ## 开发与上游
 
-[docs/DEV.md](docs/DEV.md) 介绍开发流程、测试方法和 codex 源码对照。fork 的发布 workflow 已停用。上游改动通过每日的 `Sync upstream` workflow 合入；fork 改动如何与上游隔离、同步冲突如何处理，见 [fork-features/README.zh-CN.md](fork-features/README.zh-CN.md)。
+[docs/DEV.md](docs/DEV.md) 介绍开发流程、针对性测试方法、omp 兼容性检查和 README 演示的重录方法。fork 的发布 workflow 已停用。上游改动通过每日的 `Sync upstream` workflow 合入；fork 改动如何与上游隔离、同步冲突如何处理，见 [fork-features/README.zh-CN.md](fork-features/README.zh-CN.md)。
 
 与上游一样采用 [MIT](./LICENSE) 许可。

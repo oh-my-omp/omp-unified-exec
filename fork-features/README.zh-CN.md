@@ -24,6 +24,7 @@
 | 命令审批与宿主会话绑定（[#29](https://github.com/oh-my-omp/omp-unified-exec/issues/29)） | `fork-features/command-approval.ts`、`fork-features/session-binding.ts`、`fork-features/omp-presentation.ts`、`fork-features/omp-tools.d.ts`、`src/index.ts`、`tests/command-approval.test.ts` | `exec_command` 在执行之前用内置 bash 的决定逻辑检查原始 `cmd`。第一次 `session_start` 经 `AgentRegistry.global().get(ctx.agent.id)?.session` 取得会话并核对 `sessionManager` 身份；switch/branch 只复核身份。每次审批读取实际会话的实时 settings，不用全局 settings 或 cwd。Unbound 不读 settings，返回裸 `exec`，不禁用执行。其他工具保留宿主默认审批。 | 仅 fork |
 | 经 `exec_command` 执行的 `gh` 变更命令在 PTY 启动前使 omp 的 `issue://` / `pr://` 视图缓存失效（[#32](https://github.com/oh-my-omp/omp-unified-exec/issues/32)） | `fork-features/omp-presentation.ts`（`loadGithubCacheInvalidation`）、`fork-features/omp-tools.d.ts`；`src/index.ts` 中的 `runExecCommand` 与 `activate` | 交互式 `gh` 变更命令（merge 确认、comment 编辑器）需要终端，因此走 `exec_command`，宿主 bash 的失效从来看不到它们。factory 导入 omp 的 `tools/gh-cache-invalidation.invalidateGithubCacheForBashCommand`，在 spawn 之前以原始 `cmd` 调用，与 `BashTool.execute` 相同；检测逻辑与 SQLite 缓存都归宿主所有。omp 升级后重新验证该导出仍存在，且经 `exec_command` 的 `gh issue close` 使下一次 `issue://` 读取重新获取。 | 仅 fork |
 | 仅输入的 `write_stdin`；空轮询及其截止时间/配置路径已删除（[#44](https://github.com/oh-my-omp/omp-unified-exec/issues/44)） | `src/index.ts`、`src/completion.ts`、`src/long-wait.ts`、`src/format-time.ts`、`src/tool-result.ts`、`src/script-result.ts`、`fork-features/omp-presentation.ts`；删除 `src/time.ts` | 状态与内容用 `term://` 读取，事件与完成用 monitor 等待；写入要求解码后非空，否则返回类型化 `empty_poll_removed`，不消费观察。完成唤醒指向各终端读取地址；输入附着窗口与仅在人明确要求时启用 wake 的策略不变。 | 仅 fork |
+| 删除上游的 IV/DC 设计文档（`docs/DC-0001-agentic-workspace.md`、`docs/IV-0001-long-wait-and-wake-control.md`、`docs/IV-0002-output-lifecycle-and-rendering.md`）以及 `AGENTS.md` 中改动前先读它们的规则 | `docs/`、`AGENTS.md`、`README.md`、`README.zh-CN.md`、`docs/DEV.md` | 它们承载的是上游的设计与文档制度，已与 fork 严重脱节。fork 的可观察契约在 README 中，与上游的差异和重新验证方法在本文件中，不变量在代码与测试中。 | 仅 fork |
 
 已有工具名与仍保留的环境变量（`PI_UNIFIED_EXEC_*`）保持原名。只用于已删除路径的模块直接移除，不保留兼容 shim。
 
@@ -46,6 +47,8 @@
 本仓库的 shell 选择跟随宿主（[#63](https://github.com/oh-my-omp/omp-unified-exec/issues/63)）：上游的 `resolveDefaultShell` 在 POSIX 上返回 `bash`，其 `shell` 参数说明也这样写，spawn 选项还记录原始 `shell` 参数。上游对这些地方的改动会在 `src/shell.ts`、`src/index.ts` 和 `src/session.ts` 中以内容冲突的形式到来。解决方法：保留优先级（显式 `shell`、omp `shellPath`、`SHELL`、平台默认值）、在 `buildShellCommand` 之前解析，以及 `ExecSession.shell` 取 `command[0]`；上游对 Windows Git Bash/PowerShell 探测的修复只搬进平台默认值分支，选中的 shell 失败后也绝不增加回退。
 
 `README.md` 和 `README.zh-CN.md` 归 fork 所有。同步改动到 README 时，保留 fork 的版本，只把在这里仍然成立的上游事实（工具参数、限制、语义）写进两个文件中 fork 对应的章节；两者保持逐节互译，`fork-features/README.md` 和 `fork-features/README.zh-CN.md` 也一样。
+
+上游的 IV/DC 设计文档及 `AGENTS.md` 中先读它们的规则已删除。上游对 `docs/IV-*`、`docs/DC-*` 或该规则的改动会以 modify/delete 或内容冲突的形式到来。解决方法：保留删除，只把在这里仍然成立的事实写进 README 或本文件，不恢复这些文档、指向它们的链接或先读规则。
 
 omp 升级后，要重新验证 `@oh-my-pi/pi-coding-agent/internal-urls`：
 `InternalUrlRouter.instance().register(handler)` 必须与生产 `read` 共用路由；

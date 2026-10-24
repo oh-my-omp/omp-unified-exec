@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+- Remove upstream's outdated IV/DC design documents (`docs/DC-0001-agentic-workspace.md`, `docs/IV-0001-long-wait-and-wake-control.md`, `docs/IV-0002-output-lifecycle-and-rendering.md`) and the `AGENTS.md` rule to read them before changes. Both READMEs drop their links, the archive "follow-up work" pointer and their layout entries; both fork-features READMEs record the removal as a customization and its expected sync conflict. `docs/DEV.md` is corrected to the current tree: Windows runs the full suite, the concern map lists the fork-features modules, the dev loop covers `fork-features/`, constants live in their owning modules, new result fields also go into `src/script-result.ts`, HUD rendering is separate from tool cards, logs sit in the system temp directory, commits follow the Conventional Commit history, and codex is a comparison source rather than the reference for this fork's semantics.
+
 ## 0.14.8 - 2026-10-24
 
 - Every push to `main` now gets a new patch version from CI: the `Release` workflow (`.github/workflows/release.yml`) runs `fork-features/release-version.ts`, which bumps `package.json` and both `package-lock.json` version fields and renames this `## Unreleased` section to the version and date under a fresh one, then commits `chore: release X.Y.Z` to `main`. Upstream syncs keep the fork's version instead of taking upstream's.
@@ -925,9 +927,8 @@ would need Windows Job Objects; tracked as a possible follow-up.
   `pi.getActiveTools`, `pi.setActiveTools`) are unchanged. The new
   additive fields on `SessionShutdownEvent` (`reason`,
   `targetSessionFile`) do not affect our handler. No extension code
-  changes required; the devDep pin can be bumped at leisure. See
-  [docs/DEV.md#checking-upstream-compatibility](docs/DEV.md#checking-upstream-compatibility)
-  for the recipe used.
+  changes required; the devDep pin can be bumped at leisure. The recipe
+  used was the upstream-compatibility section `docs/DEV.md` had at the time.
 
 ## 2026-04-20
 

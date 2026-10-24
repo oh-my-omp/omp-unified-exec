@@ -29,6 +29,7 @@ both register `exec_command` and the other unified-exec tools.
 | Command approval and host session binding ([#29](https://github.com/oh-my-omp/omp-unified-exec/issues/29)) | `fork-features/command-approval.ts`, `fork-features/session-binding.ts`, `fork-features/omp-presentation.ts`, `fork-features/omp-tools.d.ts`, `src/index.ts`, `tests/command-approval.test.ts` | `exec_command` checks raw `cmd` through the built-in bash decision logic before execution. Its first `session_start` binds `AgentRegistry.global().get(ctx.agent.id)?.session` with `sessionManager` identity; switches/branches only recheck. Every approval reads that actual session's live settings, never global settings or cwd. Unbound returns bare `exec` without settings access and does not disable execution. Other tools retain host-default approval. | Fork-only |
 | `gh` mutations through `exec_command` invalidate omp's `issue://` / `pr://` view cache before the PTY starts ([#32](https://github.com/oh-my-omp/omp-unified-exec/issues/32)) | `fork-features/omp-presentation.ts` (`loadGithubCacheInvalidation`), `fork-features/omp-tools.d.ts`; `runExecCommand` and `activate` in `src/index.ts` | Interactive `gh` mutations (merge confirmations, comment editors) need a terminal and therefore run through `exec_command`, which the host bash's invalidation never saw. The factory imports omp's `tools/gh-cache-invalidation.invalidateGithubCacheForBashCommand` and calls it with the raw `cmd` before spawning, as `BashTool.execute` does; the detector and the SQLite cache stay host-owned. On omp upgrades, requalify that this export still exists and that a `gh issue close` through `exec_command` makes the next `issue://` read refetch. | Fork-only |
 | Input-only `write_stdin`; zero-byte polling and its deadline/configuration paths are deleted ([#44](https://github.com/oh-my-omp/omp-unified-exec/issues/44)) | `src/index.ts`, `src/completion.ts`, `src/long-wait.ts`, `src/format-time.ts`, `src/tool-result.ts`, `src/script-result.ts`, `fork-features/omp-presentation.ts`; deleted `src/time.ts` | Reads obtain state/content through `term://`; monitor waits for events or completion; writes require nonempty decoded input and otherwise return typed `empty_poll_removed` without observation. Completion wakes point to each terminal's read address; input attachment and human-explicit wake policy remain unchanged. | Fork-only |
+| Upstream's IV/DC design documents (`docs/DC-0001-agentic-workspace.md`, `docs/IV-0001-long-wait-and-wake-control.md`, `docs/IV-0002-output-lifecycle-and-rendering.md`) and the `AGENTS.md` rule to read them before changes are removed | `docs/`, `AGENTS.md`, `README.md`, `README.zh-CN.md`, `docs/DEV.md` | They carried upstream's design and doctrine and had fallen badly out of date with the fork. The fork's observable contract is in the READMEs, its divergences and requalification here, and its invariants in the code and tests. | Fork-only |
 
 Existing tool names and retained environment variables (`PI_UNIFIED_EXEC_*`)
 keep their names. Modules used only for deleted paths are removed rather than
@@ -100,6 +101,12 @@ README, keep the fork's and carry over only upstream facts that still hold here
 (tool parameters, limits, semantics), written into the fork's sections of both
 files; the two stay section-for-section translations of each other, as do
 `fork-features/README.md` and `fork-features/README.zh-CN.md`.
+
+The upstream IV/DC design documents and the `AGENTS.md` rule to read them are
+deleted. Upstream edits to `docs/IV-*`, `docs/DC-*` or that rule arrive as
+modify/delete or content conflicts. Keep the deletion; carry over only facts
+that still hold here, into the READMEs or this file, and do not restore the
+documents, their links or the read-before rule.
 
 On omp upgrades, requalify `@oh-my-pi/pi-coding-agent/internal-urls`:
 `InternalUrlRouter.instance().register(handler)` must share the production
