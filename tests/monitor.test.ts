@@ -70,7 +70,7 @@ describe("monitor source and delivery", () => {
 		assert.deepEqual(await renderedDelta(20, 3, "OLD\x1b[?1049h\x1b[HALT", "\x1b[?1049l\r\nNEW"), ["NEW"]);
 	});
 
-	it("reports alternate-screen rows overwritten after a bare CR, once, across write boundaries", async () => {
+	it("reports alternate-screen rows overwritten after a bare CR or a cursor move, once, across write boundaries", async () => {
 		const enter = "\x1b[?1049h\x1b[H";
 		// tmux redrawing a pane line by line with bare CRs: the marker is overwritten in the same parse.
 		assert.deepEqual(await renderedDelta(40, 3, enter, "Setting up x ...\rAPT_EXIT=0\rprompt# "),
@@ -78,6 +78,11 @@ describe("monitor source and delivery", () => {
 		assert.deepEqual(await renderedDelta(40, 3, enter, ["MARK=1\r", "overwritten"]), ["MARK=1", "overwritten"]);
 		assert.deepEqual(await renderedDelta(40, 3, enter, "SAME\rSAME\rSAME"), ["SAME"], "an unchanged row is not reported again");
 		assert.deepEqual(await renderedDelta(40, 3, enter, "line\r\nnext"), ["line", "next"], "CR LF needs no sample");
+		// tmux returns to row 1 with CSI H, and to its bottom row with CSI row;1 H, LF and CSI A;
+		// the row the LF scrolled in is blank where the marker was.
+		assert.deepEqual(await renderedDelta(40, 3, enter, "MARK=2\x1b[Hoverwritten"), ["MARK=2", "overwritten"]);
+		assert.deepEqual(await renderedDelta(40, 3, enter, "\x1b[3;1HMARK=3\x1b[3;1H\n\x1b[Aoverwritten"),
+			["MARK=3", "", "overwritten"]);
 	});
 
 	it("rolls back an accepted source tap when its publication callback throws", async () => {

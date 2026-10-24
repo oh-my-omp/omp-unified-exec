@@ -589,11 +589,15 @@ export class TerminalScreen {
 				maximum ??= setTimeout(evaluate, 250);
 			});
 			// A full-screen program (tmux, a remote shell inside it) may draw a
-			// line and overwrite it after a bare CR within one drain window. The
-			// row is read from the parsed buffer at that boundary and recorded
-			// as reported, so the next drain does not repeat it. Normal-screen
-			// rows keep their marker identities and are not sampled here.
-			const sampleCarriageReturn = () => {
+			// line and overwrite it within one drain window: it returns to the
+			// row with a bare CR or a cursor-moving CSI (tmux uses `\r`,
+			// `CSI H`, `CSI row;1 H` + LF + `CSI A`, depending on the row). The
+			// cursor's row is read from the parsed buffer at those boundaries,
+			// before the move takes effect, and recorded as reported, so the
+			// next drain does not repeat it. `CSI C` is left out: tmux uses it
+			// to skip blanks in the middle of drawing a row. Normal-screen rows
+			// keep their marker identities and are not sampled here.
+			const sampleCursorRow = () => {
 				if (!active) return;
 				const buffer = this.term.buffer.active;
 				if (buffer.type !== "alternate") return;
@@ -614,13 +618,20 @@ export class TerminalScreen {
 				onLines([rows.map((row) => row.text).join("").trimEnd()]);
 			};
 			const carriageReturnListeners = this.carriageReturnListeners;
-			carriageReturnListeners.add(sampleCarriageReturn);
+			carriageReturnListeners.add(sampleCursorRow);
+			// A handler returning false runs before xterm's own, which then moves the cursor.
+			const cursorMoves = ["A", "B", "D", "E", "F", "G", "H", "d", "f"].map((final) =>
+				this.term.parser.registerCsiHandler({ final }, () => { sampleCursorRow(); return false; }));
+			const stopSampling = () => {
+				carriageReturnListeners.delete(sampleCursorRow);
+				for (const move of cursorMoves) move.dispose();
+			};
 			const handle: TerminalLineSubscription = {
 				cancel() {
 					active = false;
 					clearTimers();
 					unsubscribe();
-					carriageReturnListeners.delete(sampleCarriageReturn);
+					stopSampling();
 					bufferSwitch.dispose();
 					reset.dispose();
 					disposeNormal();
@@ -628,9 +639,9 @@ export class TerminalScreen {
 				async finish() {
 					clearTimers();
 					unsubscribe();
-					// Every accepted byte, including its CR samples, parses before this drain ends.
+					// Every accepted byte, including its row samples, parses before this drain ends.
 					await drain();
-					carriageReturnListeners.delete(sampleCarriageReturn);
+					stopSampling();
 					bufferSwitch.dispose();
 					if (!active) return false;
 					active = false;

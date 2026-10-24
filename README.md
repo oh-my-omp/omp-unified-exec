@@ -433,11 +433,10 @@ the process or consuming ordinary observations.
 | `max_returns` | number | `10` | Positive safe integer, counting successful match messages, not lines or End. |
 
 Conditions see changed/new rendered logical lines, including prompts without a
-newline; wrapped physical rows are joined. On the alternate screen, a row a
-bare carriage return (one not followed by a line feed) hands to the next output
-is also seen as it was before being overwritten, so a marker that `tmux` draws
-and overwrites on its last row still matches; other cursor redraws are seen
-only in their settled state. Each line is sanitized and bounded
+newline; wrapped physical rows are joined. On the alternate screen, the
+cursor's row is also seen as it was just before a bare carriage return (one not
+followed by a line feed) or a cursor-moving CSI hands it to the next output, so
+a marker that `tmux` draws and overwrites still matches. Each line is sanitized and bounded
 to its first 1024 UTF-16 code units. Pure cursor/style changes do not trigger,
 and old output is never replayed.
 
