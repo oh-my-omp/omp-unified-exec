@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+## 0.14.13 - 2026-10-24
+
 - `kill_session`, the Tern terminal page's Kill, `/unified-exec-sessions` and shutdown now end a session whose shell has exited while a descendant still holds the terminal ([#86](https://github.com/oh-my-omp/omp-unified-exec/issues/86)). The PTY backend stopped signalling as soon as the shell exited, but the session lasts until the terminal closes, so on Linux both SIGTERM and the SIGKILL escalation were dropped and `kill_session` reported `kill_failed` with the process still alive. It now signals the shell's process group until the session finalizes, and after the shell exits it signals only the group, never the shell's recycled pid; Windows skips `taskkill /T` once the root has exited.
 
 ## 0.14.12 - 2026-10-24
