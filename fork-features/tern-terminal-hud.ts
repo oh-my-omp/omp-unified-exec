@@ -104,8 +104,12 @@ export interface NativeNode {
 
 /** The action a segment click sends (not a Tern built-in action name, which Tern handles itself). */
 export const OPEN_ACTION = "unified-exec.terminals.open";
-/** View action: open the selected session's full-pane terminal page. */
-export const OPEN_TERMINAL_ACTION = "open";
+/**
+ * View action: open the selected session's full-pane terminal page. Not Tern's
+ * built-in `open`, which opens the node's `href`/`path` and, with neither, drops
+ * the click before it reaches the component.
+ */
+export const OPEN_TERMINAL_ACTION = "unified-exec.terminal.open";
 /** View / page action: kill the session, as `kill_session` does. */
 export const KILL_ACTION = "kill";
 /** The view action that closes it: omp's `CLOSE_ACTION` id, which Tern's backdrop and head `esc` send too. */

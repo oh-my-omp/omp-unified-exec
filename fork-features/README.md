@@ -187,7 +187,10 @@ every native frame, describe a component child in a node's children in place
 `handleNativeEvent`, and Tern must still draw a divider between sibling
 `omp.hud.seg` rows of one pill. A custom overlay's `nativeOverlay` role and
 head must still reach Tern's overlay frame with `select`/`activate`/`action`
-events and `handleInput` keys reaching the component; Tern must still scope
+events and `handleInput` keys reaching the component, and the view's action
+ids (`unified-exec.terminal.open`, `kill`, `close`, `back`) must not be one of
+Tern's own actions (0.9.5 consumes `open`, `copy` and `zoom` itself, so a
+button sending `open` without `href`/`path` does nothing); Tern must still scope
 the Background jobs layout under `.sf-overlay[data-role='omp.overlay.jobs']`
 with the `omp.jobs.*` inner roles (split, master, detail, status, state, age,
 id, command, facts, out, label, output, nooutput, summary, empty) and key no
