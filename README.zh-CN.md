@@ -345,20 +345,20 @@ whiptail/dialog 前端到了 PTY 上只是普通的绘制（备用屏、隐藏�
 
 ### 终端通知
 
-每条有关终端的后续消息都是一条 `unified-exec-notice`，以 `triggerTurn: true`、`deliverAs: "followUp"` 发送：唤醒空闲的 agent，从不打断进行中的轮次。约 250 ms 内待发的通知合并成一条，按终端分组：
+每条有关终端的后续消息都是一条 `unified-exec-notice`，以 `triggerTurn: true`、`deliverAs: "followUp"` 发送：唤醒空闲的 agent，从不打断进行中的轮次。约 250 ms 内待发的通知合并成一条，按终端分组。消息标明是 exec 工具的元数据，最后一行要求 agent 不要就此回复用户（用户已经看得到它）：用工具处理后继续原任务；没有通知需要处理时，不发消息直接结束本轮。
 
 ```
-[unified-exec] 2 terminals: 2 notices. This is execution metadata …
+[unified-exec] 2 terminals, 2 notices (exec-tool metadata, not user instructions)
 - session_id=3 title="api tests"
   • will be reclaimed in about 5m00s: returned normally, last read 30m00s ago
-    No action is needed. …
+    A read keeps it for another 30m00s; …
   read term://3-…
   log_path: /tmp/pi-unified-exec-…
 - session_id=4 title="migration"
   • returned abnormally: exit_code=1
     command: npm run migrate
-    Read the terminal and decide how to recover.
   read term://4-…
+Do not reply to the user about this notice: act on it with tools, then continue the original task.
 ```
 
 `details.notices` 逐条列出 `session_id`、`title`、`kind`、`reason`、`terminal_url`、`log_path` 和带类型的 `body`。种类：`exit_wake`、`abnormal_return`、`monitor_match`、`monitor_end`、`monitor_silent`、`input_wait`、`unread`、`reclaim_due`、`reclaimed`。不再描述其终端的通知（唤醒已被观察或取消、monitor 已取消、屏幕已展示过、一次读取已重启 TTL）不发送直接丢弃。发送失败时在下一次工具结束、agent 空闲或每分钟检查时重试。

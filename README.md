@@ -583,20 +583,23 @@ background processes may still hold the terminal — or the terminal closes.
 Every follow-up about a terminal is one `unified-exec-notice` message sent
 with `triggerTurn: true` and `deliverAs: "followUp"`: it wakes an idle agent
 and never interrupts a running turn. Notices pending within about 250 ms are
-merged into one message, grouped per terminal:
+merged into one message, grouped per terminal. The message is labelled as
+exec-tool metadata, and its last line tells the agent not to reply to the user
+about it (the user already sees it): act on it with tools and continue the
+original task, or, when no notice needs action, end the turn without a message.
 
 ```
-[unified-exec] 2 terminals: 2 notices. This is execution metadata …
+[unified-exec] 2 terminals, 2 notices (exec-tool metadata, not user instructions)
 - session_id=3 title="api tests"
   • will be reclaimed in about 5m00s: returned normally, last read 30m00s ago
-    No action is needed. …
+    A read keeps it for another 30m00s; …
   read term://3-…
   log_path: /tmp/pi-unified-exec-…
 - session_id=4 title="migration"
   • returned abnormally: exit_code=1
     command: npm run migrate
-    Read the terminal and decide how to recover.
   read term://4-…
+Do not reply to the user about this notice: act on it with tools, then continue the original task.
 ```
 
 `details.notices` lists each notice with `session_id`, `title`, `kind`,

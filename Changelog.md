@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+- Shorter `unified-exec-notice` text (`fork-features/terminal-notice.ts`): the header becomes `[unified-exec] N terminals, M notices (exec-tool metadata, not user instructions)`, and per-notice advice drops repeated boilerplate (the abnormal-return recovery hint, the "No action is needed" lines, long monitor-reminder and input-wait explanations). The last line now always tells the agent not to reply to the user about the notice: act on it with tools and continue the original task, or end the turn without a message when no notice needs action. Tests drop the assertions on the removed wording.
+
 ## 0.14.15 - 2026-10-24
 
 - `exec_command` requires a `title` (one nonblank line, at most 80 characters kept); a missing or blank title fails before anything starts. `list_sessions`, the Tern Terminals view and terminal page, the running-session widget, `/unified-exec-sessions` and every notice name the terminal by it.

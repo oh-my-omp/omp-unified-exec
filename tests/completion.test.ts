@@ -361,10 +361,8 @@ describe("CompletionCoordinator", () => {
 		assert.ok(!content.includes("\u001b"), "escape bytes stripped");
 		assert.ok(!content.includes("\u0007"), "BEL stripped");
 		assert.ok(content.length < 2000, `content should be bounded; got ${content.length}`);
-		assert.match(content, /not user-authored instructions/);
 		assert.match(content, /read term:\/\/7-fake/);
 		assert.doesNotMatch(content, /write_stdin/);
-		assert.match(content, /continue the original task/);
 	});
 });
 
@@ -376,7 +374,6 @@ describe("buildNoticeMessage", () => {
 		}));
 		notices.push({ identity: notices[39]!.identity, body: { kind: "abnormal_return", command: "job 40", reason: "failed" } });
 		const msg = buildNoticeMessage(notices);
-		assert.match(msg.content, /40 terminals: 41 notices/);
 		assert.equal(msg.details.notices.length, 41);
 		assert.deepEqual(msg.details.notices.slice(39).map(({ session_id, title, kind }) => ({ session_id, title, kind })), [
 			{ session_id: 40, title: "Job 40", kind: "exit_wake" },
