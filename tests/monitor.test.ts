@@ -10,7 +10,7 @@ import { IS_WINDOWS } from "../src/shell.ts";
 
 const encoder = new TextEncoder();
 
-async function renderedDelta(cols: number, rows: number, before: string, after: string): Promise<string[]> {
+async function renderedDelta(cols: number, rows: number, before: string, after: string | readonly string[]): Promise<string[]> {
 	const screen = new TerminalScreen(cols, rows, () => {});
 	let handle: TerminalLineSubscription | undefined;
 	const lines: string[] = [];
@@ -18,7 +18,7 @@ async function renderedDelta(cols: number, rows: number, before: string, after: 
 		screen.write(encoder.encode(before));
 		await screen.project();
 		assert.equal(await screen.subscribeLines(() => true, (batch) => lines.push(...batch), (source) => { handle = source; return true; }), "accepted");
-		screen.write(encoder.encode(after));
+		for (const chunk of typeof after === "string" ? [after] : after) screen.write(encoder.encode(chunk));
 		await handle!.finish();
 		return lines;
 	} finally {
@@ -68,6 +68,16 @@ describe("monitor source and delivery", () => {
 		assert.deepEqual(await renderedDelta(20, 3, old, "\x1bcRESET"), ["RESET"]);
 		assert.deepEqual(await renderedDelta(20, 3, "OLD", "\x1b[?1049h\x1b[HALT"), ["ALT"]);
 		assert.deepEqual(await renderedDelta(20, 3, "OLD\x1b[?1049h\x1b[HALT", "\x1b[?1049l\r\nNEW"), ["NEW"]);
+	});
+
+	it("reports alternate-screen rows overwritten after a bare CR, once, across write boundaries", async () => {
+		const enter = "\x1b[?1049h\x1b[H";
+		// tmux redrawing a pane line by line with bare CRs: the marker is overwritten in the same parse.
+		assert.deepEqual(await renderedDelta(40, 3, enter, "Setting up x ...\rAPT_EXIT=0\rprompt# "),
+			["Setting up x ...", "APT_EXIT=0 x ...", "prompt# =0 x ..."]);
+		assert.deepEqual(await renderedDelta(40, 3, enter, ["MARK=1\r", "overwritten"]), ["MARK=1", "overwritten"]);
+		assert.deepEqual(await renderedDelta(40, 3, enter, "SAME\rSAME\rSAME"), ["SAME"], "an unchanged row is not reported again");
+		assert.deepEqual(await renderedDelta(40, 3, enter, "line\r\nnext"), ["line", "next"], "CR LF needs no sample");
 	});
 
 	it("rolls back an accepted source tap when its publication callback throws", async () => {

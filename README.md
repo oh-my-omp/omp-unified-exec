@@ -273,8 +273,10 @@ size; the raw stream goes only to `log_path`.
   normal-screen projection. Final metadata has no `screen_changed` or
   `history_lines`. The 50 KiB / 2000-line result cap still applies; read the URL's
   `/screen` for the complete screen and `/page/N` for earlier retained rows.
-- **Full-screen programs** (alternate screen, e.g. `top`, editors) are reported
-  as `terminal: alternate screen …`; leaving it restores the normal screen.
+- **Full-screen programs** (alternate screen, e.g. `top`, editors, `tmux`) are
+  reported as `terminal: alternate screen …`; leaving it restores the normal screen.
+- **The child sees `TERM=xterm-256color`**, the terminal it actually draws on,
+  whatever terminal omp itself runs in; a command can still set its own `TERM`.
 - **Plain text and cursor in tool results.** Colours stay out of exec/write/kill
   text; Tern's terminal page and explicit `read term://…/screen.png` show them.
 - **Terminal queries are answered** on the child's input: cursor position and
@@ -288,15 +290,15 @@ size; the raw stream goes only to `log_path`.
 #### Reading retained terminals on omp
 
 Results and `list_sessions` include a process-unique `terminal_url`, such as
-`term://3-9f2c1a7e-…`. The normal screen's retained history and screen remain
-readable independently of result consumption:
+`term://3-9f2c1a7e-…`. What a human sees in the terminal remains readable
+independently of result consumption:
 
 | Read path | Content |
 |---|---|
-| `term://<key>` | All retained normal-screen physical rows, without trailing spaces or trailing empty rows. |
+| `term://<key>` | All retained normal-screen physical rows, without trailing spaces or trailing empty rows. While a full-screen program (e.g. `tmux`) holds the alternate screen, that screen instead, which has no history; normal history is back once it leaves. |
 | `term://<key>/screen` | The active screen, including an active alternate screen. |
 | `term://<key>/screen.png` | An image of the full active grid, with cell colours and attributes. |
-| `term://<key>/page/2` | The second page of retained rows; each page has the session's `rows` rows. |
+| `term://<key>/page/2` | The second page of the rows `term://<key>` reads; each page has the session's `rows` rows. |
 | `term://<key>/page/-1` | The last page; negative page numbers count from the end. |
 | `term://<key>:raw:1-2` / `term://<key>:raw:-3` | The existing `read` head/tail selectors, with no context rows in raw mode. |
 
@@ -431,7 +433,11 @@ the process or consuming ordinary observations.
 | `max_returns` | number | `10` | Positive safe integer, counting successful match messages, not lines or End. |
 
 Conditions see changed/new rendered logical lines, including prompts without a
-newline; wrapped physical rows are joined. Each line is sanitized and bounded
+newline; wrapped physical rows are joined. On the alternate screen, a row a
+bare carriage return (one not followed by a line feed) hands to the next output
+is also seen as it was before being overwritten, so a marker that `tmux` draws
+and overwrites on its last row still matches; other cursor redraws are seen
+only in their settled state. Each line is sanitized and bounded
 to its first 1024 UTF-16 code units. Pure cursor/style changes do not trigger,
 and old output is never replayed.
 

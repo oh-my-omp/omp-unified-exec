@@ -38,6 +38,19 @@ describe("non-consuming terminal resources", () => {
 		assert.equal(projection.cells[0]![0]!.chars, "中");
 	});
 
+	it("reads what a human sees: the alternate screen while it is active, normal history after it", async (t) => {
+		const screen = new TerminalScreen(10, 2, () => {});
+		t.after(() => screen.release());
+		screen.write(encoder.encode("before\r\nprompt\x1b[?1049h\x1b[Htmux pane\r\nstatus"));
+		const alternate = await screen.project();
+		assert.equal(terminalText(alternate, parseTerminalTarget("")), "tmux pane\nstatus");
+		assert.equal(terminalText(alternate, parseTerminalTarget("/page/-1")), "tmux pane\nstatus");
+		assert.equal(terminalText(alternate, parseTerminalTarget("/screen")), "tmux pane\nstatus");
+		screen.write(encoder.encode("\x1b[?1049l\r\nafter"));
+		const normal = await screen.project();
+		assert.equal(terminalText(normal, parseTerminalTarget("")), "before\nprompt\nafter");
+	});
+
 	it("retains distinct same-number resources after freeze and parser disposal", async () => {
 		const first = new TerminalScreen(10, 2, () => {});
 		const second = new TerminalScreen(10, 2, () => {});

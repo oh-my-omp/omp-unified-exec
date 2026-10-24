@@ -61,6 +61,18 @@ only after its old marker is disposed. RIS invalidates this monitor cursor at
 the emulator's native reset boundary. There is no second terminal parser,
 global output copy or coordinator cursor mirror.
 
+On the alternate screen a row can be drawn and overwritten within one
+evaluation window: tmux redraws pane lines separated by bare carriage returns
+([#84](https://github.com/oh-my-omp/omp-unified-exec/issues/84)). While a
+conditional monitor exists, `TerminalScreen.write` splits child writes after
+each CR not followed by CR or LF (a trailing CR waits for the next write's
+first byte) and, once that piece is parsed, the monitor reads the cursor's
+logical row from the same emulator. A row that differs from the last reported
+text at that position is delivered and recorded as reported, so the next
+evaluation does not repeat it. CR LF, LF and other cursor redraws are not
+sampled; the normal screen keeps its marker identities and is not sampled.
+Change notifications still fire once per child write.
+
 Each rendered logical line is sanitized, and its first 1024 UTF-16 code units
 are used for regex evaluation and display; the rest of that line is ignored.
 Each message shows at most 16 lines and counts omitted matches.
@@ -119,6 +131,7 @@ remain unchanged.
 | Mid-flight flush re-checks suppression | Disarm racing a reserved wake must not still send. |
 | Source-first monitor acceptance | The source checks liveness after its parser baseline and publishes only the real installed tap; reset/abort cannot leave speculative coordinator entries. |
 | Rendered row identities for monitors | Reusable current-row markers plus a history frontier prevent pre-subscription replay across trim, erase and scrolling; regex sees joined rendered logical text, not raw child bytes. |
+| Sample alternate rows at bare CRs by splitting child writes | The same xterm parser stays the only authority and parsing is unchanged across split points. Rejected: xterm parser hooks (`@xterm/headless` 6 exposes no C0 execute hook, and `onCursorMove` fires once per parse); sampling CR LF/LF, whose rows scroll and would be reported twice; attributing the loss to tmux, since the marker was rendered. |
 | One coordinator routes End and ordinary wake | Successful monitor End consumes the same session's wake before releasing ownership; separate claim flags or temporary disarm/rearm would create a second authority. |
 | Serialized bounded match delivery | A successful host enqueue, not model-turn completion, counts toward the limit; failed batches remain pending, and End includes unreturned final matches. |
 

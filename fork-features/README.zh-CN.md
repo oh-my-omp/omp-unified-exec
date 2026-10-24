@@ -51,7 +51,7 @@ omp 升级后，要重新验证 `@oh-my-pi/pi-coding-agent/internal-urls`：
 `getHandler("term")` 必须返回同一个可变对象，每次请求读取其 spec 与方法。
 最终处理器使用 `{backing: "file", selectors: "lines", immutable: false}`：
 `locate()` 仅为 `/screen.png` 返回文件路径，文本路径返回 null。
-通过真实 `read` 验证全部保留行、`/screen`、正负页码、head/tail、
+通过真实 `read` 验证全部保留行、`/screen`、`tmux` 内的裸读取（须与 `/screen` 相同）、正负页码、head/tail、
 未知键与越界错误；确认子 agent 的同号键不混淆，退出、终止、LRU 后仍可读，
 两次重载后旧 URL 仍可读，既不消费观察状态也不重新注册。
 重新验证根导出 `@oh-my-pi/pi-natives.rasterizeSvg`：PNG 字节、系统字体中文、

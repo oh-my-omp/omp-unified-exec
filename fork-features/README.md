@@ -99,6 +99,7 @@ On omp upgrades, requalify `@oh-my-pi/pi-coding-agent/internal-urls`:
 spec and methods consulted per request. The final handler uses
 `{backing: "file", selectors: "lines", immutable: false}`: `locate()` returns
 a path only for `/screen.png`, null for text. Read all retained rows, `/screen`,
+the bare read inside `tmux` (it must equal `/screen`),
 positive/negative pages, head/tail and unknown-key/page errors through real
 `read`; confirm child-agent same-number keys, post-exit/kill/LRU access and
 two reloads preserve URLs without consuming observations or re-registering.

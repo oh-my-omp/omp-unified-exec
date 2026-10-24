@@ -88,12 +88,16 @@ The initiative establishes a durable output contract across these layers:
 - Conditional monitors use their own rendered-row cursor on this same parser
   chain, never the consuming observer. Their sanitized, bounded notifications
   follow the [monitor contract](IV-0001-long-wait-and-wake-control.md#monitor-contract).
-- On omp, `read term://<session-id>-<unique-suffix>` reads normal-screen retained
-  physical rows, `/screen` reads the active screen, and `/page/N` reads `rows`
-  physical rows per page (negative pages count from the end). Existing `read`
+- On omp, `read term://<session-id>-<unique-suffix>` reads what the HUD shows:
+  normal-screen retained physical rows, or the alternate screen while it is
+  active (the alternate screen has no history). `/screen` reads the active
+  screen, and `/page/N` reads `rows` rows per page of the bare read's rows
+  (negative pages count from the end). Existing `read`
   selectors provide head/tail. Reads never advance observation markers or remove
   sessions. Unknown keys report `unknown_terminal`; out-of-range pages report
   total pages. A session whose spawn failed registers no terminal resource.
+- Every PTY child gets `TERM=xterm-256color`, matching the PTY's terminal name
+  and the emulator, never omp's own inherited `TERM`.
 - The session freezes one immutable terminal projection only after output
   closure and parser completion, including normal retained rows, active styled
   cells, geometry, cursor and appearance. Normal removal, LRU termination and
@@ -159,6 +163,7 @@ The initiative establishes a durable output contract across these layers:
 | Mark omp Tern failures with view tone, not result `isError` | Tern derives card status from the host result's `isError`, which stays false for a nonzero exit because that is an ordinary completion for the model. The describe view sets `tone: "error"` for failed exits, signals, start failures and failed or unknown kills; the exit chip comes from omp's bash head. |
 | Run every session in a PTY | A rendered screen bounds every read by its size, so neither an in-memory retention cap with omission markers nor a streaming sanitizer for raw output is needed; the raw stream stays in the log. A non-PTY session duplicated the host's `bash`, whose deadline is harmless for short commands, so short one-shot commands stay there and `exec_command` keeps long, interactive, concurrent and daemon work with no command deadline ([#61](https://github.com/oh-my-omp/omp-unified-exec/issues/61)). |
 | Render session output through `@xterm/headless` | Proven identical under Node, Bun and a `bun build --compile` binary, with no DOM, assets or native code. Rejected: Codex's `TERM=dumb`/`NO_COLOR`/`PAGER=cat` mitigation (openai/codex `core/src/unified_exec/process_manager.rs:94-104`), which cannot stop programs that force redraws ([openai/codex#32325](https://github.com/openai/codex/issues/32325)). |
+| Bare `term://` follows the HUD's domain; PTYs announce `xterm-256color` | Under tmux every byte lands on the alternate screen, so a normal-only bare read stayed frozen at `tmux new` for hours while the HUD showed the pane ([#84](https://github.com/oh-my-omp/omp-unified-exec/issues/84)). Rejected: a notice line on the stale rows, which joins line selectors and is easy to skip. An inherited `xterm-kitty` made programs target a terminal the emulator is not, and remote hosts without that terminfo refused it. |
 | Running result = unseen history + full current screen + cursor | A self-contained running screen matches what a human sees and does not require splicing earlier results. Positional comparison skips unchanged previously reported rows; an unchanged running screen reports `screen_changed: false`. This incremental contract does not apply to final results. |
 | Completed result = frozen active screen | Exit is a final state, not an incremental observation. The final body and `/screen` use the same frozen projection, so unchanged screens and last-moment output remain visible. Retained history stays behind `terminal_url`; `retained_rows` describes retained physical rows, not total produced output. |
 | Align history with an xterm marker on the observed screen's top row | Each observation registers a marker at the screen's top row; the next observation's history starts there, so positional comparison with the previous screen is exact. The marker follows the row as it scrolls and is disposed when the row is trimmed from the history, so the emulator keeps its history for the HUD. Rejected: erasing the emulator's scrollback (ED3) after each observation, which left the HUD screen nothing to scroll back through; counting scroll events into absolute line numbers, which leaving the alternate screen, DECSTBM regions, ED3 and RIS all break. |
