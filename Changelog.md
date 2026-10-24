@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+## 0.14.9 - 2026-10-24
+
 - Remove upstream's outdated IV/DC design documents (`docs/DC-0001-agentic-workspace.md`, `docs/IV-0001-long-wait-and-wake-control.md`, `docs/IV-0002-output-lifecycle-and-rendering.md`) and the `AGENTS.md` rule to read them before changes. Both READMEs drop their links, the archive "follow-up work" pointer and their layout entries; both fork-features READMEs record the removal as a customization and its expected sync conflict. `docs/DEV.md` is corrected to the current tree: Windows runs the full suite, the concern map lists the fork-features modules, the dev loop covers `fork-features/`, constants live in their owning modules, new result fields also go into `src/script-result.ts`, HUD rendering is separate from tool cards, logs sit in the system temp directory, commits follow the Conventional Commit history, and codex is a comparison source rather than the reference for this fork's semantics.
 
 ## 0.14.8 - 2026-10-24
