@@ -7,6 +7,7 @@ All notable changes to this project. **Newest entries go on top.**
 ## 0.14.16 - 2026-10-24
 
 - Shorter `unified-exec-notice` text (`fork-features/terminal-notice.ts`): the header becomes `[unified-exec] N terminals, M notices (exec-tool metadata, not user instructions)`, and per-notice advice drops repeated boilerplate (the abnormal-return recovery hint, the "No action is needed" lines, long monitor-reminder and input-wait explanations). The last line now always tells the agent not to reply to the user about the notice: act on it with tools and continue the original task, or end the turn without a message when no notice needs action. Tests drop the assertions on the removed wording.
+- Add environment-only UI i18n for the Pi-compatible fork: `OMOMP_LANG` (then `LC_ALL`, `LC_MESSAGES`, `LANG`) now selects English or Chinese at each human-facing display call across notifications, widgets, omp presentation, the Tern HUD and notice transcript renderer. Model-facing tool text, protocol values and tool descriptions remain unchanged.
 
 ## 0.14.15 - 2026-10-24
 

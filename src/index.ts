@@ -39,6 +39,7 @@ import { constants as osConstants } from "node:os";
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { type AgentToolResult, type AgentToolUpdateCallback, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Box, Text, type Component } from "@earendil-works/pi-tui";
 import { Type, type TUnsafe } from "typebox";
 
 import { type ActivatedExtension, withHostPresentation } from "../fork-features/omp-presentation.ts";
@@ -46,10 +47,11 @@ import { approvalCommand, approveBoundCommand, type CommandApprovalHost } from "
 import { bindingContext, bindSession, type HostBindingState, recheckBinding } from "../fork-features/session-binding.ts";
 import { MonitorError } from "../fork-features/monitor-subscription.ts";
 import { type LifecycleClock, type ReclaimResult, TerminalLifecycle } from "../fork-features/terminal-lifecycle.ts";
-import { MAX_TITLE_CHARS, NoticeDispatcher, outcomeText, parseTerminalTitle } from "../fork-features/terminal-notice.ts";
+import { buildNoticeDisplayMessage, MAX_TITLE_CHARS, NoticeDispatcher, outcomeText, parseTerminalTitle } from "../fork-features/terminal-notice.ts";
 import { type CollectResult, NO_OUTPUT } from "./collect.ts";
 import { CompletionCoordinator, type OnExitPolicy, sanitizeMeta } from "./completion.ts";
-import { formatElapsed, nowUtcIso } from "./format-time.ts";
+import { formatElapsed, formatElapsedUi, nowUtcIso } from "./format-time.ts";
+import { tr } from "./i18n.ts";
 import { waitForExitOrDeadline } from "./long-wait.ts";
 import { sleep } from "./notify.ts";
 import { sanitizeOutputText } from "./output-safety.ts";
@@ -289,7 +291,10 @@ async function runExecCommand(
 		if (resolved.fellBack && !ctx.warnedShellFallback) {
 			ctx.warnedShellFallback = true;
 			ctx.ui?.notify(
-				"unified-exec: no bash found (PATH, git-derived, or known install roots); falling back to powershell. Install Git Bash or set PI_UNIFIED_EXEC_BASH.",
+				tr(
+					"unified-exec: no bash found (PATH, git-derived, or known install roots); falling back to powershell. Install Git Bash or set PI_UNIFIED_EXEC_BASH.",
+					"unified-exec：未找到 bash（PATH、Git 派生路径或已知安装目录）；将回退到 powershell。请安装 Git Bash，或设置 PI_UNIFIED_EXEC_BASH。",
+				),
 				"warning",
 			);
 		} else if (
@@ -302,7 +307,13 @@ async function runExecCommand(
 			// bash located off PATH (derived from git.exe or a known install
 			// root) — say so once, so shell selection is never mysterious.
 			ctx.notifiedBashSource = true;
-			ctx.ui?.notify(`unified-exec: using bash at ${resolved.shell} (not on PATH)`, "info");
+			ctx.ui?.notify(
+				tr(
+					`unified-exec: using bash at ${resolved.shell} (not on PATH)`,
+					`unified-exec：正在使用 ${resolved.shell} 中的 bash（不在 PATH 中）`,
+				),
+				"info",
+			);
 		}
 	}
 	// A relative workdir is relative to the calling session's cwd, never to the host process's.
@@ -446,10 +457,22 @@ async function runExecCommand(
 			// naturally-exited wake session so its completion is not silently lost.
 			ctx.coordinator.handleEviction(pruned);
 			ctx.lifecycle.evicted(pruned, ctx.store.maxSessions);
-			ctx.ui?.notify(`unified-exec: evicted session ${pruned.id} (LRU, over cap ${ctx.store.maxSessions})`, "warning");
+			ctx.ui?.notify(
+				tr(
+					`unified-exec: evicted session ${pruned.id} (LRU, over cap ${ctx.store.maxSessions})`,
+					`unified-exec：已淘汰会话 ${pruned.id}（LRU，超过上限 ${ctx.store.maxSessions}）`,
+				),
+				"warning",
+			);
 		}
 		if (count >= WARNING_SESSIONS) {
-			ctx.ui?.notify(`unified-exec: ${count}/${ctx.store.maxSessions} sessions open`, "warning");
+			ctx.ui?.notify(
+				tr(
+					`unified-exec: ${count}/${ctx.store.maxSessions} sessions open`,
+					`unified-exec：已打开 ${count}/${ctx.store.maxSessions} 个会话`,
+				),
+				"warning",
+			);
 		}
 
 		// Wait until the yield deadline (or abort/exit). Stream updates meanwhile.
@@ -751,8 +774,8 @@ function runningSessions(ctx: ExtensionCtx): ExecSession[] {
 		.sort((a, b) => a.id - b.id);
 }
 
-function plural(n: number, singular: string, pluralForm = `${singular}s`): string {
-	return n === 1 ? singular : pluralForm;
+function sessionWord(count: number): string {
+	return count === 1 ? tr("session", "会话") : tr("sessions", "会话");
 }
 
 function oneLineCommand(command: string, max = 120): string {
@@ -766,15 +789,30 @@ function formatRunningSessionsWidget(ctx: ExtensionCtx, sessions: ExecSession[])
 	const now = Date.now();
 	const shown = sessions.slice(0, 5);
 	const lines = [
-		`⚠ unified-exec: ${sessions.length} ${plural(sessions.length, "session")} still running`,
+		tr(
+			`⚠ unified-exec: ${sessions.length} ${sessionWord(sessions.length)} still running`,
+			`⚠ unified-exec：${sessions.length} 个会话仍在运行`,
+		),
 		...shown.map((s) => {
-			const wake = ctx.coordinator.isArmed(s.id) ? " [wake]" : "";
-			const held = s.shellExited ? " (shell exited, terminal held)" : "";
-			return `  #${s.id} ${formatElapsed(now - s.startedAt)}${wake}${held} ${oneLineCommand(s.title, 40)} — ${oneLineCommand(s.displayCommand, 60)} (${s.cwd})`;
+			const wake = ctx.coordinator.isArmed(s.id) ? tr(" [wake]", " [已唤醒]") : "";
+			const held = s.shellExited ? tr(" (shell exited, terminal held)", "（shell 已退出，终端仍被占用）") : "";
+			const elapsed = formatElapsedUi(now - s.startedAt);
+			return tr(
+				`  #${s.id} ${elapsed}${wake}${held} ${oneLineCommand(s.title, 40)} — ${oneLineCommand(s.displayCommand, 60)} (${s.cwd})`,
+				`  #${s.id} ${elapsed}${wake}${held} ${oneLineCommand(s.title, 40)} — ${oneLineCommand(s.displayCommand, 60)}（${s.cwd}）`,
+			);
 		}),
 	];
-	if (sessions.length > shown.length) lines.push(`  … ${sessions.length - shown.length} more; use list_sessions`);
-	lines.push("  Use list_sessions, write_stdin, set_on_exit (disarm wake), or kill_session.");
+	if (sessions.length > shown.length) {
+		lines.push(tr(
+			`  … ${sessions.length - shown.length} more; use list_sessions`,
+			`  … 还有 ${sessions.length - shown.length} 个；使用 list_sessions`,
+		));
+	}
+	lines.push(tr(
+		"  Use list_sessions, write_stdin, set_on_exit (disarm wake), or kill_session.",
+		"  使用 list_sessions、write_stdin、set_on_exit（取消唤醒）或 kill_session。",
+	));
 	return lines;
 }
 
@@ -782,12 +820,20 @@ function updateRunningSessionsUi(ctx: ExtensionCtx, opts: { showWidget?: boolean
 	const ui = ctx.ui;
 	if (!ui) return;
 	const sessions = runningSessions(ctx);
-	const status = sessions.length ? `unified-exec: ${sessions.length} ${plural(sessions.length, "session")} running` : undefined;
+	const status = sessions.length
+		? tr(
+			`unified-exec: ${sessions.length} ${sessionWord(sessions.length)} running`,
+			`unified-exec：${sessions.length} 个会话正在运行`,
+		)
+		: undefined;
 	ui.setStatus(SESSION_UI_KEY, status);
 
 	if (opts.notifyTree && sessions.length > 0) {
 		ui.notify(
-			`unified-exec: ${sessions.length} ${plural(sessions.length, "session")} still running after /tree.`,
+			tr(
+				`unified-exec: ${sessions.length} ${sessionWord(sessions.length)} still running after /tree.`,
+				`unified-exec：/tree 后仍有 ${sessions.length} 个会话在运行。`,
+			),
 			"warning",
 		);
 	}
@@ -911,7 +957,10 @@ export function activate(
 		},
 		onSendError: (err) => {
 			ctx.ui?.notify(
-				`unified-exec: failed to deliver a terminal notice: ${err instanceof Error ? err.message : String(err)}`,
+				tr(
+					`unified-exec: failed to deliver a terminal notice: ${err instanceof Error ? err.message : String(err)}`,
+					`unified-exec：终端通知投递失败：${err instanceof Error ? err.message : String(err)}`,
+				),
 				"warning",
 			);
 		},
@@ -953,6 +1002,18 @@ export function activate(
 		shellPath,
 		invalidateGithubCache,
 	};
+	const registerMessageRenderer = (pi as ExtensionAPI & {
+		registerMessageRenderer?: (
+			customType: string,
+			renderer: (message: { readonly details?: unknown }, options: { readonly outputPad: number }, theme: unknown) => Component | undefined,
+		) => void;
+	}).registerMessageRenderer;
+	registerMessageRenderer?.call(pi, "unified-exec-notice", (message, { outputPad }) => {
+		const box = new Box(outputPad, 1);
+		box.addChild(new Text(buildNoticeDisplayMessage(message.details), 0, 0));
+		return box;
+	});
+
 
 	// Observation finalization: "observed" (and a tool result's read of a
 	// returned terminal) is committed at pi's finalized tool-result event, not
@@ -1032,9 +1093,11 @@ export function activate(
 		if (drained.length && ctx.ui) {
 			const leftover = drained.filter((s) => !s.hasExited).length;
 			ctx.ui.notify(
-				`unified-exec: terminated ${drained.length - leftover} live session(s) on shutdown` +
-					(leftover ? `; ${leftover} did not confirm exit` : ""),
-				 leftover ? "warning" : "info",
+				tr(
+					`unified-exec: terminated ${drained.length - leftover} live session(s) on shutdown${leftover ? `; ${leftover} did not confirm exit` : ""}`,
+					`unified-exec：关机时终止了 ${drained.length - leftover} 个活动会话${leftover ? `；${leftover} 个会话未确认退出` : ""}`,
+				),
+				leftover ? "warning" : "info",
 			);
 		}
 	});
@@ -1042,24 +1105,40 @@ export function activate(
 	// Human-facing escape hatch: inspect and kill live sessions without going
 	// through the model.
 	pi.registerCommand("unified-exec-sessions", {
-		description: "List live unified-exec sessions and optionally kill one (or all)",
+		description: tr(
+			"List live unified-exec sessions and optionally kill one (or all)",
+			"列出正在运行的 unified-exec 会话，并可结束其中一个（或全部）",
+		),
 		handler: async (_args, cmdCtx) => {
 			ctx.ui = cmdCtx.ui;
 			updateRunningSessionsUi(ctx);
 			const sessions = runningSessions(ctx);
 			if (sessions.length === 0) {
-				cmdCtx.ui.notify("unified-exec: no live sessions", "info");
+				cmdCtx.ui.notify(
+					tr("unified-exec: no live sessions", "unified-exec：没有正在运行的会话"),
+					"info",
+				);
 				return;
 			}
 			const now = Date.now();
 			const labels = sessions.map((s) => {
-				const wake = ctx.coordinator.isArmed(s.id) ? " [wake]" : "";
-				const held = s.shellExited ? " (shell exited, terminal held)" : "";
-				return `#${s.id} ${formatElapsed(now - s.startedAt)}${wake}${held} ${oneLineCommand(s.title, 40)} — ${oneLineCommand(s.displayCommand, 60)}`;
+				const wake = ctx.coordinator.isArmed(s.id) ? tr(" [wake]", " [已唤醒]") : "";
+				const held = s.shellExited ? tr(" (shell exited, terminal held)", "（shell 已退出，终端仍被占用）") : "";
+				const elapsed = formatElapsedUi(now - s.startedAt);
+				return tr(
+					`#${s.id} ${elapsed}${wake}${held} ${oneLineCommand(s.title, 40)} — ${oneLineCommand(s.displayCommand, 60)}`,
+					`#${s.id} ${elapsed}${wake}${held} ${oneLineCommand(s.title, 40)} — ${oneLineCommand(s.displayCommand, 60)}`,
+				);
 			});
-			const KILL_ALL = `Kill all ${sessions.length} ${plural(sessions.length, "session")}`;
+			const KILL_ALL = tr(
+				`Kill all ${sessions.length} ${sessionWord(sessions.length)}`,
+				`结束全部 ${sessions.length} 个会话`,
+			);
 			const choice = await cmdCtx.ui.select(
-				`unified-exec: ${sessions.length} live ${plural(sessions.length, "session")} — select to kill (Esc to cancel)`,
+				tr(
+					`unified-exec: ${sessions.length} live ${sessionWord(sessions.length)} — select to kill (Esc to cancel)`,
+					`unified-exec：${sessions.length} 个正在运行的会话——选择要结束的会话（Esc 取消）`,
+				),
 				[...labels, KILL_ALL],
 			);
 			if (!choice) return;
@@ -1073,8 +1152,10 @@ export function activate(
 			}
 			updateRunningSessionsUi(ctx);
 			cmdCtx.ui.notify(
-				`unified-exec: killed ${killed} ${plural(killed, "session")}` +
-					(failed ? `; ${failed} did not confirm exit (still listed)` : ""),
+				tr(
+					`unified-exec: killed ${killed} ${sessionWord(killed)}${failed ? `; ${failed} did not confirm exit (still listed)` : ""}`,
+					`unified-exec：已结束 ${killed} 个会话${failed ? `；${failed} 个会话未确认退出（仍在列表中）` : ""}`,
+				),
 				failed ? "warning" : "info",
 			);
 		},
@@ -1084,10 +1165,15 @@ export function activate(
 
 	pi.registerTool({
 		name: "exec_command",
-		label: "exec_command",
+		label: tr("Execute command", "执行命令"),
 		...(approvalHost ? {
 			approval: (args: unknown) => approveBoundCommand(approvalHost, binding, args),
-			formatApprovalDetails: (args: unknown) => [`Command: ${approvalHost.helpers.truncateForPrompt(approvalCommand(args, "(missing)"))}`],
+			formatApprovalDetails: (args: unknown) => [
+				tr(
+					`Command: ${approvalHost.helpers.truncateForPrompt(approvalCommand(args, "(missing)"))}`,
+					`命令：${approvalHost.helpers.truncateForPrompt(approvalCommand(args, "（缺失）"))}`,
+				),
+			],
 		} : {}),
 		description:
 			'Run a command in a PTY session for long-running, interactive (REPLs, TUIs, ssh, sudo), concurrent or dev-daemon work; use bash for short one-shot commands. title is required: a short name for the terminal, used by list_sessions and every notice about it. There is no command deadline and nothing restarts a process that exits. Returns `session_id` if still running (drive with write_stdin, observe with monitor or read terminal_url) or `exit_code` if it finished within yield_time_ms. A background terminal stays listed after its command returns until it is reclaimed: an abnormal return is reported at once, and 30 minutes after the return or the last read a notice reminds you to read it (never read) or announces a 5-minute grace before reclaim (read). on_exit defaults to "none". Only pass on_exit: "wake" when the human explicitly wants auto-resume on unobserved exit — stale wakes interrupt later work. Use set_on_exit to disarm or re-arm a running session.',
@@ -1148,7 +1234,7 @@ export function activate(
 
 	pi.registerTool({
 		name: "write_stdin",
-		label: "write_stdin",
+		label: tr("Send input", "发送输入"),
 		description:
 			"Write nonempty input bytes verbatim to a running session's PTY; nothing (no \\r or \\n) is appended. Use `chars` for text with C-style escapes (e.g. \\x03 Ctrl-C, \\x1b ESC, \\r Enter); use `chars_b64` for raw binary. Read state and content with read terminal_url (term://); wait for output events or completion with monitor. Zero-byte input is rejected with empty_poll_removed.",
 		promptSnippet: "Send nonempty input to a running session",
@@ -1193,7 +1279,7 @@ export function activate(
 
 	pi.registerTool({
 		name: "set_on_exit",
-		label: "set_on_exit",
+		label: tr("Set exit wake", "设置退出唤醒"),
 		description:
 			'Change on_exit policy for a session without killing it. on_exit: "none" disarms a pending wake (including coordinator tombstones after eviction). on_exit: "wake" arms auto-resume if the process is still running. Cannot recall a follow-up already queued to the agent. kill_session both kills and suppresses.',
 		promptSnippet: "Disarm or re-arm on_exit wake for a session",
@@ -1264,7 +1350,7 @@ export function activate(
 
 	pi.registerTool({
 		name: "monitor",
-		label: "monitor",
+		label: tr("Monitor", "监视"),
 		description: "Wait for future output events or completion of an existing session. An optional JavaScript regex condition wakes the agent for each matched batch; omit it to await output closure once. If the monitor returns nothing for remind_after_ms (default 20 minutes) it sends one reminder to check the session and stays active. Read state/content with read terminal_url (term://), and send input with write_stdin. Replaces any existing monitor; action cancel silently removes it. Default max_returns is 10 successful match messages.",
 		promptSnippet: "Await matching output or completion of an existing session",
 		promptGuidelines: [
@@ -1307,7 +1393,7 @@ export function activate(
 
 	pi.registerTool({
 		name: "kill_session",
-		label: "kill_session",
+		label: tr("Terminate session", "结束会话"),
 		description:
 			"Terminate a session (SIGTERM, escalates to SIGKILL after 2s; on Windows any signal force-kills the process tree). Use when the process won't exit via Ctrl-C. A kill is a normal ending: the killed terminal stays listed until the terminal lifecycle reclaims it (this result shows its final screen, which counts as a read). Also suppresses any armed on_exit wake and silently cancels its monitor before signaling, even if termination fails.",
 		promptSnippet: "Terminate a session",
@@ -1375,7 +1461,7 @@ export function activate(
 
 	pi.registerTool({
 		name: "list_sessions",
-		label: "list_sessions",
+		label: tr("List sessions", "列出会话"),
 		description: "List this omp run's unified-exec terminals: running ones, and returned ones not yet reclaimed, with their titles and lifecycle state.",
 		promptSnippet: "List terminals",
 		outputSchema: listSessionsScriptResultSchema,

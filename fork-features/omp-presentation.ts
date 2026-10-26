@@ -9,6 +9,7 @@
 import type { ExtensionAPI, ToolDefinition, TruncationResult } from "@earendil-works/pi-coding-agent";
 
 import { sanitizeOutputText } from "../src/output-safety.ts";
+import { tr } from "../src/i18n.ts";
 import { requireBunRuntime } from "../src/pty.ts";
 import type { SessionStore } from "../src/session-store.ts";
 import type { TerminalAppearance } from "../src/terminal-screen.ts";
@@ -243,15 +244,15 @@ export function toShellResult(view: ResultView): ShellResult {
 				withNotices(view.output, [view.marker]),
 				{
 					wallTimeMs: view.wallTimeMs,
-					async: { state: "running", jobId: `session ${view.sessionId}`, type: "bash" },
+					async: { state: "running", jobId: tr(`session ${view.sessionId}`, `会话 ${view.sessionId}`), type: "bash" },
 				},
 				false,
 			);
 		case "exited":
 			return shellResult(
 				withNotices(view.output, [
-					view.signal && `[signal: ${view.signal}]`,
-					view.failure && `[failure: ${view.failure}]`,
+					view.signal && tr(`[signal: ${view.signal}]`, `[信号：${view.signal}]`),
+					view.failure && tr(`[failure: ${view.failure}]`, `[失败：${view.failure}]`),
 					view.marker,
 				]),
 				{ exitCode: view.exitCode, wallTimeMs: view.wallTimeMs },
@@ -260,8 +261,8 @@ export function toShellResult(view: ResultView): ShellResult {
 		case "killed":
 			return shellResult(
 				withNotices(view.output, [
-					view.escalated ? "[escalated to SIGKILL]" : null,
-					view.failure && `[failure: ${view.failure}]`,
+					view.escalated ? tr("[escalated to SIGKILL]", "[已升级为 SIGKILL]") : null,
+					view.failure && tr(`[failure: ${view.failure}]`, `[失败：${view.failure}]`),
 					view.marker,
 				]),
 				{ wallTimeMs: view.wallTimeMs },
@@ -269,7 +270,13 @@ export function toShellResult(view: ResultView): ShellResult {
 			);
 		case "kill_failed":
 			return shellResult(
-				withNotices(view.output, [`[kill failed: ${view.failure ?? "process still running"}]`, view.marker]),
+				withNotices(view.output, [
+					tr(
+						`[kill failed: ${view.failure ?? "process still running"}]`,
+						`[结束失败：${view.failure ?? "进程仍在运行"}]`,
+					),
+					view.marker,
+				]),
 				{ wallTimeMs: view.wallTimeMs },
 				true,
 			);
@@ -308,20 +315,29 @@ export function execShellArgs(args: StreamedArgs<"cmd" | "workdir">): ShellArgs 
 
 /** Pure: write_stdin args → a bash comment naming the action, never executable bytes. */
 export function writeStdinShellArgs(args: StreamedArgs<"session_id" | "chars" | "chars_b64">): ShellArgs {
-	const target = typeof args?.session_id === "number" ? `session ${args.session_id}` : "session ?";
+	const target = typeof args?.session_id === "number"
+		? tr(`session ${args.session_id}`, `会话 ${args.session_id}`)
+		: tr("session ?", "会话 ?");
 	if (typeof args?.chars === "string" && args.chars.length > 0) {
-		return { command: `# stdin → ${target}: "${stringifyChars(args.chars)}"` };
+		return { command: tr(
+			`# stdin → ${target}: "${stringifyChars(args.chars)}"`,
+			`# 输入 → ${target}：“${stringifyChars(args.chars)}”`,
+		) };
 	}
 	if (typeof args?.chars_b64 === "string" && args.chars_b64.length > 0) {
-		return { command: `# stdin → ${target}: ${base64ByteLength(args.chars_b64)} bytes` };
+		const bytes = base64ByteLength(args.chars_b64);
+		return { command: tr(`# stdin → ${target}: ${bytes} bytes`, `# 输入 → ${target}：${bytes} 字节`) };
 	}
-	return { command: `# stdin → ${target}: (input required)` };
+	return { command: tr(`# stdin → ${target}: (input required)`, `# 输入 → ${target}：（需要输入）`) };
 }
 
 /** Pure: kill_session args → a bash comment naming the action. */
 export function killShellArgs(args: StreamedArgs<"session_id" | "signal">): ShellArgs {
-	const target = typeof args?.session_id === "number" ? `session ${args.session_id}` : "session ?";
-	return { command: `# kill ${target} (${optionalString(args?.signal) ?? "SIGTERM"})` };
+	const target = typeof args?.session_id === "number"
+		? tr(`session ${args.session_id}`, `会话 ${args.session_id}`)
+		: tr("session ?", "会话 ?");
+	const signal = optionalString(args?.signal) ?? "SIGTERM";
+	return { command: tr(`# kill ${target} (${signal})`, `# 结束 ${target}（${signal}）`) };
 }
 
 // ---------------- registration ----------------

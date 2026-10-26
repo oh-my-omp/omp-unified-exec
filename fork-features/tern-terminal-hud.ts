@@ -29,8 +29,9 @@ import { homedir } from "node:os";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { matchesKey, type Component } from "@earendil-works/pi-tui";
 
-import { formatElapsed } from "../src/format-time.ts";
+import { formatElapsedUi } from "../src/format-time.ts";
 import { sanitizeOutputText } from "../src/output-safety.ts";
+import { tr } from "../src/i18n.ts";
 import type { ExecSession } from "../src/session.ts";
 import type { SessionStore } from "../src/session-store.ts";
 import type { StyledScreen } from "../src/terminal-screen.ts";
@@ -118,6 +119,10 @@ export const CLOSE_ACTION = "close";
 export const BACK_ACTION = "back";
 /** The Terminals view's frame: omp's Background jobs overlay role, so Tern lays it out as that view. */
 export const VIEW_FRAME = { role: "omp.overlay.jobs", size: "lg", anchor: "center", head: "Terminals" } as const;
+
+function viewFrame(): Readonly<Record<string, unknown>> {
+	return { ...VIEW_FRAME, head: tr("Terminals", "终端") };
+}
 const COMMAND_MAX = 120;
 const SGR = /\x1b\[[0-9;:]*m/g;
 
@@ -181,10 +186,10 @@ function exitSucceeded(state: Extract<TerminalState, { kind: "exited" }>): boole
 
 /** The page head's state words. */
 function stateText(state: TerminalState): string {
-	if (state.kind === "running") return "running";
-	if (state.failure !== null) return `failed: ${oneLine(state.failure)}`;
+	if (state.kind === "running") return tr("running", "运行中");
+	if (state.failure !== null) return tr(`failed: ${oneLine(state.failure)}`, `失败：${oneLine(state.failure)}`);
 	if (state.signal !== null) return state.signal;
-	return state.exitCode === null ? "exited" : `exit ${state.exitCode}`;
+	return state.exitCode === null ? tr("exited", "已退出") : tr(`exit ${state.exitCode}`, `退出 ${state.exitCode}`);
 }
 
 /** The page head's state span style. */
@@ -201,9 +206,11 @@ interface StateLook {
 }
 
 function stateLook(state: TerminalState): StateLook {
-	if (state.kind === "running") return { label: "Running", tone: "pending", glyph: { t: "●", fx: "pulse" } };
-	if (exitSucceeded(state)) return { label: "Exit 0", tone: "success", glyph: { t: "✓" } };
-	const label = state.failure !== null ? "Failed" : state.signal ?? (state.exitCode === null ? "Exited" : `Exit ${state.exitCode}`);
+	if (state.kind === "running") return { label: tr("Running", "运行中"), tone: "pending", glyph: { t: "●", fx: "pulse" } };
+	if (exitSucceeded(state)) return { label: tr("Exit 0", "退出 0"), tone: "success", glyph: { t: "✓" } };
+	const label = state.failure !== null
+		? tr("Failed", "失败")
+		: state.signal ?? (state.exitCode === null ? tr("Exited", "已退出") : tr(`Exit ${state.exitCode}`, `退出 ${state.exitCode}`));
 	return { label, tone: "error", glyph: { t: "✕" } };
 }
 
@@ -230,7 +237,10 @@ function parseItemId(item: unknown): number | undefined {
  * hover label. Tern owns its styling inside omp's pill in every chat style.
  */
 export function describeTerminalSegment(count: number, running: number): HudNode {
-	const label = `${count} terminal${count === 1 ? "" : "s"} · ${running} running`;
+	const label = tr(
+		`${count} terminal${count === 1 ? "" : "s"} · ${running} running`,
+		`${count} 个终端 · ${running} 个运行中`,
+	);
 	return {
 		k: "row",
 		key: "terminals",
@@ -306,7 +316,7 @@ const SPACER: HudNode = { k: "spacer", p: { grow: 1 } };
 /** A master-list row, as the Background jobs view lists a job: icon, command, elapsed. */
 function describeListItem(entry: TerminalEntry, now: number): HudNode {
 	const look = stateLook(entry.state);
-	const elapsed = formatElapsed(elapsedMs(entry, now));
+	const elapsed = formatElapsedUi(elapsedMs(entry, now));
 	return {
 		k: "item",
 		key: itemId(entry.id),
@@ -316,7 +326,10 @@ function describeListItem(entry: TerminalEntry, now: number): HudNode {
 			icon: "terminal",
 			tone: look.tone,
 			title: `${entry.title}\n${entry.command}\n${look.label} · exec · #${entry.id}`,
-			aria: `${entry.title}, ${look.label.toLowerCase()}, ${elapsed}`,
+			aria: tr(
+				`${entry.title}, ${look.label.toLowerCase()}, ${elapsed}`,
+				`${entry.title}，${look.label}，${elapsed}`,
+			),
 		},
 	};
 }
@@ -331,11 +344,11 @@ function describeDetail(entry: TerminalEntry, now: number): HudNode {
 	const running = entry.state.kind === "running";
 	const age = elapsedMs(entry, now);
 	const facts: { k: string; v: unknown }[] = [
-		{ k: "Directory", v: [{ t: shortenHome(entry.cwd), s: "path" }] },
+		{ k: tr("Directory", "目录"), v: [{ t: shortenHome(entry.cwd), s: "path" }] },
 		...(entry.pid !== undefined ? [{ k: "PID", v: [{ t: String(entry.pid), s: "num" }] }] : []),
-		{ k: "Size", v: [{ t: `${entry.screen.view.cols} × ${entry.screen.view.rows}`, s: "num" }] },
-		{ k: "Started", v: [{ t: localDateTime(entry.startedAt), s: "dim" }] },
-		{ k: "Log", v: [{ t: entry.logPath, s: "path", href: `file://${entry.logPath}` }] },
+		{ k: tr("Size", "大小"), v: [{ t: `${entry.screen.view.cols} × ${entry.screen.view.rows}`, s: "num" }] },
+		{ k: tr("Started", "启动时间"), v: [{ t: localDateTime(entry.startedAt), s: "dim" }] },
+		{ k: tr("Log", "日志"), v: [{ t: entry.logPath, s: "path", href: `file://${entry.logPath}` }] },
 	];
 	const hasOutput = entry.screen.text.replace(SGR, "").trim() !== "";
 	return {
@@ -350,11 +363,11 @@ function describeDetail(entry: TerminalEntry, now: number): HudNode {
 				c: [
 					{ k: "text", key: "state", p: { spans: [look.glyph, { t: ` ${look.label}` }], role: "omp.jobs.state", tone: look.tone, wrap: "none" } },
 					// A running session's age ticks Tern-side from the age at send; an exited one is stopped.
-					{ k: "elapsed", key: "age", p: { age, ...(running ? {} : { stopped: age }), format: "short", role: "omp.jobs.age", title: running ? "Running for" : "Ran for" } },
+					{ k: "elapsed", key: "age", p: { age, ...(running ? {} : { stopped: age }), format: "short", role: "omp.jobs.age", title: running ? tr("Running for", "运行时长") : tr("Ran for", "运行时长") } },
 					{ k: "text", key: "id", p: { spans: [{ t: `exec · #${entry.id}`, s: "mono" }], role: "omp.jobs.id", wrap: "none", truncate: "end" } },
 					SPACER,
-					...(running ? [actionButton("Kill", KILL_ACTION, "x", "error")] : []),
-					actionButton("Open", OPEN_TERMINAL_ACTION, "enter"),
+					...(running ? [actionButton(tr("Kill", "结束"), KILL_ACTION, "x", "error")] : []),
+					actionButton(tr("Open", "打开"), OPEN_TERMINAL_ACTION, "enter"),
 				],
 			},
 			{ k: "code", key: "command", p: { text: entry.script, lang: "bash", wrap: true, preview: { lines: 4 }, role: "omp.jobs.command" } },
@@ -364,10 +377,10 @@ function describeDetail(entry: TerminalEntry, now: number): HudNode {
 				key: "out",
 				p: { role: "omp.jobs.out", gap: "sm" },
 				c: [
-					{ k: "text", key: "label", p: { text: "Output", role: "omp.jobs.label" } },
+					{ k: "text", key: "label", p: { text: tr("Output", "输出"), role: "omp.jobs.label" } },
 					hasOutput
 						? { k: "ansi", key: `output-${itemId(entry.id)}`, p: { text: entry.screen.text, follow: running, role: "omp.jobs.output", max: { h: "16lines" } } }
-						: { k: "text", key: "none", p: { text: running ? "No output yet" : "No output", role: "omp.jobs.nooutput" } },
+						: { k: "text", key: "none", p: { text: running ? tr("No output yet", "暂无输出") : tr("No output", "无输出"), role: "omp.jobs.nooutput" } },
 				],
 			},
 		],
@@ -385,7 +398,7 @@ export function describeTerminalsSheet(
 	selectedId: number | undefined,
 	now = Date.now(),
 ): HudNode {
-	const close = actionButton("Close", CLOSE_ACTION, "esc");
+	const close = actionButton(tr("Close", "关闭"), CLOSE_ACTION, "esc");
 	const selected = entries.find((entry) => entry.id === selectedId) ?? entries[0];
 	if (!selected) {
 		return {
@@ -397,8 +410,8 @@ export function describeTerminalsSheet(
 					p: { role: "omp.jobs.empty", align: "center" },
 					c: [
 						{ k: "icon", key: "icon", p: { name: "terminal" } },
-						{ k: "text", key: "title", p: { text: "No terminals", role: "omp.jobs.empty.title" } },
-						{ k: "text", key: "note", p: { text: "Sessions started with exec_command show up here while they are stored.", role: "omp.jobs.empty.note", wrap: "word" } },
+						{ k: "text", key: "title", p: { text: tr("No terminals", "没有终端"), role: "omp.jobs.empty.title" } },
+						{ k: "text", key: "note", p: { text: tr("Sessions started with exec_command show up here while they are stored.", "使用 exec_command 启动的会话在存储期间会显示在这里。"), role: "omp.jobs.empty.note", wrap: "word" } },
 					],
 				},
 				actionsRow([SPACER, close]),
@@ -429,7 +442,7 @@ export function describeTerminalsSheet(
 				],
 			},
 			actionsRow([
-				{ k: "text", key: "summary", p: { role: "omp.jobs.summary", text: `${running} running · ${entries.length} stored`, wrap: "none" } },
+				{ k: "text", key: "summary", p: { role: "omp.jobs.summary", text: tr(`${running} running · ${entries.length} stored`, `${running} 个运行中 · ${entries.length} 个已存储`), wrap: "none" } },
 				SPACER,
 				close,
 			]),
@@ -443,9 +456,9 @@ export function terminalPageFrame(entry: TerminalEntry | undefined, id: number):
 		role: "omp.overlay.console",
 		size: "full",
 		head: [
-			{ t: "Terminals · ", s: "muted" },
+			{ t: tr("Terminals · ", "终端 · "), s: "muted" },
 			{ t: `#${id} ` },
-			...(entry ? [{ t: entry.title }, { t: "  " }, { t: stateText(entry.state), s: stateTone(entry.state) }] : [{ t: "removed", s: "muted" }]),
+			...(entry ? [{ t: entry.title }, { t: "  " }, { t: stateText(entry.state), s: stateTone(entry.state) }] : [{ t: tr("removed", "已移除"), s: "muted" }]),
 		],
 	};
 }
@@ -462,8 +475,8 @@ export function describeTerminalPage(entry: TerminalEntry | undefined): HudNode 
 			k: "col",
 			p: { gap: "sm" },
 			c: [
-				{ k: "text", key: "gone", p: { spans: [{ t: "This terminal is no longer stored.", s: "dim" }] } },
-				{ k: "row", key: "actions", p: { role: "omp.actions", gap: "sm", align: "center" }, c: [{ k: "spacer", p: { grow: 1 } }, actionButton("Back", BACK_ACTION, "esc")] },
+				{ k: "text", key: "gone", p: { spans: [{ t: tr("This terminal is no longer stored.", "此终端已不再存储。"), s: "dim" }] } },
+				{ k: "row", key: "actions", p: { role: "omp.actions", gap: "sm", align: "center" }, c: [{ k: "spacer", p: { grow: 1 } }, actionButton(tr("Back", "返回"), BACK_ACTION, "esc")] },
 			],
 		};
 	}
@@ -490,10 +503,10 @@ export function describeTerminalPage(entry: TerminalEntry | undefined): HudNode 
 				key: "actions",
 				p: { role: "omp.actions", gap: "sm", align: "center" },
 				c: [
-					{ k: "text", key: "note", p: { spans: [{ t: running ? "Keys go to the terminal" : "Session finished", s: "dim" }] } },
+					{ k: "text", key: "note", p: { spans: [{ t: running ? tr("Keys go to the terminal", "按键将发送到终端") : tr("Session finished", "会话已结束"), s: "dim" }] } },
 					{ k: "spacer", p: { grow: 1 } },
-					...(running ? [actionButton("Kill", KILL_ACTION, undefined, "error")] : []),
-					actionButton("Back", BACK_ACTION, "esc"),
+					...(running ? [actionButton(tr("Kill", "结束"), KILL_ACTION, undefined, "error")] : []),
+					actionButton(tr("Back", "返回"), BACK_ACTION, "esc"),
 				],
 			},
 		],
@@ -723,7 +736,9 @@ const VIEW_TICK_MS = 1000;
  * enter / x arrive in `handleInput`.
  */
 class TerminalsSheet implements Component {
-	readonly nativeOverlay = VIEW_FRAME;
+	get nativeOverlay(): Readonly<Record<string, unknown>> {
+		return viewFrame();
+	}
 	private described: HudNode | undefined;
 	private readonly watch: SessionWatch;
 	private readonly tick: NodeJS.Timeout;

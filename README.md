@@ -66,6 +66,16 @@ factory with an explicit “only supports omp” error. Every session uses Bun's
 native `Bun.Terminal`; a host without `Bun.spawn` and `Bun.Terminal` fails at
 that same factory before omp modules load or any tools register.
 
+## UI language
+
+Human-facing notifications, widgets, command labels, the omp bash card annotations,
+and the Tern terminal HUD follow `OMOMP_LANG` (`en` or `zh`, case-insensitive).
+When it is unset or invalid, the plugin uses the first non-empty `LC_ALL`,
+`LC_MESSAGES`, or `LANG` value (`zh*` selects Chinese); otherwise it uses English.
+This Pi-compatible plugin reads the environment at each display call and does not
+read an `omomp` file. Tool descriptions, prompts, protocol values, and
+model-facing tool results remain in English.
+
 ## What it does
 
 - **Sessions, not calls.** `exec_command` starts a process in a PTY and returns
