@@ -108,8 +108,13 @@ model-facing tool results remain in English.
 - **One notice channel.** Wakes, monitor returns and reminders, input-wait
   alerts and lifecycle notices are all terminal notices: each names the
   terminal by `session_id` and the title given to `exec_command`, with a short
-  reason, and notices pending together arrive as one follow-up that wakes the
-  agent.
+  reason. Notices wait while the agent is running and arrive as one follow-up
+  when it stops.
+- **Quiet after finished work.** When the main agent stops, its final response
+  is judged (OMP's judge, else `@smol`, else the todo list) before any notice
+  goes out; if the work is done, returned terminals are reclaimed and their
+  notices dropped instead of starting turns. See
+  [Finished work](#finished-work).
 - **Opt-in completion wake.** `on_exit: "wake"` resumes the agent once when a
   backgrounded process exits unobserved; `set_on_exit` disarms it.
 - **Await matching output.** `monitor` watches an existing session without
@@ -570,8 +575,8 @@ background processes may still hold the terminal — or the terminal closes.
   returned terminal. Errored or cancelled results do not count. `list_sessions`,
   `monitor` End and wakes report status only and do not count.
 - **30 minutes** after the return or the latest read:
-  - never read: one `unread` notice; the terminal is kept until it is read and
-    is never reclaimed unread;
+  - never read: one `unread` notice; the checks keep the terminal until it is
+    read (only [finished work](#finished-work) reclaims it unread);
   - read: a `reclaim_due` notice and a **5-minute grace**. A read during the
     grace starts a new 30 minutes; otherwise the terminal is reclaimed.
 - **Reclaim** kills whatever is left of the terminal's process group —
@@ -585,15 +590,22 @@ background processes may still hold the terminal — or the terminal closes.
 - **Checks** run once a minute, so each step can land up to a minute late.
 - **LRU eviction** at the 64-session cap sends a `reclaimed` notice naming
   the cap.
+- **Finished work** reclaims every returned terminal at once, read or not,
+  without notices. See [Finished work](#finished-work).
 - Session shutdown stops the lifecycle before ending terminals; its kills send
   no notices.
 
 ### Terminal notices
 
-Every follow-up about a terminal is one `unified-exec-notice` message sent
-with `triggerTurn: true` and `deliverAs: "followUp"`: it wakes an idle agent
-and never interrupts a running turn. Notices pending within about 250 ms are
-merged into one message, grouped per terminal. The message is labelled as
+Every follow-up about a terminal is one `unified-exec-notice` message. While a
+run is in progress (omp's `agent_start` until an `agent_end` it does not
+continue) notices only wait: omp keeps queued follow-ups out of an extension's
+reach, and each would start its own turn after the stop. When the run settles,
+everything pending goes out as one message with `triggerTurn: true` and
+`deliverAs: "followUp"`, which starts one turn. While the agent is idle,
+notices pending within about 250 ms are merged the same way. A run that
+awaits background work (`agent_end` with `awaitingAsyncWork`) counts as
+settled. Each message is grouped per terminal and labelled as
 exec-tool metadata, and its last line tells the agent not to reply to the user
 about it (the user already sees it): act on it with tools and continue the
 original task, or, when no notice needs action, end the turn without a message.
@@ -618,7 +630,71 @@ Do not reply to the user about this notice: act on it with tools, then continue 
 `input_wait`, `unread`, `reclaim_due`, `reclaimed`. A notice that no longer
 describes its terminal (a wake observed or disarmed, a monitor cancelled, a
 screen already shown, a read that restarted the TTL) is dropped unsent. A
-failed send is retried at the next tool end, agent settle or minute check.
+failed send is retried at the next tool end, settled run or minute check.
+
+### Finished work
+
+omp reports a main agent's final stop through `session_stop`, with its last
+response. Before the first notices after such a stop go out, the dispatcher
+decides once whether that response means the task is completely finished:
+
+- **Done:** every returned terminal is reclaimed at once, read or not, without
+  a `reclaimed` notice, and the pending notices about terminals that are gone
+  are dropped. Running terminals and their notices stay as they are, and
+  notices that arrive later in the same stop are delivered.
+- **Not done, or no decision:** every notice is delivered.
+
+A run that starts during the decision discards it, and the notices wait for
+that run's stop. Subagents, aborted runs and runs awaiting background work
+have no final response and are never decided.
+
+`stop` in the `omp-unified-exec` section of omomp picks the detector:
+
+| `stop` | Decision |
+|---|---|
+| `auto` (default) | `judge` when OMP's judge role resolves a model, else `llm` when `@smol` resolves one, else `todo` |
+| `judge` | One done / not-done choice through OMP's judge role chain, billed to the session like OMP's own judgments |
+| `llm` | The chat models of the `@smol` role in order, each answering `DONE` or `NOT_DONE` on its first line; a provider error moves to the next |
+| `todo` | Done when omp-todo-more's list has items and every one is completed or abandoned; a pending, in-progress or blocked item keeps it open; an empty list or no omp-todo-more gives no decision |
+| `off` | No decision; lifecycle notices (`abnormal_return`, `unread`, `reclaim_due`, `reclaimed`) are not delivered, while monitor, wake and input-wait notices are |
+
+An explicitly chosen detector that is unavailable gives no decision; one that
+fails, or runs past 30 seconds, also shows a warning. A done decision shows an
+info notification naming the detector.
+
+```yaml
+omp-unified-exec:
+  stop: auto
+  judgePrompt: |
+    A coding agent stopped. Its final response, its todo list and the terminal notices that arrived for it follow.
+
+    Final response:
+    {last_response}
+
+    Todo list:
+    {todo}
+
+    Pending terminal notices:
+    {notices}
+  noticeTemplate: "{summary}\n{items}\n{instruction}"
+```
+
+The values above are the defaults. `judgePrompt` is the material the judge or
+`@smol` reads; the question it answers and the answer format are fixed.
+Placeholders: `{last_response}` (the final response), `{notices}` (the pending
+notices as the agent would read them) and `{todo}` (objective, item counts per
+status and open items, or `(unavailable)`). `noticeTemplate` is the injected
+text: `{summary}` (the `[unified-exec] …` line), `{items}` (the per-terminal
+lines), `{instruction}` (the last line), `{terminal_count}` and
+`{notice_count}`. A brace pair around anything but a bare name (such as
+`{ "done": true }`) stays literal. Substitution is a single pass, so inserted text is never
+expanded again. The human-facing transcript keeps the default layout.
+
+The section is read from `<cwd>/.omp/omomp.{yml,yaml,json,toml}`, then from the
+agent directory's `omomp.*`; the first valid copy wins, and it is read again at
+every stop, so edits apply without a restart. An unknown key, mode or
+placeholder makes a copy invalid: a warning names it once and the next
+location, or the defaults, apply.
 
 ## Command
 
@@ -801,14 +877,16 @@ src/
 fork-features/
 ├── omp-presentation.ts   # omp host detection, bash-renderer delegation, theme appearance, shellPath setting
 ├── command-approval.ts   # built-in bash approval port and factory-loaded host helpers
-├── session-binding.ts    # activation-local AgentSession identity for approval settings
+├── session-binding.ts    # activation-local AgentSession identity for approval settings and stop detectors
 ├── omp-tools.d.ts        # types of the omp modules loaded at runtime
 ├── tern-terminal-hud.ts  # terminals segment in omp's pill, Terminals view, terminal page
 ├── terminal-resource.ts  # process-global terminal keys, live/frozen projections
 ├── terminal-url.ts       # omp `term://` read handler; reports reads to the terminal's owner
 ├── terminal-image.ts     # terminal screenshots (SVG → PNG)
-├── terminal-notice.ts    # terminal notice ADT, formatter and the one merging dispatcher
-├── terminal-lifecycle.ts # returned-terminal TTL, read/reclaim reminders, grace and reclaim
+├── terminal-notice.ts    # terminal notice ADT, formatter and the one dispatcher: run-held, merged, stop-gated
+├── terminal-lifecycle.ts # returned-terminal TTL, read/reclaim reminders, grace, reclaim, finished-work collection
+├── stop-config.ts        # `omp-unified-exec` omomp section: stop mode, judge prompt, notice template
+├── stop-gate.ts          # judge / @smol / todo stop detectors over factory-loaded omp modules
 ├── monitor-subscription.ts # monitor conditions, batching and reminders as terminal notices
 ├── input-wait.ts         # input prompt detection; input-wait alerts as terminal notices
 ├── log-archive.ts        # seven-day gzip compression of session logs

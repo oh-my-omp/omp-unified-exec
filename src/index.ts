@@ -46,8 +46,10 @@ import { type ActivatedExtension, withHostPresentation } from "../fork-features/
 import { approvalCommand, approveBoundCommand, type CommandApprovalHost } from "../fork-features/command-approval.ts";
 import { bindingContext, bindSession, type HostBindingState, recheckBinding } from "../fork-features/session-binding.ts";
 import { MonitorError } from "../fork-features/monitor-subscription.ts";
+import { loadStopConfig } from "../fork-features/stop-config.ts";
+import { detectStop, type StopHost } from "../fork-features/stop-gate.ts";
 import { type LifecycleClock, type ReclaimResult, TerminalLifecycle } from "../fork-features/terminal-lifecycle.ts";
-import { buildNoticeDisplayMessage, MAX_TITLE_CHARS, NoticeDispatcher, outcomeText, parseTerminalTitle } from "../fork-features/terminal-notice.ts";
+import { buildNoticeDisplayMessage, MAX_TITLE_CHARS, NoticeDispatcher, type NoticeGate, outcomeText, parseTerminalTitle } from "../fork-features/terminal-notice.ts";
 import { type CollectResult, NO_OUTPUT } from "./collect.ts";
 import { CompletionCoordinator, type OnExitPolicy, sanitizeMeta } from "./completion.ts";
 import { formatElapsed, formatElapsedUi, nowUtcIso } from "./format-time.ts";
@@ -932,10 +934,21 @@ function startStreaming(
 	};
 }
 
+/** The text of omp's `session_stop` final response; undefined when it carries none. */
+function finalResponseText(event: unknown): string | undefined {
+	const message: unknown = typeof event === "object" && event !== null ? Reflect.get(event, "last_assistant_message") : undefined;
+	const content: unknown = typeof message === "object" && message !== null ? Reflect.get(message, "content") : undefined;
+	const text = typeof content === "string" ? content : Array.isArray(content)
+		? content.filter((block): block is { type: "text"; text: string } =>
+			typeof block === "object" && block !== null && block.type === "text" && typeof block.text === "string").map((block) => block.text).join("")
+		: "";
+	return text.trim() ? text : undefined;
+}
+
 /**
  * Activate the tool core; the default factory supplies omp's appearance and
  * live shell setting. `lifecycleClock` replaces the host clock for terminal
- * TTLs and the minute sweep.
+ * TTLs and the minute sweep; `stopHost` enables stop decisions.
  */
 export function activate(
 	pi: ExtensionAPI,
@@ -944,17 +957,72 @@ export function activate(
 	approvalHost?: CommandApprovalHost,
 	invalidateGithubCache?: (command: string) => void,
 	lifecycleClock: LifecycleClock = {},
+	stopHost?: StopHost,
 ): ActivatedExtension {
 	let binding: HostBindingState = { kind: "pending" };
+	// The conversation the stop gate reads its config and todo list for, from the latest session_start.
+	let hostCwd: string | undefined;
+	let agentId: string | undefined;
+	const reportedConfigProblems = new Set<string>();
+	const gate: NoticeGate | undefined = stopHost && {
+		config: () => {
+			const load = loadStopConfig(hostCwd, stopHost.getAgentDir());
+			for (const problem of load.problems) {
+				const key = `${problem.path}\n${problem.reason}`;
+				if (reportedConfigProblems.has(key)) continue;
+				reportedConfigProblems.add(key);
+				ctx.ui?.notify(
+					tr(`unified-exec: ignoring ${problem.path}: ${problem.reason}`, `unified-exec：忽略 ${problem.path}：${problem.reason}`),
+					"warning",
+				);
+			}
+			return load.config;
+		},
+		detect: (config, input, signal) => detectStop({
+			host: stopHost,
+			session: () => (binding.kind === "bound" ? binding.session : undefined),
+			readTodo: () => {
+				if (agentId === undefined) return undefined;
+				let reply: unknown;
+				pi.events.emit("omp-todo-more:read", { agentId, reply: (value: unknown) => { reply = value; } });
+				return reply;
+			},
+		}, config, input, signal),
+		collect: async () => {
+			await ctx.lifecycle.collectReturned();
+			updateRunningSessionsUi(ctx);
+		},
+		tracked: (sessionId) => ctx.lifecycle.isTracked(sessionId),
+		verdict: (verdict) => {
+			switch (verdict.kind) {
+				case "done":
+					ctx.ui?.notify(
+						tr(
+							`unified-exec: the agent's work is done (${verdict.detector}); returned terminals reclaimed, their notices dropped`,
+							`unified-exec：判定 agent 已完成（${verdict.detector}）；已回收返回的终端并丢弃其通知`,
+						),
+						"info",
+					);
+					return;
+				case "not_done":
+					return;
+				case "undecided":
+					if (verdict.cause === "failed") {
+						ctx.ui?.notify(tr(`unified-exec: stop decision failed: ${verdict.reason}`, `unified-exec：完成判定失败：${verdict.reason}`), "warning");
+					}
+					return;
+			}
+		},
+	};
 	const notices = new NoticeDispatcher({
-		// If pi is idle this starts a model turn; if a run is active it is
-		// queued as a follow-up — never steering/interrupting the current turn.
+		// Sent only while the agent is stopped, so it starts one model turn.
 		send: (message) => {
 			pi.sendMessage(
 				{ customType: "unified-exec-notice", content: message.content, display: true, details: message.details },
 				{ triggerTurn: true, deliverAs: "followUp" },
 			);
 		},
+		gate,
 		onSendError: (err) => {
 			ctx.ui?.notify(
 				tr(
@@ -1022,12 +1090,26 @@ export function activate(
 		ctx.lifecycle.commitToolReads(event.toolCallId, event.isError === true);
 		ctx.coordinator.handleToolExecutionEnd(event.toolCallId, event.isError === true);
 	});
-	pi.on("agent_settled", async () => {
+	// The run lifecycle the dispatcher delivers by: notices wait while a run is
+	// in progress and go out, merged, once it settles for good.
+	pi.on("agent_start", async () => {
+		ctx.notices.agentStarted();
+	});
+	pi.on("agent_end", async (event) => {
+		// willContinue without awaitingAsyncWork: omp has scheduled a continuation, so the run goes on.
+		// awaitingAsyncWork: the session idles until background work (a task, an async job) returns;
+		// notices go out as usual meanwhile, and that wait is not a finished task.
+		const willContinue = Reflect.get(event, "willContinue") === true;
+		const awaitingAsyncWork = Reflect.get(event, "awaitingAsyncWork") === true;
+		if (willContinue && !awaitingAsyncWork) return;
 		ctx.coordinator.flushPending();
+		ctx.notices.agentStopped(awaitingAsyncWork ? "awaiting" : "final");
 	});
 
 	pi.on("session_start", async (_event, eventCtx) => {
 		if (approvalHost && binding.kind === "pending") binding = bindSession(approvalHost, bindingContext(eventCtx));
+		hostCwd = eventCtx.cwd;
+		agentId = bindingContext(eventCtx).agentId;
 		ctx.ui = eventCtx.ui;
 		ctx.shuttingDown = false; // reload/new/resume re-arms the extension
 		// Never resurrect notices or wakes from a previous session.
@@ -1038,15 +1120,21 @@ export function activate(
 	});
 
 	// omp lifecycle events absent from the Pi dependency's public declarations.
-	const onSessionChange = (pi as ExtensionAPI & {
-		on(event: "session_switch" | "session_branch",
+	const onHostEvent = (pi as ExtensionAPI & {
+		on(event: "session_switch" | "session_branch" | "session_stop",
 			handler: (event: unknown, context: unknown) => Promise<void>): void;
 	}).on;
 	for (const event of ["session_switch", "session_branch"] as const) {
-		onSessionChange.call(pi, event, async (_event, eventCtx) => {
+		onHostEvent.call(pi, event, async (_event, eventCtx) => {
 			binding = recheckBinding(binding, bindingContext(eventCtx));
+			ctx.notices.forgetResponse();
 		});
 	}
+	// The main agent's final response; returning nothing requests no continuation.
+	onHostEvent.call(pi, "session_stop", async (event) => {
+		const text = finalResponseText(event);
+		if (text !== undefined) ctx.notices.recordResponse(text);
+	});
 
 	pi.on("session_tree", async (_event, eventCtx) => {
 		ctx.ui = eventCtx.ui;
@@ -1184,7 +1272,7 @@ export function activate(
 			"The 10s default yield suits most starts; interactive processes return a session_id you then drive with write_stdin.",
 			"For a long non-interactive command, start with a short yield to obtain a session_id. Read terminal_url for progress; use monitor with a condition for future progress lines, or without one to await completion. Use write_stdin only to send input. omp manages cache warming independently.",
 			'on_exit defaults to "none". Prefer monitor or human follow-up. Use on_exit: "wake" ONLY when the human explicitly wants auto-resume on unobserved completion — not for indefinite processes (dev servers, watchers). If you armed wake by mistake or the job is wrong/abandoned, call set_on_exit(session_id, on_exit: "none") promptly (does not kill the process). kill_session still kills and suppresses wake. Combining wake with an input-bearing write_stdin is safe: direct completion consumes the wake.',
-			"Every terminal notice names the terminal by session_id and title with a short reason. After a background command returns, read its terminal_url (or receive its final screen from write_stdin/kill_session): a terminal is reclaimed only after it was read. 30 minutes after the return or the last read, a never-read terminal gets one read reminder; a read one gets a reclaim-due notice, and unless it is read again within 5 minutes its remaining processes (including background jobs holding the terminal) are killed and it leaves list_sessions. Reading during those 5 minutes keeps it for another 30. Its term:// stays readable after reclaim. Kills by you or a human are normal endings; non-zero exits, signals and failures are reported at once.",
+			"Every terminal notice names the terminal by session_id and title with a short reason. Notices wait while you work and arrive together when you stop; when your final response shows the task finished, returned terminals are reclaimed and no notice about them arrives. After a background command returns, read its terminal_url (or receive its final screen from write_stdin/kill_session): until the task is finished, a terminal is reclaimed only after it was read. 30 minutes after the return or the last read, a never-read terminal gets one read reminder; a read one gets a reclaim-due notice, and unless it is read again within 5 minutes its remaining processes (including background jobs holding the terminal) are killed and it leaves list_sessions. Reading during those 5 minutes keeps it for another 30. Its term:// stays readable after reclaim. Kills by you or a human are normal endings; non-zero exits, signals and failures are reported at once.",
 			"Output is rendered terminal state, not raw bytes. Running results show unseen history plus the current screen and cursor; unchanged running screens report screen_changed:false. Completed results show only the frozen final active screen. Read terminal_url for what the terminal shows (retained history, or a full-screen program's screen such as tmux while it runs), /screen for active text, or /screen.png for cell colours and styling; raw bytes remain in log_path.",
 		],
 		outputSchema: processScriptResultSchema,

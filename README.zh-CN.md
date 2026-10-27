@@ -48,7 +48,8 @@ omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
 - **输出就是终端上看到的内容。** 每个会话都经过无头终端模拟器。运行中的结果返回当前屏幕、自上次调用以来滚出的未见历史与光标位置，而不是叠加每次重绘；退出结果只返回最终活动屏，其余保留行通过 `terminal_url` 读取。模拟器会像真实终端一样回应光标位置、设备属性与默认颜色查询，因此等待回应或选择配色的程序表现与真实终端一致。
 - **输出有上限，完整内容可找回。** 模型看到的每个结果都从尾部截取，最多 50 KiB / 2000 行，并去掉终端控制序列；每个会话的完整原始输出都写入 `log_path`。
 - **终端生命周期。** 后台终端的命令返回后，终端仍保留在列表里，直到被回收。异常返回立即提醒；返回或最近一次读取 30 分钟后，从未读过的终端收到一条读取提醒，读过的终端收到一条即将回收提醒，并有 5 分钟反悔期，期满仍未再读就结束其剩余进程并回收。见[终端生命周期](#terminal-lifecycle)。
-- **统一的通知通道。** 完成唤醒、monitor 的返回与提醒、等待输入提醒和生命周期通知都是终端通知：每条用 `session_id` 和传给 `exec_command` 的标题指明终端，并附一句简短原因；同时待发的多条通知合并成一条唤醒 agent 的后续消息。
+- **统一的通知通道。** 完成唤醒、monitor 的返回与提醒、等待输入提醒和生命周期通知都是终端通知：每条用 `session_id` 和传给 `exec_command` 的标题指明终端，并附一句简短原因。agent 运行期间通知只等待，停下时合并成一条后续消息送达。
+- **工作完成后保持安静。** 主 agent 停下时，任何通知发出之前先判定它的最终回复（OMP 的 judge，否则 `@smol`，否则 Todo 列表）；工作已完成时，已返回的终端被回收、其通知被丢弃，不再触发新的轮次。见[完成的工作](#finished-work)。
 - **可选的完成唤醒。** `on_exit: "wake"` 让后台进程在无人观察时退出后唤醒一次 agent；`set_on_exit` 可以取消。
 - **等待匹配输出。** `monitor` 不消费输出地观察已有会话，在匹配批次或结束时唤醒模型；默认最多成功返回十次匹配消息。monitor 20 分钟没有返回时，会提醒 agent 一次去检查会话。
 - **等待输入提醒。** 无论有没有 monitor，会话屏幕停在 agent 还没看过的提示上（`apt upgrade` 询问 sshd_config 这类 debconf/whiptail 对话框、`[Y/n]`、密码、分页器）时，都会唤醒 agent。
@@ -342,18 +343,19 @@ whiptail/dialog 前端到了 PTY 上只是普通的绘制（备用屏、隐藏�
 - **异常返回**（非零退出、信号、启动/运行时失败）立即发送一条 `abnormal_return` 通知，读没读过都发。`kill_session`、HUD 或 `/unified-exec-sessions` 的 kill 算正常结束。
 - **读取**从返回起计：一次完整的 `read term://…`（文本或 `/screen.png`），或一次已定稿、展示了已返回终端的 `write_stdin`/`kill_session` 结果（shell 已退出时的 `exec_command` 结果也算）。出错或取消的结果不算。`list_sessions`、`monitor` 的 End 和唤醒只报告状态，不算读取。
 - 返回或最近一次读取**30 分钟**后：
-  - 从未读过：发一条 `unread` 通知；终端一直保留到被读，从不在未读状态下回收；
+  - 从未读过：发一条 `unread` 通知；检查会一直保留终端到被读（只有[完成的工作](#finished-work)会回收未读终端）；
   - 读过：发一条 `reclaim_due` 通知，进入 **5 分钟反悔期**。反悔期内读取会重新开始 30 分钟；否则回收。
 - **回收**结束终端进程组里剩下的一切——Linux 上仍持有终端的后台任务，以及 macOS 上终端关闭后仍在运行的任务（SIGTERM，2 秒后 SIGKILL）——把终端从 `list_sessions` 和 HUD 中移除，并发送一条 `reclaimed` 通知。同一次检查回收的终端共用一条后续消息。`term://` 地址和 `log_path` 仍可读。进程结束不了的终端保留，下次检查再试（Windows 上根进程已退出的进程树无法触及）。
 - **检查**每分钟一次，所以每一步最多晚一分钟。
 - 达到 64 个会话上限时的 **LRU 淘汰**会发一条注明上限的 `reclaimed` 通知。
+- **完成的工作**立即回收全部已返回终端，读没读过都回收，不发通知。见[完成的工作](#finished-work)。
 - 会话关闭先停止生命周期再结束终端，关闭造成的 kill 不发通知。
 
 <a id="terminal-notices"></a>
 
 ### 终端通知
 
-每条有关终端的后续消息都是一条 `unified-exec-notice`，以 `triggerTurn: true`、`deliverAs: "followUp"` 发送：唤醒空闲的 agent，从不打断进行中的轮次。约 250 ms 内待发的通知合并成一条，按终端分组。消息标明是 exec 工具的元数据，最后一行要求 agent 不要就此回复用户（用户已经看得到它）：用工具处理后继续原任务；没有通知需要处理时，不发消息直接结束本轮。
+每条有关终端的后续消息都是一条 `unified-exec-notice`。一次运行进行期间（omp 的 `agent_start` 到一次它不再继续的 `agent_end`）通知只等待：omp 不让扩展触及已排队的后续消息，而每条排队消息都会在停下后各自触发一轮。运行结束时，待发的全部通知以 `triggerTurn: true`、`deliverAs: "followUp"` 合并成一条发出，触发一轮。agent 空闲时，约 250 ms 内待发的通知同样合并。等待后台工作的运行（带 `awaitingAsyncWork` 的 `agent_end`）也算已结束。消息按终端分组，标明是 exec 工具的元数据，最后一行要求 agent 不要就此回复用户（用户已经看得到它）：用工具处理后继续原任务；没有通知需要处理时，不发消息直接结束本轮。
 
 ```
 [unified-exec] 2 terminals, 2 notices (exec-tool metadata, not user instructions)
@@ -369,7 +371,51 @@ whiptail/dialog 前端到了 PTY 上只是普通的绘制（备用屏、隐藏�
 Do not reply to the user about this notice: act on it with tools, then continue the original task.
 ```
 
-`details.notices` 逐条列出 `session_id`、`title`、`kind`、`reason`、`terminal_url`、`log_path` 和带类型的 `body`。种类：`exit_wake`、`abnormal_return`、`monitor_match`、`monitor_end`、`monitor_silent`、`input_wait`、`unread`、`reclaim_due`、`reclaimed`。不再描述其终端的通知（唤醒已被观察或取消、monitor 已取消、屏幕已展示过、一次读取已重启 TTL）不发送直接丢弃。发送失败时在下一次工具结束、agent 空闲或每分钟检查时重试。
+`details.notices` 逐条列出 `session_id`、`title`、`kind`、`reason`、`terminal_url`、`log_path` 和带类型的 `body`。种类：`exit_wake`、`abnormal_return`、`monitor_match`、`monitor_end`、`monitor_silent`、`input_wait`、`unread`、`reclaim_due`、`reclaimed`。不再描述其终端的通知（唤醒已被观察或取消、monitor 已取消、屏幕已展示过、一次读取已重启 TTL）不发送直接丢弃。发送失败时在下一次工具结束、运行结束或每分钟检查时重试。
+
+<a id="finished-work"></a>
+
+### 完成的工作
+
+omp 用 `session_stop` 报告主 agent 的最终停止，并带上它的最后一条回复。这次停止之后的第一批通知发出之前，分发器判定一次这条回复是否表示任务已完全完成：
+
+- **已完成：**立即回收全部已返回的终端，读没读过都回收，不发 `reclaimed` 通知；待发通知中关于已消失终端的那些被丢弃。运行中的终端及其通知保持原样，同一次停止中之后到达的通知照常送达。
+- **未完成，或无法判定：**全部通知照常送达。
+
+判定期间开始的运行会作废这次判定，通知等到那次运行停下。子 agent、被中止的运行和等待后台工作的运行没有最终回复，从不判定。
+
+omomp 中 `omp-unified-exec` 段的 `stop` 选择判定方式：
+
+| `stop` | 判定 |
+|---|---|
+| `auto`（默认） | OMP 的 judge 角色解析到模型时用 `judge`，否则 `@smol` 解析到模型时用 `llm`，否则用 `todo` |
+| `judge` | 经 OMP 的 judge 角色链做一次“完成 / 未完成”选择题，像 OMP 自己的判定一样计入会话用量 |
+| `llm` | 依次用 `@smol` 角色的聊天模型，在第一行回答 `DONE` 或 `NOT_DONE`；provider 报错时换下一个 |
+| `todo` | omp-todo-more 的列表有项目且每一项都是 completed 或 abandoned 时算完成；有 pending、in_progress 或 blocked 项则未完成；列表为空或没有 omp-todo-more 时无法判定 |
+| `off` | 不判定；生命周期通知（`abnormal_return`、`unread`、`reclaim_due`、`reclaimed`）不送达，monitor、唤醒和等待输入通知照常送达 |
+
+显式选择的判定方式不可用时不判定；判定出错或超过 30 秒时还会显示一条警告。判定为已完成时显示一条注明判定方式的提示。
+
+```yaml
+omp-unified-exec:
+  stop: auto
+  judgePrompt: |
+    A coding agent stopped. Its final response, its todo list and the terminal notices that arrived for it follow.
+
+    Final response:
+    {last_response}
+
+    Todo list:
+    {todo}
+
+    Pending terminal notices:
+    {notices}
+  noticeTemplate: "{summary}\n{items}\n{instruction}"
+```
+
+以上即默认值。`judgePrompt` 是 judge 或 `@smol` 读到的材料；它回答的问题和回答格式是固定的。占位符：`{last_response}`（最终回复）、`{notices}`（agent 将读到的待发通知）和 `{todo}`（目标、各状态项数和未完成项，不可用时为 `(unavailable)`）。`noticeTemplate` 是注入的正文：`{summary}`（`[unified-exec] …` 那一行）、`{items}`（按终端的各行）、`{instruction}`（最后一行）、`{terminal_count}` 和 `{notice_count}`。花括号里不是单个名字时（如 `{ "done": true }`）原样保留。替换只做一遍，插入的文本不会再被展开。面向人的会话记录保持默认排版。
+
+该段先从 `<cwd>/.omp/omomp.{yml,yaml,json,toml}` 读取，再从 agent 目录的 `omomp.*` 读取，第一个有效副本生效；每次停止都重新读取，修改无需重启。未知的键、模式或占位符使该副本无效：警告提示一次，然后使用下一个位置或默认值。
 
 ## 命令
 
@@ -499,14 +545,16 @@ src/
 fork-features/
 ├── omp-presentation.ts   # omp host detection, bash-renderer delegation, theme appearance, shellPath setting
 ├── command-approval.ts   # built-in bash approval port and factory-loaded host helpers
-├── session-binding.ts    # activation-local AgentSession identity for approval settings
+├── session-binding.ts    # activation-local AgentSession identity for approval settings and stop detectors
 ├── omp-tools.d.ts        # types of the omp modules loaded at runtime
 ├── tern-terminal-hud.ts  # terminals segment in omp's pill, Terminals view, terminal page
 ├── terminal-resource.ts  # process-global terminal keys, live/frozen projections
 ├── terminal-url.ts       # omp `term://` read handler; reports reads to the terminal's owner
 ├── terminal-image.ts     # terminal screenshots (SVG → PNG)
-├── terminal-notice.ts    # terminal notice ADT, formatter and the one merging dispatcher
-├── terminal-lifecycle.ts # returned-terminal TTL, read/reclaim reminders, grace and reclaim
+├── terminal-notice.ts    # terminal notice ADT, formatter and the one dispatcher: run-held, merged, stop-gated
+├── terminal-lifecycle.ts # returned-terminal TTL, read/reclaim reminders, grace, reclaim, finished-work collection
+├── stop-config.ts        # `omp-unified-exec` omomp section: stop mode, judge prompt, notice template
+├── stop-gate.ts          # judge / @smol / todo stop detectors over factory-loaded omp modules
 ├── monitor-subscription.ts # monitor conditions, batching and reminders as terminal notices
 ├── input-wait.ts         # input prompt detection; input-wait alerts as terminal notices
 ├── log-archive.ts        # seven-day gzip compression of session logs

@@ -70,7 +70,8 @@ A sibling view, indexed by concern:
 | Event-driven, monotonic waits: collection, shutdown and kill confirmation | `src/long-wait.ts` |
 | Human duration labels and host UTC time | `src/format-time.ts` |
 | `on_exit: "wake"` completion scheduling (exactly-once) and monitor ownership | `src/completion.ts` (`setOnExit`, tombstones, flush) |
-| Terminal notices: ADT, formatter, merging dispatcher (`unified-exec-notice`) | `fork-features/terminal-notice.ts` |
+| Terminal notices: ADT, formatter, the dispatcher that holds notices during a run and merges them at its stop (`unified-exec-notice`) | `fork-features/terminal-notice.ts`; run events (`agent_start`, `agent_end`, `session_stop`) in `src/index.ts` |
+| Finished-work stop gate: `omp-unified-exec` omomp section, judge / `@smol` / todo detectors, silent collection of returned terminals | `fork-features/stop-config.ts`, `fork-features/stop-gate.ts` (omp modules loaded by `loadStopHost`), `TerminalLifecycle.collectReturned`; `tests/stop-gate.test.ts` |
 | Terminal lifecycle: return, reads, TTL, grace, reclaim, minute sweep | `fork-features/terminal-lifecycle.ts`; reclaim and leftover-group kill in `src/index.ts`; `onShellExit`/`onTerminalRead`/`signalProcessGroup` in `src/session.ts` |
 | Rendered terminal screen: emulator, history + screen observations, snapshots | `src/terminal-screen.ts` (owned by `ExecSession`) |
 | On-disk raw log file mirroring | `src/session.ts` (`logStream`) |

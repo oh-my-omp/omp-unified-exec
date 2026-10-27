@@ -15,6 +15,8 @@ import type { SessionStore } from "../src/session-store.ts";
 import type { TerminalAppearance } from "../src/terminal-screen.ts";
 import { truncationMarker } from "../src/tool-result.ts";
 import { type CommandApprovalHost, loadCommandApprovalHost } from "./command-approval.ts";
+import { loadStopHost, type StopHost } from "./stop-gate.ts";
+import type { LifecycleClock } from "./terminal-lifecycle.ts";
 import { scheduleLogArchive } from "./log-archive.ts";
 import { loadTernHudHost, mountTerminalHud } from "./tern-terminal-hud.ts";
 import { retireTernPlugin } from "./tern-plugin-removal.ts";
@@ -471,6 +473,8 @@ export function withHostPresentation(
 		shellPath?: () => string | undefined,
 		approvalHost?: CommandApprovalHost,
 		invalidateGithubCache?: (command: string) => void,
+		lifecycleClock?: LifecycleClock,
+		stopHost?: StopHost,
 	) => ActivatedExtension,
 ): (host: ExtensionAPI) => void | Promise<void> {
 	return (host) => {
@@ -481,11 +485,11 @@ export function withHostPresentation(
 		// The omp modules load before activating, so a reshaped omp fails plugin loading with nothing registered.
 		return Promise.all([
 			presentOnOmp(host), loadTernHudHost(), loadOmpAppearance(), loadOmpShellPath(host), loadCommandApprovalHost(),
-			loadGithubCacheInvalidation(),
-		]).then(async ([pi, hud, appearance, shellPath, approvalHost, invalidateGithubCache]) => {
+			loadGithubCacheInvalidation(), loadStopHost(),
+		]).then(async ([pi, hud, appearance, shellPath, approvalHost, invalidateGithubCache, stopHost]) => {
 			await retireTernPlugin();
 			await initializeTerminalUrls();
-			const activated = activate(pi, appearance, shellPath, approvalHost, invalidateGithubCache);
+			const activated = activate(pi, appearance, shellPath, approvalHost, invalidateGithubCache, {}, stopHost);
 			mountTerminalHud(pi, activated.store, hud, activated.kill);
 			scheduleLogArchive();
 		});

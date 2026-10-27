@@ -34,6 +34,26 @@ declare module "@oh-my-pi/pi-coding-agent/config/registry" {
 declare module "@oh-my-pi/pi-coding-agent" {
 	export const AgentRegistry: unknown;
 	export const CRITICAL_BASH_PATTERNS: unknown;
+	export const getAgentDir: unknown;
+}
+
+declare module "@oh-my-pi/pi-coding-agent/judgment" {
+	export const resolveJudge: unknown;
+	export const journalJudgmentUsage: unknown;
+	export const sharedJudgmentCache: unknown;
+	export const kindOf: unknown;
+}
+
+declare module "@oh-my-pi/pi-coding-agent/config/model-resolver" {
+	export const resolveRoleChain: unknown;
+}
+
+declare module "@oh-my-pi/pi-coding-agent/config/model-roles" {
+	export const roleCandidatePool: unknown;
+}
+
+declare module "@oh-my-pi/pi-ai" {
+	export const completeSimple: unknown;
 }
 
 declare module "@oh-my-pi/pi-coding-agent/exec/settings" {

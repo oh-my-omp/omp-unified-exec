@@ -3,7 +3,7 @@
  * `on_exit: "wake"` through the real tool pipeline.
  *
  * Uses a stub ExtensionAPI that captures pi.sendMessage calls and can emit
- * tool_execution_end / agent_settled lifecycle events. Subprocess-based tests
+ * tool_execution_end / agent_start / agent_end lifecycle events. Subprocess-based tests
  * are kept small and cross-platform (sleep/echo through the default shell).
  */
 
@@ -388,7 +388,7 @@ describe("exec_command on_exit", () => {
 		await h.emit("session_shutdown");
 	});
 
-	it("agent_settled flushes a wake whose send previously failed", async () => {
+	it("a settled run flushes a wake whose send previously failed", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		// Make the first send throw.
@@ -406,8 +406,9 @@ describe("exec_command on_exit", () => {
 		// Wait until the exit's first send attempt has actually failed, not a fixed delay.
 		assert.ok(await waitFor(() => failures === 0), "first send attempt never happened");
 		assert.equal(h.sentMessages.length, 0);
-		await h.emit("agent_settled", { type: "agent_settled" });
-		assert.ok(await waitFor(() => h.sentMessages.length === 1), "retry at agent_settled");
+		await h.emit("agent_start", { type: "agent_start" });
+		await h.emit("agent_end", { type: "agent_end", messages: [] });
+		assert.ok(await waitFor(() => h.sentMessages.length === 1), "retry at the settled run");
 		await h.call("list_sessions", {});
 	});
 });

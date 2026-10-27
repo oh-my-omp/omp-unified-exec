@@ -30,14 +30,17 @@ test("session startup preserves builtin bash without a keep-builtin-bash flag", 
 	assert.equal(flags.includes("keep-builtin-bash"), false);
 	assert.equal(widgetReads, 0, "no widget work or legacy capability probes with no sessions");
 	assert.deepEqual(active, ["bash", "read", "exec_command"]);
-	assert.ok(handlers.has("agent_settled"));
-	assert.equal(handlers.has("agent_end"), false);
+	// omp settles runs through agent_end (it has no agent_settled) and reports final responses through session_stop.
+	assert.ok(handlers.has("agent_start"));
+	assert.ok(handlers.has("agent_end"));
+	assert.ok(handlers.has("session_stop"));
+	assert.equal(handlers.has("agent_settled"), false);
 	await handlers.get("session_shutdown")?.({}, ctx);
 });
 
-test("a rejected settled registration fails activation rather than selecting a legacy fallback", () => {
+test("a rejected run-event registration fails activation rather than selecting a legacy fallback", () => {
 	assert.throws(() => activate({
 		registerTool: () => {}, registerCommand: () => {}, registerFlag: () => {},
-		on: (event: string) => { if (event === "agent_settled") throw new Error("registration rejected"); },
+		on: (event: string) => { if (event === "agent_end") throw new Error("registration rejected"); },
 	} as unknown as ExtensionAPI), /registration rejected/);
 });

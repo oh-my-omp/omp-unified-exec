@@ -1,5 +1,6 @@
 /**
- * Approval-only binding to omp's internal AgentSession (#29).
+ * Binding to omp's internal AgentSession (#29), used by command approval and
+ * by the stop detectors (its settings, model registry and judgment ledger).
  * The first session_start resolves the registry once; switches and branches
  * only recheck the retained sessionManager identity. Registry entries can be
  * replaced by same-id helper sessions, so they must not be looked up again.

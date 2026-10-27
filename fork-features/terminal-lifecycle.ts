@@ -12,7 +12,9 @@
  *   - reading during the grace period starts a new TTL; otherwise the
  *     terminal's remaining processes are killed, it leaves the store, and one
  *     reclaimed notice per sweep names every terminal reclaimed in it.
- * The retained term:// and the log stay readable after reclaim.
+ * The retained term:// and the log stay readable after reclaim. When the
+ * agent's work is judged finished, `collectReturned` reclaims every returned
+ * terminal at once, read or not, without notices.
  *
  * Reads are term:// reads of the returned terminal, and tool results that
  * showed it after it returned, committed when the host finalizes them.
@@ -278,22 +280,42 @@ export class TerminalLifecycle {
 		const results = await Promise.all(entries.map(async (entry): Promise<TerminalNotice | undefined> => {
 			const life = entry.life;
 			if (life.kind !== "returned") return undefined;
-			entry.life = { ...life, phase: { kind: "reclaiming" } };
-			const session = entry.session;
-			const identity = identityOf(session);
-			let result: ReclaimResult;
-			try { result = await this.opts.reclaim(session.id); } catch { result = { kind: "held" }; }
-			if (this.tracked.get(session.id) !== entry) return undefined;
-			if (result.kind === "held") {
-				// Still held (the kill did not land): try again at the next sweep.
-				entry.life = { ...life, phase: { kind: "grace", until: this.now() } };
-				return undefined;
-			}
-			this.forget(session.id);
+			const identity = identityOf(entry.session);
+			// Still held (the kill did not land): try again at the next sweep.
+			const result = await this.reclaimEntry(entry, { ...life, phase: { kind: "grace", until: this.now() } });
+			if (result?.kind !== "gone") return undefined;
 			return { identity, body: { kind: "reclaimed", outcome: life.outcome, cause: { kind: "grace_expired", killed: result.killedProcesses } } };
 		}));
 		if (this.stopped) return;
 		for (const notice of results) if (notice) void this.opts.notices.submit(notice);
+	}
+
+	/**
+	 * The agent is done: reclaim every returned terminal now, read or not,
+	 * without notices. Running terminals and terminals already being reclaimed
+	 * are left alone; a terminal something still holds keeps its prior state.
+	 * Resolves to the terminals that are gone.
+	 */
+	async collectReturned(): Promise<ReadonlySet<number>> {
+		const entries = [...this.tracked.values()].filter((entry) => entry.life.kind === "returned" && entry.life.phase.kind !== "reclaiming");
+		const results = await Promise.all(entries.map(async (entry) => {
+			const result = await this.reclaimEntry(entry, entry.life);
+			return result?.kind === "gone" ? entry.session.id : undefined;
+		}));
+		return new Set(results.filter((id): id is number => id !== undefined));
+	}
+
+	/** Reclaim one returned terminal; a held one gets `onHeld`. Undefined when it changed hands meanwhile. */
+	private async reclaimEntry(entry: Tracked, onHeld: Life): Promise<ReclaimResult | undefined> {
+		const life = entry.life;
+		if (life.kind !== "returned") return undefined;
+		entry.life = { ...life, phase: { kind: "reclaiming" } };
+		let result: ReclaimResult;
+		try { result = await this.opts.reclaim(entry.session.id); } catch { result = { kind: "held" }; }
+		if (this.tracked.get(entry.session.id) !== entry) return undefined;
+		if (result.kind === "held") entry.life = onHeld;
+		else this.forget(entry.session.id);
+		return result;
 	}
 
 	private submit(entry: Tracked, notice: TerminalNotice, current: () => boolean): void {

@@ -464,7 +464,7 @@ export class CompletionCoordinator {
 
 	/**
 	 * Submit pending wakes, then flush the dispatcher. Safe to call from any
-	 * flush trigger (debounce timer, agent_settled, tool_execution_end), which
+	 * flush trigger (debounce timer, a settled run's agent_end, tool_execution_end), which
 	 * are also the dispatcher's retry points for a failed send; reservation via
 	 * wakeQueued guarantees at most one submission per completion.
 	 */

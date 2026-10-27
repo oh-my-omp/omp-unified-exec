@@ -341,7 +341,7 @@ describe("CompletionCoordinator", () => {
 		await settle();
 		assert.equal(sent.length, 0);
 		assert.equal(errors.length, 1);
-		coordinator.flushPending(); // e.g. agent_settled
+		coordinator.flushPending(); // e.g. a settled run's agent_end
 		await settle();
 		assert.equal(sent.length, 1);
 		coordinator.flushPending();

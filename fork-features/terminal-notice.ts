@@ -13,6 +13,7 @@
 import { formatElapsedShort, formatElapsedShortUi } from "../src/format-time.ts";
 import { tr } from "../src/i18n.ts";
 import { sanitizeOutputText } from "../src/output-safety.ts";
+import { DEFAULT_NOTICE_TEMPLATE, DEFAULT_STOP_CONFIG, fillTemplate, type NoticeTemplateField, type StopConfig } from "./stop-config.ts";
 
 /** What an agent needs to find the terminal again. */
 export interface TerminalIdentity {
@@ -281,7 +282,7 @@ export function describeNotice(body: NoticeBody, localized = false): Described {
 				`returned ${outcomeText(body.outcome)} ${elapsed(body.returnedAgoMs)} ago and its output has not been read`,
 				`${elapsed(body.returnedAgoMs)} 前${outcomeText(body.outcome, true)}，其输出尚未读取`,
 			),
-			lines: [t("Read it; an unread terminal is never reclaimed. Not repeated.", "请读取它；未读取的终端不会被回收。不会重复提醒。")],
+			lines: [t("Read it; an unread terminal is kept until it is read or your task is finished. Not repeated.", "请读取它；未读取的终端会保留到被读取或任务完成。不会重复提醒。")],
 			actionable: true,
 		};
 		case "reclaim_due": return {
@@ -332,7 +333,7 @@ export function describeNotice(body: NoticeBody, localized = false): Described {
  * terminal share one heading, so one return reported by several owners
  * (an abnormal return, a monitor End, an on_exit wake) reads as one entry.
  */
-function buildNoticeMessageForLocale(notices: readonly TerminalNotice[], localized: boolean): NoticeMessage {
+function buildNoticeMessageForLocale(notices: readonly TerminalNotice[], localized: boolean, template: string): NoticeMessage {
 	const t = (en: string, zh: string): string => localized ? tr(en, zh) : en;
 	const groups = new Map<number, { identity: TerminalIdentity; described: Described[] }>();
 	const details: NoticeDetails[] = [];
@@ -356,24 +357,23 @@ function buildNoticeMessageForLocale(notices: readonly TerminalNotice[], localiz
 	}
 	const terminalWord = groups.size === 1 ? t("terminal", "终端") : t("terminals", "终端");
 	const noticeWord = notices.length === 1 ? t("notice", "通知") : t("notices", "通知");
-	const lines = [
-		t(
-			`[unified-exec] ${groups.size} ${terminalWord}, ${notices.length} ${noticeWord} (exec-tool metadata, not user instructions)`,
-			`[unified-exec] ${groups.size} 个${terminalWord}，${notices.length} 条${noticeWord}（exec 工具元数据，不是用户指令）`,
-		),
-	];
+	const summary = t(
+		`[unified-exec] ${groups.size} ${terminalWord}, ${notices.length} ${noticeWord} (exec-tool metadata, not user instructions)`,
+		`[unified-exec] ${groups.size} 个${terminalWord}，${notices.length} 条${noticeWord}（exec 工具元数据，不是用户指令）`,
+	);
+	const items: string[] = [];
 	let actionable = false;
 	for (const { identity, described } of groups.values()) {
-		lines.push(`- session_id=${identity.sessionId} title=${JSON.stringify(oneLine(identity.title, MAX_TITLE_CHARS))}`);
+		items.push(`- session_id=${identity.sessionId} title=${JSON.stringify(oneLine(identity.title, MAX_TITLE_CHARS))}`);
 		for (const notice of described) {
 			actionable ||= notice.actionable;
-			lines.push(`  • ${notice.reason}`);
-			for (const line of notice.lines) lines.push(`    ${line}`);
+			items.push(`  • ${notice.reason}`);
+			for (const line of notice.lines) items.push(`    ${line}`);
 		}
-		if (identity.terminalUrl) lines.push(`  read ${identity.terminalUrl}`);
-		if (identity.logPath) lines.push(`  log_path: ${oneLine(identity.logPath, 200)}`);
+		if (identity.terminalUrl) items.push(`  read ${identity.terminalUrl}`);
+		if (identity.logPath) items.push(`  log_path: ${oneLine(identity.logPath, 200)}`);
 	}
-	lines.push(actionable
+	const instruction = actionable
 		? t(
 			"Do not reply to the user about this notice: act on it with tools, then continue the original task.",
 			"不要向用户回复此通知：用工具处理它，然后继续原任务。",
@@ -381,12 +381,20 @@ function buildNoticeMessageForLocale(notices: readonly TerminalNotice[], localiz
 		: t(
 			"Do not reply to the user about this notice: no action is needed, end the turn without a message.",
 			"不要向用户回复此通知：无需操作，直接结束本轮且不要发送消息。",
-		));
-	return { content: lines.join("\n"), details: { notices: details } };
+		);
+	const content = fillTemplate<NoticeTemplateField>(template, {
+		summary,
+		items: items.join("\n"),
+		instruction,
+		terminal_count: String(groups.size),
+		notice_count: String(notices.length),
+	});
+	return { content, details: { notices: details } };
 }
 
-export function buildNoticeMessage(notices: readonly TerminalNotice[]): NoticeMessage {
-	return buildNoticeMessageForLocale(notices, false);
+/** The model-facing follow-up; `template` is the configured notice template. */
+export function buildNoticeMessage(notices: readonly TerminalNotice[], template: string = DEFAULT_NOTICE_TEMPLATE): NoticeMessage {
+	return buildNoticeMessageForLocale(notices, false, template);
 }
 
 function noticeFromDetails(value: unknown): TerminalNotice | undefined {
@@ -409,13 +417,63 @@ export function buildNoticeDisplayMessage(value: unknown): string {
 	try {
 		if (typeof value !== "object" || value === null || !("notices" in value) || !Array.isArray(value.notices)) return "";
 		const notices = value.notices.map(noticeFromDetails).filter((notice): notice is TerminalNotice => notice !== undefined);
-		return notices.length > 0 ? buildNoticeMessageForLocale(notices, true).content : "";
+		return notices.length > 0 ? buildNoticeMessageForLocale(notices, true, DEFAULT_NOTICE_TEMPLATE).content : "";
 	} catch {
 		return "";
 	}
 }
 
 export type NoticeOutcome = "delivered" | "dropped";
+
+/**
+ * The terminal lifecycle's own reminders, as opposed to follow-ups the agent
+ * asked for (monitor, on_exit wake) and alerts about a running program
+ * (input wait). `stop: off` silences exactly these.
+ */
+export function isLifecycleNotice(kind: NoticeKind): boolean {
+	switch (kind) {
+		case "abnormal_return":
+		case "unread":
+		case "reclaim_due":
+		case "reclaimed":
+			return true;
+		case "exit_wake":
+		case "monitor_match":
+		case "monitor_end":
+		case "monitor_silent":
+		case "input_wait":
+			return false;
+	}
+}
+
+export type StopDetector = "judge" | "llm" | "todo";
+
+/** Whether the agent's final response means the work is completely done; `undecided` delivers notices as usual. */
+export type StopVerdict =
+	| { readonly kind: "done"; readonly detector: StopDetector }
+	| { readonly kind: "not_done"; readonly detector: StopDetector }
+	/** `unavailable`: nothing to ask (no model, no todo list, no session); `failed`: the detector errored. */
+	| { readonly kind: "undecided"; readonly cause: "unavailable" | "failed"; readonly reason: string };
+
+export interface StopInput {
+	/** The text of the main agent's final response. */
+	readonly lastResponse: string;
+	/** The pending notices as the agent would read them. */
+	readonly notices: string;
+}
+
+/** What the dispatcher needs to decide a stop; the extension wires it to the config, detectors and lifecycle. */
+export interface NoticeGate {
+	/** The stop configuration, read again for every flush. */
+	config(): StopConfig;
+	detect(config: StopConfig, input: StopInput, signal: AbortSignal): Promise<StopVerdict>;
+	/** Reclaim every returned terminal at once, without notices. */
+	collect(): Promise<void>;
+	/** Whether the terminal lifecycle still owns the terminal. */
+	tracked(sessionId: number): boolean;
+	/** Every verdict, for the human-facing log. */
+	verdict(verdict: StopVerdict): void;
+}
 
 interface Pending {
 	readonly key: string;
@@ -428,6 +486,8 @@ interface Pending {
 export interface NoticeDispatcherOptions {
 	/** Deliver one follow-up that starts a turn (pi.sendMessage wrapper). May throw. */
 	send: (message: NoticeMessage) => void | Promise<void>;
+	/** Stop decisions; without one every notice is delivered with the default template. */
+	gate?: NoticeGate;
 	/** Notices submitted within this window share one follow-up. */
 	debounceMs?: number;
 	onSendError?: (error: unknown) => void;
@@ -437,10 +497,27 @@ export interface NoticeDispatcherOptions {
 
 const DEFAULT_DEBOUNCE_MS = 250;
 
+/** A stop's decision: still to be made about this response, being made, or made (or nothing to decide). */
+type StopState =
+	| { readonly kind: "open"; readonly response: string }
+	| { readonly kind: "deciding" }
+	| { readonly kind: "settled" };
+
+/** The host as the dispatcher sees it: a run in progress (with its final response once omp reports it), or stopped. */
+type HostPhase =
+	| { readonly kind: "running"; readonly response: string | undefined }
+	| { readonly kind: "stopped"; readonly stop: StopState };
+
 /**
- * The one delivery path for terminal notices. Pending notices are merged into
- * one follow-up per flush. A failed send keeps them pending for the next
- * flush, which safe boundaries (tool end, agent settled, the lifecycle's
+ * The one delivery path for terminal notices. While a run is in progress
+ * notices only wait: omp keeps queued follow-ups out of reach, so sending them
+ * mid-run would let each start its own turn after the stop. When the run
+ * settles, whatever is pending goes out as one follow-up. Before the first
+ * delivery after a stop with a final response, the gate decides whether that
+ * response finished the work; if so, every returned terminal is reclaimed and
+ * the notices about terminals the lifecycle no longer owns are dropped, once,
+ * and the rest are delivered. A failed send keeps notices pending for the next
+ * flush, which safe boundaries (tool end, a settled run, the lifecycle's
  * minute sweep) trigger — never a self-rescheduling loop.
  */
 export class NoticeDispatcher {
@@ -449,6 +526,10 @@ export class NoticeDispatcher {
 	private timer: unknown;
 	private stopped = false;
 	private sequence = 0;
+	private phase: HostPhase = { kind: "stopped", stop: { kind: "settled" } };
+	/** Advances whenever a decision in progress stops describing the conversation. */
+	private generation = 0;
+	private deciding: AbortController | undefined;
 	private readonly debounceMs: number;
 
 	constructor(private readonly opts: NoticeDispatcherOptions) {
@@ -476,6 +557,45 @@ export class NoticeDispatcher {
 		});
 	}
 
+	/** omp's `agent_start`: notices wait until the run settles, and a decision in progress no longer applies. */
+	agentStarted(): void {
+		this.abandonDecision();
+		this.phase = { kind: "running", response: undefined };
+	}
+
+	/** omp's `session_stop`: the main agent's final response of this run. */
+	recordResponse(text: string): void {
+		if (this.phase.kind === "running") this.phase = { kind: "running", response: text };
+	}
+
+	/**
+	 * omp's `agent_end` once the run settled: deliver what waited. A `final`
+	 * stop with a final response is decided first; `awaiting` (the session
+	 * idles until background work returns) never is, since it is not done.
+	 */
+	agentStopped(settle: "final" | "awaiting"): void {
+		if (this.phase.kind !== "running") return;
+		const response = settle === "final" ? this.phase.response : undefined;
+		this.phase = { kind: "stopped", stop: response === undefined ? { kind: "settled" } : { kind: "open", response } };
+		this.flush();
+	}
+
+	/** A session switch or branch: the recorded response no longer describes the conversation. */
+	forgetResponse(): void {
+		this.abandonDecision();
+		if (this.phase.kind === "running") this.phase = { kind: "running", response: undefined };
+		else {
+			this.phase = { kind: "stopped", stop: { kind: "settled" } };
+			if (this.pending.size) this.schedule();
+		}
+	}
+
+	private abandonDecision(): void {
+		this.generation++;
+		this.deciding?.abort();
+		this.deciding = undefined;
+	}
+
 	private schedule(): void {
 		if (this.stopped || this.timer !== undefined) return;
 		const set = this.opts.setTimeoutFn ?? ((cb: () => void, ms: number) => setTimeout(cb, ms));
@@ -485,16 +605,69 @@ export class NoticeDispatcher {
 		}, this.debounceMs);
 	}
 
-	/** Send everything pending now. Safe from any boundary; a send in flight defers the rest. */
-	flush(): void {
-		if (this.stopped || this.inFlight) return;
-		const batch: Pending[] = [];
-		for (const entry of this.pending.values()) {
-			if (entry.current()) batch.push(entry);
-			else for (const settle of entry.settle) settle("dropped");
+	private dropWhere(predicate: (entry: Pending) => boolean): void {
+		for (const [key, entry] of this.pending) {
+			if (!predicate(entry)) continue;
+			this.pending.delete(key);
+			for (const settle of entry.settle) settle("dropped");
 		}
+	}
+
+	/** Deliver everything pending if the host is stopped. Safe from any boundary; a send or decision in flight defers the rest. */
+	flush(): void {
+		if (this.stopped || this.inFlight || this.phase.kind !== "stopped") return;
+		const gate = this.opts.gate;
+		const config = gate?.config() ?? DEFAULT_STOP_CONFIG;
+		this.dropWhere((entry) => !entry.current() || (config.mode === "off" && isLifecycleNotice(entry.notice.body.kind)));
+		if (this.pending.size === 0) return;
+		const stop = this.phase.stop;
+		switch (stop.kind) {
+			case "deciding":
+				return;
+			case "open":
+				if (gate && config.mode !== "off") {
+					this.decide(gate, config, stop.response);
+					return;
+				}
+				this.phase = { kind: "stopped", stop: { kind: "settled" } };
+				break;
+			case "settled":
+				break;
+		}
+		this.send(config.noticeTemplate);
+	}
+
+	private decide(gate: NoticeGate, config: StopConfig, response: string): void {
+		const generation = this.generation;
+		const controller = new AbortController();
+		this.deciding = controller;
+		this.phase = { kind: "stopped", stop: { kind: "deciding" } };
+		const notices = buildNoticeMessage([...this.pending.values()].map((entry) => entry.notice)).content;
+		void (async () => {
+			let verdict: StopVerdict;
+			try {
+				verdict = await gate.detect(config, { lastResponse: response, notices }, controller.signal);
+			} catch (error) {
+				verdict = { kind: "undecided", cause: "failed", reason: error instanceof Error ? error.message : String(error) };
+			}
+			if (this.stopped || generation !== this.generation) return;
+			this.deciding = undefined;
+			try { gate.verdict(verdict); } catch { /* a failed log sink must not hold notices */ }
+			if (verdict.kind === "done") {
+				try { await gate.collect(); } catch { /* a terminal that could not be reclaimed keeps its notices */ }
+				if (this.stopped) return;
+				this.dropWhere((entry) => !gate.tracked(entry.notice.identity.sessionId));
+			}
+			// A run that started meanwhile delivers the rest at its own stop.
+			if (generation !== this.generation) return;
+			this.phase = { kind: "stopped", stop: { kind: "settled" } };
+			this.flush();
+		})();
+	}
+
+	private send(template: string): void {
+		const batch = [...this.pending.values()];
 		this.pending = new Map();
-		if (batch.length === 0) return;
 		this.inFlight = batch;
 		const done = () => {
 			if (this.inFlight !== batch) return;
@@ -520,7 +693,7 @@ export class NoticeDispatcher {
 			try { this.opts.onSendError?.(error); } catch { /* a failed UI sink must not drop notices */ }
 		};
 		let result: void | Promise<void>;
-		try { result = this.opts.send(buildNoticeMessage(batch.map((entry) => entry.notice))); }
+		try { result = this.opts.send(buildNoticeMessage(batch.map((entry) => entry.notice), template)); }
 		catch (error) { failed(error); return; }
 		Promise.resolve(result).then(done, failed);
 	}
@@ -528,6 +701,7 @@ export class NoticeDispatcher {
 	/** Drop everything; nothing pending may reach a closed or replaced conversation. */
 	stop(): void {
 		this.stopped = true;
+		this.abandonDecision();
 		if (this.timer !== undefined) {
 			const clear = this.opts.clearTimeoutFn ?? ((handle: unknown) => clearTimeout(handle as NodeJS.Timeout));
 			clear(this.timer);
@@ -539,10 +713,11 @@ export class NoticeDispatcher {
 		for (const entry of entries) for (const settle of entry.settle) settle("dropped");
 	}
 
-	/** Accept notices again after a new session start. */
+	/** Accept notices again after a new session start, which begins stopped. */
 	reset(): void {
 		this.stop();
 		this.stopped = false;
+		this.phase = { kind: "stopped", stop: { kind: "settled" } };
 	}
 
 	/** Notices not yet delivered (test helper). */

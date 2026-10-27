@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+- Finished work stops the notice stream (`fork-features/stop-config.ts`, `fork-features/stop-gate.ts`, `fork-features/terminal-notice.ts`, `fork-features/terminal-lifecycle.ts`, `src/index.ts`). Notices no longer go out as `followUp` while a run is in progress: omp queued each one out of the extension's reach, and after the final answer every one started its own turn (about 60 "Nothing to do here." turns in session `01a17846`). The dispatcher now holds them from `agent_start` until an `agent_end` omp does not continue and sends one merged message. Before the first send after a main-agent final response (`session_stop`), it decides once whether the work is completely done: OMP's judge role chain, else the `@smol` models, else omp-todo-more's item counts (done when every item is completed or abandoned). When done, every returned terminal is reclaimed at once, read or not, without notices, and the notices about them are dropped; running terminals keep theirs. A run starting during the decision discards it. The new `omp-unified-exec` omomp section sets `stop` (`off` silences lifecycle notices; `auto`, `judge`, `llm`, `todo`), the judge prompt (`{last_response}`, `{notices}`, `{todo}`) and the injected notice template (`{summary}`, `{items}`, `{instruction}`, `{terminal_count}`, `{notice_count}`). The dead `agent_settled` handler (omp has no such event) is replaced by `agent_start` / `agent_end` / `session_stop`; the unread reminder and the tool guidance now say an unread terminal is also reclaimed once the task is finished.
+
 ## 0.14.17 - 2026-10-26
 
 ## 0.14.16 - 2026-10-24
