@@ -36,6 +36,7 @@ both register `exec_command` and the other unified-exec tools.
 | `AGENTS.md` is written for the fork: changelog, bilingual-document, commit, customization and verification rules for this repository. Upstream's rule to read the IV/DC documents before changes, its Pi codemode requalification, its pi-mono clone pointer and its frontier-model list are gone | `AGENTS.md` | Upstream's file guided work on a Pi package whose code and documents the fork has deleted, and its model list named superseded models that nothing here consumes. | Fork-only |
 | Session logs carry the owner omp pid (`pi-unified-exec-<pid>-<sid>-<hex>.log`); a log last written more than seven days ago whose writer is provably gone is replaced by a standard gzip `<log>.gz`, never deleted | `fork-features/log-archive.ts`, `fork-features/omp-presentation.ts` (`scheduleLogArchive`), `src/session.ts`, `tests/log-archive.test.ts` | Upstream kept every raw log uncompressed forever. A writer is gone when this process closed the stream (a process-global record of open log streams, kept across reloads), when the pid in the name no longer exists, or when the log predates the last boot; mtime alone cannot prove another process is not still holding an idle session's fd, and unlinking under a live writer would lose its later output. The gzip goes to a private `wx` temp file, is published with `link` (an existing archive is never overwritten) and the source is unlinked only if its device, inode, size and mtime are unchanged. omp scans at load and daily with an unref'd timer. | Fork-only |
 | Notices wait while a run is in progress and go out merged when it settles; a finished-work stop gate judges the main agent's final response (`auto`: OMP's judge role, else `@smol`, else omp-todo-more's item counts) and, when the work is done, reclaims every returned terminal silently and drops its notices; the `omp-unified-exec` omomp section sets `stop` (`off`/`auto`/`judge`/`llm`/`todo`), `judgePrompt` and `noticeTemplate` with placeholders | `fork-features/stop-config.ts`, `fork-features/stop-gate.ts`, `fork-features/terminal-notice.ts` (`NoticeDispatcher` run phase, `NoticeGate`, `isLifecycleNotice`, notice template), `fork-features/terminal-lifecycle.ts` (`collectReturned`), `fork-features/omp-presentation.ts` (`loadStopHost`), `fork-features/omp-tools.d.ts`, `fork-features/session-binding.ts`; `src/index.ts` (`agent_start`, `agent_end`, `session_stop`); `tests/stop-gate.test.ts`, `tests/current-api.test.ts` | In session `01a17846` notices sent as `followUp` during a 90-minute run waited in omp's follow-up queue, which an extension cannot edit, and after the final answer each started its own turn (about 60 turns answering "Nothing to do here."), followed by lifecycle reminders every few minutes. Upstream's `agent_settled` flush point does not exist in omp. The dispatcher holds notices from `agent_start` until an `agent_end` that omp does not continue (or that awaits background work), then sends one message. Before the first send after a `session_stop` final response it decides once, fenced by a generation that every `agent_start`, switch and branch advances, so a verdict that outlives its stop changes nothing. Reclaim stays with the lifecycle (`collectReturned`: silent, a held terminal keeps its prior state), so no reminder about a collected terminal can follow. The detectors load omp's `judgment` (`resolveJudge`, `journalJudgmentUsage`, `sharedJudgmentCache`, `kindOf`), `config/model-resolver.resolveRoleChain`, `config/model-roles.roleCandidatePool`, `@oh-my-pi/pi-ai.completeSimple` and `getAgentDir` at factory load; the todo detector reads `counts` from omp-todo-more's `omp-todo-more:read` reply. | Fork-only |
+| Model-facing tool text for the six PTY tools: each rule is written once, in the tool description or in a parameter's own comment; `promptSnippet` and `promptGuidelines` are deleted; the first 200 characters of the `exec_command` description state the `bash` split, the absent command deadline and the `session_id`/`exit_code` result ([#88](https://github.com/oh-my-omp/omp-unified-exec/issues/88)) | `src/index.ts` | omp inlines a plugin device into the system prompt as its description cut at 200 characters plus its full parameter schema, comments included; it never reads `promptSnippet` or `promptGuidelines`. The old `exec_command` cut ended mid-word before every fact that decides how to call it, and rules repeated between description and parameter comments were paid for on every request. | Fork-only |
 
 Existing tool names and retained environment variables (`PI_UNIFIED_EXEC_*`)
 keep their names. Modules used only for deleted paths are removed rather than
@@ -108,6 +109,16 @@ argument. Upstream changes there arrive as content conflicts in
 before `buildShellCommand`, and `ExecSession.shell` as `command[0]`; port
 upstream fixes to the Windows Git Bash/PowerShell probe into the platform
 default branch only, and never add a fallback after a selected shell fails.
+
+The six PTY tools' model-facing text is fork-owned ([#88](https://github.com/oh-my-omp/omp-unified-exec/issues/88)).
+Upstream edits to their `description`, parameter comments, `promptSnippet` or
+`promptGuidelines` in `src/index.ts` arrive as content conflicts. Keep the
+fork's text and fold in only facts that still hold here, each written once:
+field-specific types, defaults, ranges and exclusions go in that parameter's
+comment, everything else in the description; do not restore `promptSnippet`
+or `promptGuidelines`. The first 200 characters of the `exec_command`
+description must keep stating the `bash` split, the absent command deadline
+and the `session_id`/`exit_code` result, and end on a word.
 
 `README.md` and `README.zh-CN.md` are fork-owned. When a sync touches the
 README, keep the fork's and carry over only upstream facts that still hold here
@@ -185,6 +196,14 @@ interactive omp, a `shellPath` overlay must outrank `SHELL` and an explicit
 return `spawn … ENOENT` and no output rather than another shell (omp itself
 rejects a missing `shellPath` at startup, before the extension loads); later input writes, kills and listings must repeat the session's shell;
 and the default `workdir` must still follow omp's cwd.
+
+On omp upgrades, requalify the device docs the tool text is written for: in a
+real `omp --mode rpc` `get_state` system prompt with `tools.xdevDocs: inline`,
+the `## exec_command` section must still cut the description at 200 characters
+(`XDEV_EXTERNAL_DESCRIPTION_CAP` in `src/tools/xdev.ts`) after a whole word
+that ends the `session_id`/`exit_code` sentence, the parameter comments must
+still follow uncut under `### Schema`, and omp must still read no
+`promptSnippet`/`promptGuidelines`. A changed cap means rewriting the head.
 
 Command approval is ported from
 [`can1357/oh-my-pi@57b56631ee009098a78d9badf91afc3a48eef32e`](https://github.com/can1357/oh-my-pi/blob/57b56631ee009098a78d9badf91afc3a48eef32e/packages/coding-agent/src/tools/bash.ts),
