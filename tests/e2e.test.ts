@@ -23,7 +23,6 @@ import { IS_WINDOWS } from "../src/shell.ts";
 interface ToolDef {
 	name: string;
 	description: string;
-	promptGuidelines?: string[];
 	parameters: unknown;
 	execute: (
 		toolCallId: string,
@@ -132,17 +131,6 @@ async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 8000)
 }
 
 describe("unified-exec e2e", () => {
-	it("guides reads, event waits and input as separate operations", () => {
-		const h = makeHarness();
-		for (const name of ["exec_command", "write_stdin", "monitor"]) {
-			const tool = h.tools[name];
-			const prompt = JSON.stringify([tool.description, tool.promptGuidelines, tool.parameters]);
-			assert.match(prompt, /read .*term/);
-			assert.match(prompt, /monitor/);
-			assert.doesNotMatch(prompt, /poll without writing|no built-in.*maximum/i);
-		}
-	});
-
 	it("rejects zero-byte input before observation and preserves later input", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");

@@ -1250,6 +1250,10 @@ export function activate(
 	});
 
 	// ---------------- Tools ----------------
+	// omp inlines a tool as its description cut at 200 characters plus the
+	// parameter schema with comments. Each description's first string is that
+	// head and ends on a word at the cut; a rule lives either in the
+	// description or in one parameter's comment, never both.
 
 	pi.registerTool({
 		name: "exec_command",
@@ -1264,26 +1268,19 @@ export function activate(
 			],
 		} : {}),
 		description:
-			'Run a command in a PTY session for long-running, interactive (REPLs, TUIs, ssh, sudo), concurrent or dev-daemon work; use bash for short one-shot commands. title is required: a short name for the terminal, used by list_sessions and every notice about it. There is no command deadline and nothing restarts a process that exits. Returns `session_id` if still running (drive with write_stdin, observe with monitor or read terminal_url) or `exit_code` if it finished within yield_time_ms. A background terminal stays listed after its command returns until it is reclaimed: an abnormal return is reported at once, and 30 minutes after the return or the last read a notice reminds you to read it (never read) or announces a 5-minute grace before reclaim (read). on_exit defaults to "none". Only pass on_exit: "wake" when the human explicitly wants auto-resume on unobserved exit — stale wakes interrupt later work. Use set_on_exit to disarm or re-arm a running session.',
-		promptSnippet: "Run a long-running or interactive command in a PTY session",
-		promptGuidelines: [
-			"Use bash for short one-shot commands. Use exec_command for long-running commands, interactive programs (REPLs, TUIs, ssh, sudo), concurrent computation and dev-time daemons: it runs in a PTY, has no command deadline, and never restarts a process that exits.",
-			"Shell selection: explicit shell argument, then omp shellPath, then $SHELL, then the platform default (bash, or Git Bash/PowerShell on Windows). Results name the selected shell; write commands in that shell's syntax. Working directory defaults to the current host session cwd.",
-			"The 10s default yield suits most starts; interactive processes return a session_id you then drive with write_stdin.",
-			"For a long non-interactive command, start with a short yield to obtain a session_id. Read terminal_url for progress; use monitor with a condition for future progress lines, or without one to await completion. Use write_stdin only to send input. omp manages cache warming independently.",
-			'on_exit defaults to "none". Prefer monitor or human follow-up. Use on_exit: "wake" ONLY when the human explicitly wants auto-resume on unobserved completion — not for indefinite processes (dev servers, watchers). If you armed wake by mistake or the job is wrong/abandoned, call set_on_exit(session_id, on_exit: "none") promptly (does not kill the process). kill_session still kills and suppresses wake. Combining wake with an input-bearing write_stdin is safe: direct completion consumes the wake.',
-			"Every terminal notice names the terminal by session_id and title with a short reason. Notices wait while you work and arrive together when you stop; when your final response shows the task finished, returned terminals are reclaimed and no notice about them arrives. After a background command returns, read its terminal_url (or receive its final screen from write_stdin/kill_session): until the task is finished, a terminal is reclaimed only after it was read. 30 minutes after the return or the last read, a never-read terminal gets one read reminder; a read one gets a reclaim-due notice, and unless it is read again within 5 minutes its remaining processes (including background jobs holding the terminal) are killed and it leaves list_sessions. Reading during those 5 minutes keeps it for another 30. Its term:// stays readable after reclaim. Kills by you or a human are normal endings; non-zero exits, signals and failures are reported at once.",
-			"Output is rendered terminal state, not raw bytes. Running results show unseen history plus the current screen and cursor; unchanged running screens report screen_changed:false. Completed results show only the frozen final active screen. Read terminal_url for what the terminal shows (retained history, or a full-screen program's screen such as tmux while it runs), /screen for active text, or /screen.png for cell colours and styling; raw bytes remain in log_path.",
-		],
+			"Run a command in a PTY for long-running, interactive (REPL, TUI, ssh, sudo), concurrent or daemon work; bash for one-shot commands. No command deadline. Returns session_id if running, else exit_code. " +
+			"A process that exits is never restarted. With a session_id, send input with write_stdin, wait for output or completion with monitor, and read terminal_url (term://) for state. " +
+			"Results show rendered terminal state, not raw bytes: a running result shows unseen history plus the current screen (screen_changed:false when unchanged), a finished one its final screen. terminal_url gives retained history or a full-screen program's screen, /screen the active text, /screen.png colours and styles; raw bytes stay in log_path. " +
+			"Notices name a terminal by session_id and title; they wait while you work and arrive when you stop. A returned terminal stays in list_sessions until reclaimed: an abnormal return is reported at once; 30 minutes after the return or the last read, a never-read terminal gets a read reminder and a read one a reclaim notice, after which it is killed with its background jobs and unlisted unless read within 5 minutes. When your final response shows the task finished, returned terminals are reclaimed silently. term:// stays readable after reclaim.",
 		outputSchema: processScriptResultSchema,
 		parameters: Type.Object({
 			cmd: Type.String({ description: "Shell command to execute." }),
-			title: Type.String({ description: `Required start title naming this terminal in list_sessions, the Terminals view and every notice (one line, nonblank; at most ${MAX_TITLE_CHARS} characters are kept).` }),
+			title: Type.String({ description: `Terminal name in list_sessions, the Terminals view and every notice: one nonblank line, at most ${MAX_TITLE_CHARS} characters kept.` }),
 			workdir: Type.Optional(Type.String({ description: "Working directory. Defaults to the session cwd." })),
 			shell: Type.Optional(
 				Type.String({
 					description:
-						"Shell executable. Defaults to omp shellPath, then $SHELL, then bash (Windows: Git Bash, else PowerShell). Results report the actual shell. cmd and PowerShell receive shell-appropriate flags; other shells use -c.",
+						"Shell executable. Defaults to omp shellPath, then $SHELL, then bash (Windows: Git Bash, else PowerShell). Write cmd in that shell's syntax; results name it.",
 				}),
 			),
 			cols: Type.Optional(
@@ -1298,13 +1295,13 @@ export function activate(
 			),
 			yield_time_ms: Type.Optional(
 				Type.Number({
-					description: `How long (ms) this call stays attached waiting for output before yielding — an attachment window, not the command's lifetime or completion timeout. Default ${DEFAULT_EXEC_YIELD_MS}, clamped to [${MIN_YIELD_TIME_MS}, ${MAX_YIELD_TIME_MS}].`,
+					description: `How long (ms) this call waits for output before returning. Default ${DEFAULT_EXEC_YIELD_MS}, clamped to [${MIN_YIELD_TIME_MS}, ${MAX_YIELD_TIME_MS}].`,
 				}),
 			),
 			on_exit: Type.Optional(
 				StringEnum(
 					["none", "wake"] as const,
-					'"none" (default): no auto-resume; read terminal_url for state/content and use monitor for events or completion. "wake": ONE follow-up notification on unobserved exit that resumes the agent — only when the human explicitly wants auto-resume. Change later via set_on_exit. A completion observed directly by a tool result consumes the wake.',
+					'"none" (default). "wake": resume you once when the process exits unobserved; only when the human explicitly asks, never for servers or watchers. A tool result observing the exit consumes it; set_on_exit changes it.',
 				),
 			),
 		}),
@@ -1324,15 +1321,8 @@ export function activate(
 		name: "write_stdin",
 		label: tr("Send input", "发送输入"),
 		description:
-			"Write nonempty input bytes verbatim to a running session's PTY; nothing (no \\r or \\n) is appended. Use `chars` for text with C-style escapes (e.g. \\x03 Ctrl-C, \\x1b ESC, \\r Enter); use `chars_b64` for raw binary. Read state and content with read terminal_url (term://); wait for output events or completion with monitor. Zero-byte input is rejected with empty_poll_removed.",
-		promptSnippet: "Send nonempty input to a running session",
-		promptGuidelines: [
-			"write_stdin only sends input. Use read term:// for state/content without consuming observations; use monitor with a condition for future output events, or without a condition to await completion.",
-			"Input-bearing calls retain their attachment window: default 250ms, clamped to [250, 30000]. Cancellation leaves the process alive.",
-			'on_exit wake is set via exec_command or set_on_exit, not write_stdin. Observing an exit here consumes an armed wake (direct result). To disarm wake without killing, call set_on_exit(session_id, on_exit: "none").',
-			"Submit lines with \\r (the Enter key) rather than \\n: POSIX terminals accept both, but Windows console programs only execute input on \\r. Keys such as ESC or arrows are sent alone, without Enter.",
-			"For very noisy jobs, use monitor for events and read terminal_url or log_path for output.",
-		],
+			"Send input to a running session's PTY; returns output like exec_command. Bytes go verbatim with nothing appended: end each line with \\r (Windows console programs ignore \\n); send ESC or arrows alone. " +
+			"Empty input is rejected with empty_poll_removed. To read without writing use terminal_url; to wait use monitor. An exit observed here consumes an armed wake; cancellation leaves the process alive.",
 		outputSchema: processScriptResultSchema,
 		parameters: Type.Object({
 			session_id: Type.Number({ description: "Session id from exec_command." }),
@@ -1369,20 +1359,13 @@ export function activate(
 		name: "set_on_exit",
 		label: tr("Set exit wake", "设置退出唤醒"),
 		description:
-			'Change on_exit policy for a session without killing it. on_exit: "none" disarms a pending wake (including coordinator tombstones after eviction). on_exit: "wake" arms auto-resume if the process is still running. Cannot recall a follow-up already queued to the agent. kill_session both kills and suppresses.',
-		promptSnippet: "Disarm or re-arm on_exit wake for a session",
-		promptGuidelines: [
-			'Default on_exit is "none". If you set "wake" and no longer need auto-resume (wrong command, user moved on, abandoned approach), call set_on_exit with "none" promptly — do not leave stale wakes armed.',
-			"This does not stop the process. Use kill_session to terminate.",
-			"Prefer arming wake only when the human explicitly asked for auto-resume.",
-			"Disarm cannot recall a completion follow-up that was already delivered to pi.",
-		],
+			"Change a session's on_exit policy without stopping the process; kill_session terminates it and suppresses the wake. A follow-up already queued cannot be recalled.",
 		outputSchema: setOnExitScriptResultSchema,
 		parameters: Type.Object({
 			session_id: Type.Number({ description: "Session id from exec_command." }),
 			on_exit: StringEnum(
 				["none", "wake"] as const,
-				'"none": disarm wake (process keeps running). "wake": arm auto-resume if still running.',
+				'"none": disarm (also after eviction) as soon as auto-resume is unwanted. "wake": arm auto-resume while running, only when the human explicitly asked.',
 			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, eventCtx) {
@@ -1439,21 +1422,15 @@ export function activate(
 	pi.registerTool({
 		name: "monitor",
 		label: tr("Monitor", "监视"),
-		description: "Wait for future output events or completion of an existing session. An optional JavaScript regex condition wakes the agent for each matched batch; omit it to await output closure once. If the monitor returns nothing for remind_after_ms (default 20 minutes) it sends one reminder to check the session and stays active. Read state/content with read terminal_url (term://), and send input with write_stdin. Replaces any existing monitor; action cancel silently removes it. Default max_returns is 10 successful match messages.",
-		promptSnippet: "Await matching output or completion of an existing session",
-		promptGuidelines: [
-			"Monitor observes without consuming output. Use read term:// for history and screens, and log_path for raw bytes.",
-			"Only output after establishment participates. Match batches coalesce for about 250ms; the final allowed return ends the monitor, not the process.",
-			"A monitor that has not returned for remind_after_ms (default 20 minutes) sends one reminder with the session's current screen; each delivered match starts a new silent period. On a reminder, read the terminal and decide: answer a prompt with write_stdin, keep waiting by calling monitor again, or cancel. Pass a larger remind_after_ms only when a longer silence is expected.",
-			"Independently of monitors, a session whose screen settles on an unseen input prompt (a debconf/whiptail dialog, [Y/n], password, pager) produces a unified-exec input-wait alert.",
-			"Model kill_session, explicit cancel, replacement and session reset silently cancel monitoring. Already delivered follow-ups cannot be recalled.",
-		],
+		description:
+			"Wait for a running session's future output: each batch matching condition wakes you, or without condition its end wakes you once. Observes without consuming output; only output after the call counts. " +
+			"Matches coalesce for about 250 ms. kill_session or a session reset also ends a monitor silently; delivered follow-ups cannot be recalled. On a no-return reminder, read the terminal, then answer a prompt with write_stdin, call monitor again, or cancel. A session settling on an unseen input prompt raises an input-wait alert with or without a monitor.",
 		parameters: Type.Object({
 			session_id: Type.Number({ description: "Existing running session id." }),
-			action: Type.Optional(StringEnum(["start", "cancel"] as const, "start (default) establishes/replaces; cancel silently removes.")),
-			condition: Type.Optional(Type.String({ description: "JavaScript regular expression source, no / delimiters. Omit to wait only for completion." })),
-			max_returns: Type.Optional(Type.Number({ description: "Positive safe integer; default 10 successful matched batches. End does not count." })),
-			remind_after_ms: Type.Optional(Type.Number({ description: "Silence (no match or End delivered) before one reminder that the monitor has not returned; default 1200000 (20 minutes), integer 1–2147483647. The reminder does not count toward max_returns and does not end the monitor." })),
+			action: Type.Optional(StringEnum(["start", "cancel"] as const, "start (default) establishes or replaces; cancel removes silently.")),
+			condition: Type.Optional(Type.String({ description: "JavaScript regex source without / delimiters. Omit to await completion only." })),
+			max_returns: Type.Optional(Type.Number({ description: "Positive safe integer; default 10 matched batches. End does not count; the last return ends the monitor, not the process." })),
+			remind_after_ms: Type.Optional(Type.Number({ description: "Silence before one reminder quoting the current screen; default 1200000 (20 minutes), integer 1–2147483647. A match restarts it; the reminder neither counts toward max_returns nor ends the monitor." })),
 		}),
 		outputSchema: monitorScriptResultSchema,
 		async execute(_toolCallId, params, signal) {
@@ -1483,8 +1460,8 @@ export function activate(
 		name: "kill_session",
 		label: tr("Terminate session", "结束会话"),
 		description:
-			"Terminate a session (SIGTERM, escalates to SIGKILL after 2s; on Windows any signal force-kills the process tree). Use when the process won't exit via Ctrl-C. A kill is a normal ending: the killed terminal stays listed until the terminal lifecycle reclaims it (this result shows its final screen, which counts as a read). Also suppresses any armed on_exit wake and silently cancels its monitor before signaling, even if termination fails.",
-		promptSnippet: "Terminate a session",
+			"Terminate a session: SIGTERM, then SIGKILL after 2 s; on Windows any signal force-kills the process tree. A kill is a normal ending; the result shows the final screen, which counts as a terminal read. " +
+			"Before signaling it suppresses an armed on_exit wake and cancels the monitor, even if termination fails. The terminal stays listed until reclaimed.",
 		outputSchema: killScriptResultSchema,
 		parameters: Type.Object({
 			session_id: Type.Number({ description: "Session to terminate." }),
@@ -1551,7 +1528,6 @@ export function activate(
 		name: "list_sessions",
 		label: tr("List sessions", "列出会话"),
 		description: "List this omp run's unified-exec terminals: running ones, and returned ones not yet reclaimed, with their titles and lifecycle state.",
-		promptSnippet: "List terminals",
 		outputSchema: listSessionsScriptResultSchema,
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, eventCtx) {
