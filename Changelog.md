@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+## 0.14.22 - 2026-10-31
+
 - All six PTY tools now own packaged documentation topics and end their concise full descriptions with `xd://` topic pointers. Tool definitions explicitly retain `docTopics()` through the typed registration and existing presentation wrapper; detailed input, monitor, wake, termination and inventory guidance moves to body-only topics.
 - Stop configuration and detector problems carry structured reason variants until the human notification boundary, where owned prose is rendered in English or Chinese from the live environment. Field names, model identifiers and external error payloads remain data; stop decisions and the environment-only language resolver are unchanged.
 - Qualified on macOS arm64 with Bun 1.4.4 and omp 18.14.1: `OMOMP_LANG=en npm test` passed 414 tests (5 platform/install skips). Real isolated `omp --no-extensions -e …/src/index.ts --no-session` PTY sessions using DeepSeek V4.1 Flash read all six bare docs, all eight topic bodies and six unknown-topic errors; malformed project stop sections produced fully English and Chinese warning reasons, and both sessions exited cleanly.
