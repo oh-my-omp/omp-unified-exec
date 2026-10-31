@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+## 0.14.20 - 2026-10-31
+
 - `exec_command` now owns its `interactive`, `lifecycle` and `waiting` documentation topics through the registered definition's `docTopics()`. Body-only Markdown ships in `fork-features/topics/`, full-description pointers use `xd://exec_command/<topic>`, and remote-script quoting is documented with the input/monitor contract. The waiting topic describes plugin behavior without importing local waiting policies or depending on an external topic registry.
 
 ## 0.14.19 - 2026-10-28
