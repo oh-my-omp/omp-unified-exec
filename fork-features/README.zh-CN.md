@@ -11,8 +11,8 @@
 | 改动 | 文件 | 原因 | 上游 |
 |---|---|---|---|
 | 包名 `omp-unified-exec` | `package.json`（`name`、`repository`、`homepage`） | omp 以包名命名插件 | 仅 fork |
-| 工具自带的 `exec_command` 文档 topic | `fork-features/exec-command-docs.ts`、`fork-features/topics/*.md`、`src/index.ts`、`package.json` 的 `files` | 注册工具上的 `docTopics()` 通过 `xd://exec_command/{interactive,lifecycle,waiting}` 提供纯 Markdown 正文。完整说明末尾的指针指导读取，呈现包装保留 provider。静态文件随插件发布，不依赖外部 topic 注册表，也不包含本地等待政策。 | 仅 fork |
-| 仅使用环境变量的界面 i18n（`OMOMP_LANG`，然后是 locale 环境变量回退） | `src/i18n.ts`、`src/index.ts`、`fork-features/omp-presentation.ts`、`fork-features/tern-terminal-hud.ts`、`fork-features/terminal-notice.ts`、两个 README | 这个 Pi 兼容 fork 不能依赖启动时的 `omomp-lang` 扩展或 `omomp` 文件；所有面向人的插件界面都遵循启动环境，同时保持模型/协议文本稳定 | 仅 fork |
+| 六个 PTY 工具各自拥有的文档 topic | `fork-features/exec-command-docs.ts`、`fork-features/topics/*.md`、`src/index.ts`、`package.json` 的 `files` | 每个定义用 `ToolDefinition<typeof parameters>` 与 `docTopics()` 的交叉类型检查。完整说明末尾列出 `xd://<tool>/<topic>` 指针；随包发布的纯 Markdown 保留输入、输出、生命周期、唤醒、monitor、结束与列表的详细指导。呈现 spread 保留所有 provider，不依赖外部 topic 注册表。 | 仅 fork |
+| 仅使用环境变量的界面 i18n（`OMOMP_LANG`，然后是 locale 回退），包括结构化的 stop/配置诊断 | `src/i18n.ts`、`src/index.ts`、`fork-features/stop-reasons.ts`、`fork-features/stop-config.ts`、`fork-features/stop-gate.ts`、`fork-features/omp-presentation.ts`、`fork-features/tern-terminal-hud.ts`、`fork-features/terminal-notice.ts`、两个 README | 界面语言只读取实时环境变量。stop/配置原因以带标签的事实传到通知边界，再生成插件自己的文字；字段名与外部载荷保留为数据，去重身份不随语言变化。模型/协议文本保持稳定。 | 仅 fork |
 | 为 fork 重写的中英文 README：Tern 录屏演示、omp 安装、Tern 终端 HUD、omp 呈现、fork 结构；移除上游的 npm、徽章和维护公告 | `README.md`、`README.zh-CN.md`、`docs/assets/demo.{gif,mp4}`、`docs/assets/demo-lazygit.{gif,mp4}` | fork 的行为和安装方式已经偏离上游 README（npm 包、仅 Pi 的呈现），继续沿用会误导 omp 用户 | 仅 fork |
 | 只支持 omp：非 omp 宿主在扩展 factory 阶段、激活之前被拒绝 | `fork-features/omp-presentation.ts`、`src/index.ts`、`tests/omp-presentation.test.ts`；`package.json` 的 `omp.extensions` | `ExtensionAPI.arktype` 用于识别 omp。具名导出 `activate` 是直接测试工具核心的接缝，不是另一个受支持的宿主入口。 | 仅 fork |
 | 仅 Bun 的原生 PTY 后端与测试运行器 | `src/pty.ts`、`fork-features/omp-presentation.ts`、`tests/pty-load.test.ts`、`tests/bun-pty-runtime.mjs`、`package.json`、`.github/workflows/ci.yml` | omp 是编译后的 Bun 可执行文件。每个会话都使用 `Bun.Terminal`（Bun 1.4+），在 Linux/macOS 上提供 `openpty`，在 Windows 上提供 ConPTY。factory 在加载 omp 模块或激活前要求 `Bun.spawn` 和 `Bun.Terminal`；Bun 原生测试运行器在三平台运行完整套件，并运行源码/编译版 runtime fixture。 | 仅 fork |
@@ -32,7 +32,7 @@
 | 为 fork 重写 `AGENTS.md`：本仓库的 changelog、双语文档、提交、定制与验证规则。上游改动前先读 IV/DC 文档的规则、Pi codemode 重新验证要求、pi-mono 克隆指引和前沿模型列表都已去掉 | `AGENTS.md` | 上游的文件指导的是一个 Pi 包的工作，其代码和文档已被 fork 删除；其模型列表列的是已被取代、本仓库也没有任何地方使用的模型。 | 仅 fork |
 | 会话日志名带上所属 omp 的 pid（`pi-unified-exec-<pid>-<sid>-<hex>.log`）；最后写入超过七天、且写入方确认已不存在的日志被替换为标准 gzip `<log>.gz`，从不删除 | `fork-features/log-archive.ts`、`fork-features/omp-presentation.ts`（`scheduleLogArchive`）、`src/session.ts`、`tests/log-archive.test.ts` | 上游让所有原始日志永远以未压缩形式保留。写入方不存在指：本进程已关闭该日志流（一份跨重载保留的进程级打开日志流记录），文件名中的 pid 已不存在，或日志最后写入于本次开机之前。仅凭 mtime 无法证明别的进程没有仍持有某个空闲会话的 fd，而在写入方仍存活时 unlink 会丢失其后续输出。gzip 先写入私有的 `wx` 临时文件，用 `link` 发布（从不覆盖已有归档），只有源文件的 device、inode、大小与 mtime 都未变时才 unlink 源文件。omp 在加载时扫描一次，之后由不阻止进程退出的定时器每天扫描一次。 | 仅 fork |
 | 运行进行期间通知只等待，运行结束时合并送达；“完成的工作”判定门对主 agent 的最终回复做一次判定（`auto`：OMP 的 judge 角色，否则 `@smol`，否则 omp-todo-more 的各状态项数），工作已完成时静默回收全部已返回终端并丢弃其通知；omomp 的 `omp-unified-exec` 段设置 `stop`（`off`/`auto`/`judge`/`llm`/`todo`）以及带占位符的 `judgePrompt` 和 `noticeTemplate` | `fork-features/stop-config.ts`、`fork-features/stop-gate.ts`、`fork-features/terminal-notice.ts`（`NoticeDispatcher` 的运行阶段、`NoticeGate`、`isLifecycleNotice`、通知模板）、`fork-features/terminal-lifecycle.ts`（`collectReturned`）、`fork-features/omp-presentation.ts`（`loadStopHost`）、`fork-features/omp-tools.d.ts`、`fork-features/session-binding.ts`；`src/index.ts`（`agent_start`、`agent_end`、`session_stop`）；`tests/stop-gate.test.ts`、`tests/current-api.test.ts` | 在会话 `01a17846` 中，一次 90 分钟运行期间以 `followUp` 发出的通知停在 omp 的后续消息队列里（扩展无法修改该队列），最终答复之后每条各自触发一轮（约 60 轮回答 “Nothing to do here.”），之后每隔几分钟还有生命周期提醒。上游的 `agent_settled` 刷新点在 omp 中不存在。投递器从 `agent_start` 起暂存通知，直到一次 omp 不再继续（或等待后台工作）的 `agent_end`，再发出一条消息。在 `session_stop` 给出最终回复后的第一次发送之前判定一次，并用世代号隔离：每次 `agent_start`、switch 和 branch 都会推进世代，因此跨过了所属停止的判定结果不产生任何作用。回收仍归生命周期（`collectReturned`：静默，仍被占用的终端保持原状态），所以被回收的终端之后不会再有提醒。判定器在 factory 加载时载入 omp 的 `judgment`（`resolveJudge`、`journalJudgmentUsage`、`sharedJudgmentCache`、`kindOf`）、`config/model-resolver.resolveRoleChain`、`config/model-roles.roleCandidatePool`、`@oh-my-pi/pi-ai.completeSimple` 与 `getAgentDir`；todo 判定读取 omp-todo-more 的 `omp-todo-more:read` 回复中的 `counts`。 | 仅 fork |
-| 六个 PTY 工具面向模型的文本：每条规则只写一次，写在工具描述或该参数自己的注释里；删除 `promptSnippet` 与 `promptGuidelines`；`exec_command` 描述的前 200 个字符写明与 `bash` 的分工、没有命令截止时间、返回 `session_id` 还是 `exit_code`（[#88](https://github.com/oh-my-omp/omp-unified-exec/issues/88)） | `src/index.ts` | omp 把插件设备内联进 system prompt 时，只取描述的前 200 个字符并在此截断，参数 schema 连同注释整段内联；它从不读取 `promptSnippet` 或 `promptGuidelines`。旧的 `exec_command` 描述截断在半个词上，决定怎样调用它的事实全在截断点之后；描述与参数注释之间重复的规则在每次请求里都要计费。 | 仅 fork |
+| 六个 PTY 工具面向模型的文本：精简说明与参数注释，详细指导放在工具自有 topic 中；删除 `promptSnippet` 与 `promptGuidelines`；`exec_command` 描述的前 200 个字符写明与 `bash` 的分工、没有命令截止时间、返回 `session_id` 还是 `exit_code`（[#88](https://github.com/oh-my-omp/omp-unified-exec/issues/88)） | `src/index.ts`、`fork-features/exec-command-docs.ts`、`fork-features/topics/*.md` | omp 把插件设备内联进 system prompt 时，只取描述的前 200 个字符并在此截断，参数 schema 连同注释整段内联；它从不读取 `promptSnippet` 或 `promptGuidelines`。详细调用文档留在 topic 中，不再扩长描述；参数专属的默认值、范围与互斥约束保留在 schema 中。 | 仅 fork |
 
 已有工具名与仍保留的环境变量（`PI_UNIFIED_EXEC_*`）保持原名。只用于已删除路径的模块直接移除，不保留兼容 shim。
 
@@ -56,13 +56,15 @@ omp 没有 `agent_settled` 事件，因此 fork 在运行真正结束的 `agent_
 
 本仓库的 shell 选择跟随宿主（[#63](https://github.com/oh-my-omp/omp-unified-exec/issues/63)）：上游的 `resolveDefaultShell` 在 POSIX 上返回 `bash`，其 `shell` 参数说明也这样写，spawn 选项还记录原始 `shell` 参数。上游对这些地方的改动会在 `src/shell.ts`、`src/index.ts` 和 `src/session.ts` 中以内容冲突的形式到来。解决方法：保留优先级（显式 `shell`、omp `shellPath`、`SHELL`、平台默认值）、在 `buildShellCommand` 之前解析，以及 `ExecSession.shell` 取 `command[0]`；上游对 Windows Git Bash/PowerShell 探测的修复只搬进平台默认值分支，选中的 shell 失败后也绝不增加回退。
 
-六个 PTY 工具面向模型的文本归 fork 所有（[#88](https://github.com/oh-my-omp/omp-unified-exec/issues/88)）。上游对 `src/index.ts` 中这些工具的 `description`、参数注释、`promptSnippet` 或 `promptGuidelines` 的改动会以内容冲突的形式到来。解决方法：保留 fork 的文本，只并入在这里仍然成立的事实，且每条只写一次：参数独有的类型、默认值、范围与互斥约束写进该参数的注释，其余写进描述；不恢复 `promptSnippet` 和 `promptGuidelines`。`exec_command` 描述的前 200 个字符必须继续写明与 `bash` 的分工、没有命令截止时间、返回 `session_id` 还是 `exit_code`，并在完整的词处结束。
+六个 PTY 工具面向模型的文本归 fork 所有（[#88](https://github.com/oh-my-omp/omp-unified-exec/issues/88)）。上游对 `src/index.ts` 中这些工具的 `description`、参数注释、`promptSnippet` 或 `promptGuidelines` 的改动会以内容冲突的形式到来。保留 fork 的文本，只并入在这里仍然成立的事实：参数独有的类型、默认值、范围与互斥约束写进该参数的注释，详细调用指导写进工具 topic。描述只保留简短用途与必要事项，不恢复 `promptSnippet` 和 `promptGuidelines`。`exec_command` 描述的前 200 个字符必须继续写明与 `bash` 的分工、没有命令截止时间、返回 `session_id` 还是 `exit_code`，并在完整的词处结束。
 
-`exec_command` 定义还拥有 `docTopics()` 与完整说明末尾的 topic 指针。
-合并注册或呈现改动时保留 provider，并把 `fork-features/topics/*.md`
-保留在包的 `files` 中。omp 升级后，通过真实 `read` 读取已安装插件的三个
-`xd://exec_command/` topic、裸地址的完整说明和一个不存在的 topic；
-已知 topic 必须只返回 Markdown 正文，不存在的 topic 必须报错。
+六个定义各自拥有 `docTopics()` 与完整说明末尾的 topic 指针。合并注册或呈现改动时，
+保留 `ToolDefinition<typeof parameters>` 交叉类型、provider 与包中的
+`fork-features/topics/*.md`。omp 升级后，用真实 `read` 读取每个已安装工具
+裸地址的完整说明、全部声明的 `xd://<tool>/<topic>`，并对每个工具读一个不存在的
+topic；已知 topic 必须只返回 Markdown 正文，不存在的必须报错。
+stop/配置诊断改动必须把结构化原因保留到面向人的通知生成时，且只用环境变量选择语言；
+在英文和中文下重新验证配置段格式错误警告。
 
 `README.md` 和 `README.zh-CN.md` 归 fork 所有。同步改动到 README 时，保留 fork 的版本，只把在这里仍然成立的上游事实（工具参数、限制、语义）写进两个文件中 fork 对应的章节；两者保持逐节互译，`fork-features/README.md` 和 `fork-features/README.zh-CN.md` 也一样。
 

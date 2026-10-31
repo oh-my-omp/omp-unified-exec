@@ -64,7 +64,7 @@ A sibling view, indexed by concern:
 | Concern | File(s) |
 |---|---|
 | Tool schemas and orchestration | `src/index.ts` (`exec_command`, `write_stdin`, `set_on_exit`, `monitor`, `kill_session`, `list_sessions`) |
-| Tool-owned `exec_command` topics (`read xd://exec_command/<topic>`) and full-description pointers | `fork-features/exec-command-docs.ts`, `fork-features/topics/*.md`; attached in `src/index.ts`, included by `package.json` `files` |
+| Tool-owned topics (`read xd://<tool>/<topic>`) and full-description pointers for all six PTY tools | `fork-features/exec-command-docs.ts`, `fork-features/topics/*.md`; typed definitions in `src/index.ts`, included by `package.json` `files` |
 | Session lifecycle (spawn, write, kill, log-stream) | `src/session.ts` |
 | Session registry, LRU eviction, shutdown | `src/session-store.ts` |
 | Per-call observation (`CollectResult`: screen, final screen or none) | `src/collect.ts`; produced by `ExecSession.collect` in `src/session.ts` |
@@ -73,6 +73,7 @@ A sibling view, indexed by concern:
 | `on_exit: "wake"` completion scheduling (exactly-once) and monitor ownership | `src/completion.ts` (`setOnExit`, tombstones, flush) |
 | Terminal notices: ADT, formatter, the dispatcher that holds notices during a run and merges them at its stop (`unified-exec-notice`) | `fork-features/terminal-notice.ts`; run events (`agent_start`, `agent_end`, `session_stop`) in `src/index.ts` |
 | Finished-work stop gate: `omp-unified-exec` omomp section, judge / `@smol` / todo detectors, silent collection of returned terminals | `fork-features/stop-config.ts`, `fork-features/stop-gate.ts` (omp modules loaded by `loadStopHost`), `TerminalLifecycle.collectReturned`; `tests/stop-gate.test.ts` |
+| Structured stop/config diagnostics and boundary-only English/Chinese rendering | `fork-features/stop-reasons.ts`; producers in `stop-config.ts`, `stop-gate.ts` and `terminal-notice.ts`, human notifications in `src/index.ts` |
 | Terminal lifecycle: return, reads, TTL, grace, reclaim, minute sweep | `fork-features/terminal-lifecycle.ts`; reclaim and leftover-group kill in `src/index.ts`; `onShellExit`/`onTerminalRead`/`signalProcessGroup` in `src/session.ts` |
 | Rendered terminal screen: emulator, history + screen observations, snapshots | `src/terminal-screen.ts` (owned by `ExecSession`) |
 | On-disk raw log file mirroring | `src/session.ts` (`logStream`) |
@@ -353,9 +354,9 @@ Users install the Git source with:
 omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
 ```
 
-`files` in `package.json` includes `src`, the fork's TypeScript modules,
-`README.md`, and `LICENSE`. Keep required runtime files
-inside that package set.
+`files` in `package.json` includes `src`, the fork's TypeScript modules and
+`fork-features/topics/*.md`, `README.md`, and `LICENSE`. Keep required runtime
+files inside that package set.
 
 ## Commit conventions
 

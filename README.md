@@ -72,7 +72,7 @@ Human-facing notifications, widgets, command labels, the omp bash card annotatio
 and the Tern terminal HUD follow `OMOMP_LANG` (`en` or `zh`, case-insensitive).
 When it is unset or invalid, the plugin uses the first non-empty `LC_ALL`,
 `LC_MESSAGES`, or `LANG` value (`zh*` selects Chinese); otherwise it uses English.
-This Pi-compatible plugin does not read an `omomp` file. Command descriptions and
+For language selection this plugin does not read an `omomp` file. Command descriptions and
 tool labels resolve the environment once when registered for each session;
 notifications, widgets, renderers, and the HUD resolve it when generating their
 display text. Tool descriptions, prompts, protocol values, and model-facing tool
@@ -193,12 +193,17 @@ command deadline, and nothing restarts a process that exits. Observe a session
 with `monitor` and `read term://…`, and send input with `write_stdin`; its output is the
 rendered terminal screen (see [Terminal output](#terminal-output)).
 
-Read `xd://exec_command` for the complete tool description and its topic pointers.
-The plugin supplies the topic bodies through the tool's `docTopics()`:
+Read `xd://<tool>` for any of the six tools' concise descriptions and topic pointers.
+Each tool supplies its own topic bodies through `docTopics()`:
 
 - `xd://exec_command/interactive`: input bytes, monitoring output and remote-script quoting.
 - `xd://exec_command/lifecycle`: terminal reclaim and exit wakes.
 - `xd://exec_command/waiting`: command lifetime, completion-only monitors and non-consuming reads.
+- `xd://write_stdin/input`: verbatim input, empty-input rejection, cancellation and observed exits.
+- `xd://set_on_exit/wake`: arming, disarming and queued exit wakes.
+- `xd://monitor/subscription`: future-output matching, cancellation, reminders and input-wait alerts.
+- `xd://kill_session/termination`: signals, wake/monitor suppression and retained terminals.
+- `xd://list_sessions/inventory`: inventory state, output reads and exit-wake effects.
 
 The Markdown files ship in `fork-features/topics/`; topic reads need no external
 configuration extension. An unknown topic returns a missing-topic error.
@@ -706,7 +711,9 @@ The section is read from `<cwd>/.omp/omomp.{yml,yaml,json,toml}`, then from the
 agent directory's `omomp.*`; the first valid copy wins, and it is read again at
 every stop, so edits apply without a restart. An unknown key, mode or
 placeholder makes a copy invalid: a warning names it once and the next
-location, or the defaults, apply.
+location, or the defaults, apply. Owned configuration and detector failure explanations
+use the current UI language; field names, model identifiers and external error
+payloads remain unchanged.
 
 ## Command
 
@@ -899,6 +906,9 @@ fork-features/
 ├── terminal-lifecycle.ts # returned-terminal TTL, read/reclaim reminders, grace, reclaim, finished-work collection
 ├── stop-config.ts        # `omp-unified-exec` omomp section: stop mode, judge prompt, notice template
 ├── stop-gate.ts          # judge / @smol / todo stop detectors over factory-loaded omp modules
+├── stop-reasons.ts       # structured stop/config reasons; English/Chinese boundary rendering
+├── exec-command-docs.ts  # six tools' lazy documentation providers and topic pointers
+├── topics/               # packaged body-only tool documentation
 ├── monitor-subscription.ts # monitor conditions, batching and reminders as terminal notices
 ├── input-wait.ts         # input prompt detection; input-wait alerts as terminal notices
 ├── log-archive.ts        # seven-day gzip compression of session logs

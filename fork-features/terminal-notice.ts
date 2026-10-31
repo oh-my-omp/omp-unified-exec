@@ -14,6 +14,7 @@ import { formatElapsedShort, formatElapsedShortUi } from "../src/format-time.ts"
 import { tr } from "../src/i18n.ts";
 import { sanitizeOutputText } from "../src/output-safety.ts";
 import { DEFAULT_NOTICE_TEMPLATE, DEFAULT_STOP_CONFIG, fillTemplate, type NoticeTemplateField, type StopConfig } from "./stop-config.ts";
+import type { StopReason } from "./stop-reasons.ts";
 
 /** What an agent needs to find the terminal again. */
 export interface TerminalIdentity {
@@ -453,7 +454,7 @@ export type StopVerdict =
 	| { readonly kind: "done"; readonly detector: StopDetector }
 	| { readonly kind: "not_done"; readonly detector: StopDetector }
 	/** `unavailable`: nothing to ask (no model, no todo list, no session); `failed`: the detector errored. */
-	| { readonly kind: "undecided"; readonly cause: "unavailable" | "failed"; readonly reason: string };
+	| { readonly kind: "undecided"; readonly cause: "unavailable" | "failed"; readonly reason: StopReason };
 
 export interface StopInput {
 	/** The text of the main agent's final response. */
@@ -648,7 +649,7 @@ export class NoticeDispatcher {
 			try {
 				verdict = await gate.detect(config, { lastResponse: response, notices }, controller.signal);
 			} catch (error) {
-				verdict = { kind: "undecided", cause: "failed", reason: error instanceof Error ? error.message : String(error) };
+				verdict = { kind: "undecided", cause: "failed", reason: { kind: "external_error", detail: error instanceof Error ? error.message : String(error) } };
 			}
 			if (this.stopped || generation !== this.generation) return;
 			this.deciding = undefined;

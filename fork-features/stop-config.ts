@@ -12,6 +12,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import type { StopConfigReason } from "./stop-reasons.ts";
 
 /**
  * - `off`: lifecycle notices (abnormal return, unread, reclaim due, reclaimed)
@@ -61,7 +62,7 @@ export const DEFAULT_STOP_CONFIG: StopConfig = {
 
 export interface ConfigProblem {
 	readonly path: string;
-	readonly reason: string;
+	readonly reason: StopConfigReason;
 }
 
 export interface StopConfigLoad {
@@ -74,25 +75,25 @@ export interface StopConfigLoad {
 const PLACEHOLDER = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
 /** Parse a template, rejecting placeholders outside `fields`. */
-function parseTemplate(value: unknown, key: string, fields: readonly string[]): { kind: "ok"; value: string } | { kind: "error"; reason: string } {
-	if (typeof value !== "string" || value.trim().length === 0) return { kind: "error", reason: `${key}: must be a non-empty string` };
+function parseTemplate(value: unknown, key: string, fields: readonly string[]): { kind: "ok"; value: string } | { kind: "error"; reason: StopConfigReason } {
+	if (typeof value !== "string" || value.trim().length === 0) return { kind: "error", reason: { kind: "invalid_template", key } };
 	const unknown = [...value.matchAll(PLACEHOLDER)].map((match) => match[1]).filter((name) => !fields.includes(name));
 	if (unknown.length > 0) {
-		return { kind: "error", reason: `${key}: unknown placeholder ${unknown.map((name) => `{${name}}`).join(", ")}; known: ${fields.map((name) => `{${name}}`).join(", ")}` };
+		return { kind: "error", reason: { kind: "unknown_placeholders", key, names: unknown, known: fields } };
 	}
 	return { kind: "ok", value };
 }
 
 /** The section's value; omitted keys take the defaults. */
-export function parseStopSection(value: unknown): { kind: "ok"; config: StopConfig } | { kind: "error"; reason: string } {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) return { kind: "error", reason: "section is not a mapping" };
+export function parseStopSection(value: unknown): { kind: "ok"; config: StopConfig } | { kind: "error"; reason: StopConfigReason } {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return { kind: "error", reason: { kind: "non_mapping", scope: "section" } };
 	const record = value as Record<string, unknown>;
 	const extra = Object.keys(record).filter((key) => key !== "stop" && key !== "judgePrompt" && key !== "noticeTemplate");
-	if (extra.length > 0) return { kind: "error", reason: `unknown key ${extra.join(", ")}; known: stop, judgePrompt, noticeTemplate` };
+	if (extra.length > 0) return { kind: "error", reason: { kind: "unknown_keys", keys: extra } };
 	let mode = DEFAULT_STOP_CONFIG.mode;
 	if (record.stop !== undefined) {
 		if (typeof record.stop !== "string" || !Object.hasOwn(STOP_MODES, record.stop)) {
-			return { kind: "error", reason: `stop: must be one of ${Object.keys(STOP_MODES).join(", ")}` };
+			return { kind: "error", reason: { kind: "invalid_stop", modes: Object.keys(STOP_MODES) } };
 		}
 		mode = record.stop as StopMode;
 	}
@@ -167,18 +168,18 @@ export function loadStopConfig(cwd: string | undefined, agentDir: string): StopC
 		const located = locate(dir);
 		if (located.kind === "none") continue;
 		if (located.kind === "ambiguous") {
-			problems.push({ path: dir, reason: `several omomp files: ${located.paths.map((path) => basename(path)).join(", ")}` });
+			problems.push({ path: dir, reason: { kind: "ambiguous_files", names: located.paths.map((path) => basename(path)) } });
 			continue;
 		}
 		let root: unknown;
 		try {
 			root = parseText(readFileSync(located.path, "utf8"), located.ext);
 		} catch (error) {
-			problems.push({ path: located.path, reason: error instanceof Error ? error.message : String(error) });
+			problems.push({ path: located.path, reason: { kind: "parse_error", detail: error instanceof Error ? error.message : String(error) } });
 			continue;
 		}
 		if (typeof root !== "object" || root === null || Array.isArray(root)) {
-			problems.push({ path: located.path, reason: "root is not a mapping" });
+			problems.push({ path: located.path, reason: { kind: "non_mapping", scope: "root" } });
 			continue;
 		}
 		if (!Object.hasOwn(root, SECTION_ID)) continue;

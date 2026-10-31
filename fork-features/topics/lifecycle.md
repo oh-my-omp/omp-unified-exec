@@ -1,6 +1,8 @@
 # Terminal lifetime, reclaim and exit wakes
 
 - A running result returns `session_id`; a finished one returns `exit_code`. A process that exits is never restarted, so run it again yourself if that is what you want.
+- With a `session_id`, send input with `write_stdin`, wait for output or completion with `monitor`, and read `terminal_url` (`term://`) for state.
+- Notices name a terminal by `session_id` and `title`; they wait while you work and arrive when you stop.
 - A returned terminal stays in `list_sessions` until reclaimed. An abnormal return is reported at once; a normal one is not.
 - Reclaim timers start at the return or at the last read: 30 minutes later, a never-read terminal gets one read reminder and a read one gets a reclaim notice. Then it is killed with its background jobs and unlisted unless you read it within 5 minutes.
 - When your final response shows the task finished, returned terminals are reclaimed silently — no notice. Do not rely on a finished terminal staying alive across turns.

@@ -16,6 +16,7 @@
  */
 import { fillTemplate, type JudgePromptField, type StopConfig } from "./stop-config.ts";
 import type { StopInput, StopVerdict } from "./terminal-notice.ts";
+import type { ModelFailure } from "./stop-reasons.ts";
 
 const DETECT_DEADLINE_MS = 30_000;
 const EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -175,10 +176,10 @@ export function parseTodoRead(value: unknown): TodoRead {
 
 /** Done when the list has items and every one is completed or abandoned; blocked items keep it open. */
 export function todoVerdict(todo: TodoRead): StopVerdict {
-	if (todo.kind === "unavailable") return { kind: "undecided", cause: "unavailable", reason: "todo list unavailable" };
-	if (todo.counts === undefined) return { kind: "undecided", cause: "unavailable", reason: "omp-todo-more reply has no counts" };
+	if (todo.kind === "unavailable") return { kind: "undecided", cause: "unavailable", reason: { kind: "todo_unavailable" } };
+	if (todo.counts === undefined) return { kind: "undecided", cause: "unavailable", reason: { kind: "todo_no_counts" } };
 	const { pending, in_progress, completed, abandoned, blocked } = todo.counts;
-	if (pending + in_progress + completed + abandoned + blocked === 0) return { kind: "undecided", cause: "unavailable", reason: "todo list is empty" };
+	if (pending + in_progress + completed + abandoned + blocked === 0) return { kind: "undecided", cause: "unavailable", reason: { kind: "todo_empty" } };
 	return { kind: pending + in_progress + blocked === 0 ? "done" : "not_done", detector: "todo" };
 }
 
@@ -237,7 +238,7 @@ async function runJudge(chain: ChainJudge, prompt: string, signal: AbortSignal):
 	const finished: unknown = typeof answers === "object" && answers !== null ? Reflect.get(answers, "finished") : undefined;
 	const choice: unknown = typeof finished === "object" && finished !== null ? Reflect.get(finished, "choice") : undefined;
 	if (choice === "done" || choice === "not_done") return { kind: choice, detector: "judge" };
-	return { kind: "undecided", cause: "failed", reason: `judge returned no choice: ${JSON.stringify(finished)}` };
+	return { kind: "undecided", cause: "failed", reason: { kind: "judge_no_choice", payload: JSON.stringify(finished) } };
 }
 
 function smolModels(host: StopHost, session: DetectorSession): readonly RoleCandidate[] {
@@ -246,9 +247,9 @@ function smolModels(host: StopHost, session: DetectorSession): readonly RoleCand
 }
 
 async function runLlm(host: StopHost, session: DetectorSession, models: readonly RoleCandidate[], prompt: string, signal: AbortSignal): Promise<StopVerdict> {
-	const failures: string[] = [];
+	const failures: ModelFailure[] = [];
 	for (const { model, thinkingLevel } of models) {
-		if (signal.aborted) return { kind: "undecided", cause: "failed", reason: "aborted" };
+		if (signal.aborted) return { kind: "undecided", cause: "failed", reason: { kind: "aborted" } };
 		const label = `${model.provider}/${model.id}`;
 		const apiKey = session.registry.resolver(model, session.sessionId);
 		const effort: Effort = EFFORTS.find((level) => level === thinkingLevel) ?? "low";
@@ -258,20 +259,20 @@ async function runLlm(host: StopHost, session: DetectorSession, models: readonly
 				{ systemPrompt: [LLM_SYSTEM_PROMPT], messages: [{ role: "user", content: prompt, timestamp: Date.now() }] },
 				thinkingLevel === "off" ? { apiKey, disableReasoning: true, signal } : { apiKey, reasoning: effort, signal },
 			);
-			if (reply.stopReason === "aborted") return { kind: "undecided", cause: "failed", reason: "aborted" };
+			if (reply.stopReason === "aborted") return { kind: "undecided", cause: "failed", reason: { kind: "aborted" } };
 			if (reply.stopReason === "error") {
-				failures.push(`${label}: ${reply.errorMessage ?? "error"}`);
+				failures.push(reply.errorMessage === undefined ? { kind: "error", model: label } : { kind: "external_error", model: label, detail: reply.errorMessage });
 				continue;
 			}
 			const answer = parseLlmAnswer(textOf(reply.content));
 			if (answer !== undefined) return { kind: answer, detector: "llm" };
-			failures.push(`${label}: unparseable answer`);
+			failures.push({ kind: "unparseable_answer", model: label });
 		} catch (error) {
-			if (signal.aborted) return { kind: "undecided", cause: "failed", reason: "aborted" };
-			failures.push(`${label}: ${error instanceof Error ? error.message : String(error)}`);
+			if (signal.aborted) return { kind: "undecided", cause: "failed", reason: { kind: "aborted" } };
+			failures.push({ kind: "external_error", model: label, detail: error instanceof Error ? error.message : String(error) });
 		}
 	}
-	return { kind: "undecided", cause: "failed", reason: `every @smol model failed: ${failures.join("; ")}` };
+	return { kind: "undecided", cause: "failed", reason: { kind: "models_failed", failures } };
 }
 
 export interface StopDetectorDeps {
@@ -284,18 +285,18 @@ export interface StopDetectorDeps {
 
 /** Decide one stop with the configured detector. Never throws for an expected failure; it returns `undecided`. */
 export async function detectStop(deps: StopDetectorDeps, config: StopConfig, input: StopInput, signal: AbortSignal): Promise<StopVerdict> {
-	if (config.mode === "off") return { kind: "undecided", cause: "unavailable", reason: "stop detection is off" };
+	if (config.mode === "off") return { kind: "undecided", cause: "unavailable", reason: { kind: "off" } };
 	const todo = parseTodoRead(deps.readTodo());
 	const prompt = fillTemplate<JudgePromptField>(config.judgePrompt, { last_response: input.lastResponse, notices: input.notices, todo: todoText(todo) });
 	if (config.mode === "todo") return todoVerdict(todo);
 	const session = detectorSession(deps.session());
-	if (session === undefined) return { kind: "undecided", cause: "unavailable", reason: "no bound omp session" };
+	if (session === undefined) return { kind: "undecided", cause: "unavailable", reason: { kind: "no_session" } };
 	const deadline = AbortSignal.any([signal, AbortSignal.timeout(DETECT_DEADLINE_MS)]);
 	const judge = config.mode === "llm" ? undefined : judgeChain(deps.host, session);
 	if (judge !== undefined) return runJudge(judge, prompt, deadline);
-	if (config.mode === "judge") return { kind: "undecided", cause: "unavailable", reason: "the judge role resolves no model" };
+	if (config.mode === "judge") return { kind: "undecided", cause: "unavailable", reason: { kind: "no_judge" } };
 	const models = smolModels(deps.host, session);
 	if (models.length > 0) return runLlm(deps.host, session, models, prompt, deadline);
-	if (config.mode === "llm") return { kind: "undecided", cause: "unavailable", reason: "@smol resolves no model" };
+	if (config.mode === "llm") return { kind: "undecided", cause: "unavailable", reason: { kind: "no_smol" } };
 	return todoVerdict(todo);
 }

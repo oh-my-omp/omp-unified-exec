@@ -111,7 +111,7 @@ describe("notice delivery around runs", () => {
 	});
 
 	it("not_done and undecided deliver everything without reclaiming", async () => {
-		for (const verdict of [{ kind: "not_done", detector: "llm" }, { kind: "undecided", cause: "failed", reason: "x" }] as const) {
+		for (const verdict of [{ kind: "not_done", detector: "llm" }, { kind: "undecided", cause: "failed", reason: { kind: "external_error", detail: "x" } }] as const) {
 			const h = harness();
 			h.tracked.add(1);
 			h.returned.add(1);

@@ -38,23 +38,31 @@
 import { constants as osConstants } from "node:os";
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
-import { type AgentToolResult, type AgentToolUpdateCallback, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type AgentToolResult, type AgentToolUpdateCallback, type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Box, Text, type Component } from "@earendil-works/pi-tui";
 import { Type, type TUnsafe } from "typebox";
 
 import { type ActivatedExtension, withHostPresentation } from "../fork-features/omp-presentation.ts";
 import { approvalCommand, approveBoundCommand, type CommandApprovalHost } from "../fork-features/command-approval.ts";
-import { execCommandDocumentation, execCommandTopicPointers } from "../fork-features/exec-command-docs.ts";
+import {
+	execCommandDocumentation, execCommandTopicPointers,
+	writeStdinDocumentation, writeStdinTopicPointers,
+	setOnExitDocumentation, setOnExitTopicPointers,
+	monitorDocumentation, monitorTopicPointers,
+	killSessionDocumentation, killSessionTopicPointers,
+	listSessionsDocumentation, listSessionsTopicPointers,
+} from "../fork-features/exec-command-docs.ts";
 import { bindingContext, bindSession, type HostBindingState, recheckBinding } from "../fork-features/session-binding.ts";
 import { MonitorError } from "../fork-features/monitor-subscription.ts";
 import { loadStopConfig } from "../fork-features/stop-config.ts";
 import { detectStop, type StopHost } from "../fork-features/stop-gate.ts";
+import { renderStopConfigReason, renderStopReason } from "../fork-features/stop-reasons.ts";
 import { type LifecycleClock, type ReclaimResult, TerminalLifecycle } from "../fork-features/terminal-lifecycle.ts";
 import { buildNoticeDisplayMessage, MAX_TITLE_CHARS, NoticeDispatcher, type NoticeGate, outcomeText, parseTerminalTitle } from "../fork-features/terminal-notice.ts";
 import { type CollectResult, NO_OUTPUT } from "./collect.ts";
 import { CompletionCoordinator, type OnExitPolicy, sanitizeMeta } from "./completion.ts";
 import { formatElapsed, formatElapsedUi, nowUtcIso } from "./format-time.ts";
-import { tr } from "./i18n.ts";
+import { language, tr } from "./i18n.ts";
 import { waitForExitOrDeadline } from "./long-wait.ts";
 import { sleep } from "./notify.ts";
 import { sanitizeOutputText } from "./output-safety.ts";
@@ -969,11 +977,12 @@ export function activate(
 		config: () => {
 			const load = loadStopConfig(hostCwd, stopHost.getAgentDir());
 			for (const problem of load.problems) {
-				const key = `${problem.path}\n${problem.reason}`;
+				const key = `${problem.path}\n${JSON.stringify(problem.reason)}`;
 				if (reportedConfigProblems.has(key)) continue;
 				reportedConfigProblems.add(key);
+				const reason = renderStopConfigReason(problem.reason, language());
 				ctx.ui?.notify(
-					tr(`unified-exec: ignoring ${problem.path}: ${problem.reason}`, `unified-exec：忽略 ${problem.path}：${problem.reason}`),
+					tr(`unified-exec: ignoring ${problem.path}: ${reason}`, `unified-exec：忽略 ${problem.path}：${reason}`),
 					"warning",
 				);
 			}
@@ -1009,7 +1018,8 @@ export function activate(
 					return;
 				case "undecided":
 					if (verdict.cause === "failed") {
-						ctx.ui?.notify(tr(`unified-exec: stop decision failed: ${verdict.reason}`, `unified-exec：完成判定失败：${verdict.reason}`), "warning");
+						const reason = renderStopReason(verdict.reason, language());
+						ctx.ui?.notify(tr(`unified-exec: stop decision failed: ${reason}`, `unified-exec：完成判定失败：${reason}`), "warning");
 					}
 					return;
 			}
@@ -1251,10 +1261,30 @@ export function activate(
 	});
 
 	// ---------------- Tools ----------------
-	// omp inlines a tool as its description cut at 200 characters plus the
-	// parameter schema with comments. Each description's first string is that
-	// head and ends on a word at the cut; a rule lives either in the
-	// description or in one parameter's comment, never both.
+	// omp inlines the first 200 description characters and the parameter schema.
+	// Detailed invocation guidance belongs to each tool's packaged topics.
+
+	const execCommandParameters = Type.Object({
+		cmd: Type.String({ description: "Shell command to execute." }),
+		title: Type.String({ description: `Terminal name in list_sessions, the Terminals view and every notice: one nonblank line, at most ${MAX_TITLE_CHARS} characters kept.` }),
+		workdir: Type.Optional(Type.String({ description: "Working directory. Defaults to the session cwd." })),
+		shell: Type.Optional(Type.String({
+			description: "Shell executable. Defaults to omp shellPath, then $SHELL, then bash (Windows: Git Bash, else PowerShell). Write cmd in that shell's syntax; results name it.",
+		})),
+		cols: Type.Optional(Type.Number({
+			description: `PTY width in columns. Default 120, clamped to [${MIN_PTY_COLS}, ${MAX_PTY_COLS}].`,
+		})),
+		rows: Type.Optional(Type.Number({
+			description: `PTY height in rows. Default ${DEFAULT_PTY_ROWS}, clamped to [${MIN_PTY_ROWS}, ${MAX_PTY_ROWS}].`,
+		})),
+		yield_time_ms: Type.Optional(Type.Number({
+			description: `How long (ms) this call waits for output before returning. Default ${DEFAULT_EXEC_YIELD_MS}, clamped to [${MIN_YIELD_TIME_MS}, ${MAX_YIELD_TIME_MS}].`,
+		})),
+		on_exit: Type.Optional(StringEnum(
+			["none", "wake"] as const,
+			'"none" (default). "wake": resume you once when the process exits unobserved; only when the human explicitly asks, never for servers or watchers. A tool result observing the exit consumes it; set_on_exit changes it.',
+		)),
+	});
 
 	pi.registerTool({
 		name: "exec_command",
@@ -1271,43 +1301,9 @@ export function activate(
 		} : {}),
 		description:
 			"Run a command in a PTY for long-running, interactive (REPL, TUI, ssh, sudo), concurrent or daemon work; bash for one-shot commands. No command deadline. Returns session_id if running, else exit_code. " +
-			"A process that exits is never restarted. With a session_id, send input with write_stdin, wait for output or completion with monitor, and read terminal_url (term://) for state. " +
-			"Results show rendered terminal state, not raw bytes: a running result shows unseen history plus the current screen (screen_changed:false when unchanged), a finished one its final screen. terminal_url gives retained history or a full-screen program's screen, /screen the active text, /screen.png colours and styles; raw bytes stay in log_path. " +
-			"Notices name a terminal by session_id and title; they wait while you work and arrive when you stop. A returned terminal stays in list_sessions until reclaimed: an abnormal return is reported at once; 30 minutes after the return or the last read, a never-read terminal gets a read reminder and a read one a reclaim notice, after which it is killed with its background jobs and unlisted unless read within 5 minutes. When your final response shows the task finished, returned terminals are reclaimed silently. term:// stays readable after reclaim." +
 			execCommandTopicPointers,
 		outputSchema: processScriptResultSchema,
-		parameters: Type.Object({
-			cmd: Type.String({ description: "Shell command to execute." }),
-			title: Type.String({ description: `Terminal name in list_sessions, the Terminals view and every notice: one nonblank line, at most ${MAX_TITLE_CHARS} characters kept.` }),
-			workdir: Type.Optional(Type.String({ description: "Working directory. Defaults to the session cwd." })),
-			shell: Type.Optional(
-				Type.String({
-					description:
-						"Shell executable. Defaults to omp shellPath, then $SHELL, then bash (Windows: Git Bash, else PowerShell). Write cmd in that shell's syntax; results name it.",
-				}),
-			),
-			cols: Type.Optional(
-				Type.Number({
-					description: `PTY width in columns. Default 120, clamped to [${MIN_PTY_COLS}, ${MAX_PTY_COLS}].`,
-				}),
-			),
-			rows: Type.Optional(
-				Type.Number({
-					description: `PTY height in rows. Default ${DEFAULT_PTY_ROWS}, clamped to [${MIN_PTY_ROWS}, ${MAX_PTY_ROWS}].`,
-				}),
-			),
-			yield_time_ms: Type.Optional(
-				Type.Number({
-					description: `How long (ms) this call waits for output before returning. Default ${DEFAULT_EXEC_YIELD_MS}, clamped to [${MIN_YIELD_TIME_MS}, ${MAX_YIELD_TIME_MS}].`,
-				}),
-			),
-			on_exit: Type.Optional(
-				StringEnum(
-					["none", "wake"] as const,
-					'"none" (default). "wake": resume you once when the process exits unobserved; only when the human explicitly asks, never for servers or watchers. A tool result observing the exit consumes it; set_on_exit changes it.',
-				),
-			),
-		}),
+		parameters: execCommandParameters,
 		async execute(toolCallId, params, signal, onUpdate, eventCtx) {
 			ctx.ui ??= eventCtx.ui;
 			const shape = await runExecCommand(ctx, params, signal, onUpdate, eventCtx.cwd, toolCallId);
@@ -1318,34 +1314,29 @@ export function activate(
 				structuredContent: processScriptResult(shape),
 			};
 		},
-	});
+	} satisfies ToolDefinition<typeof execCommandParameters> & { docTopics(): Readonly<Record<string, string>> });
 
+	const writeStdinParameters = Type.Object({
+		session_id: Type.Number({ description: "Session id from exec_command." }),
+		chars: Type.Optional(Type.String({
+			description: "Text with C-style escapes: \\xHH, \\uHHHH, \\u{H\u2026}, \\n \\r \\t \\0 \\a \\e \\b \\f \\v \\\\ \\\". Unknown \\X preserved literally. Mutually exclusive with chars_b64.",
+		})),
+		chars_b64: Type.Optional(Type.String({
+			description: "Raw bytes (base64) to write. Mutually exclusive with chars.",
+		})),
+		yield_time_ms: Type.Optional(Type.Number({
+			description: `Attachment window in ms, not a process timeout. Default ${DEFAULT_WRITE_STDIN_YIELD_MS}, clamped to [${MIN_YIELD_TIME_MS}, ${MAX_YIELD_TIME_MS}].`,
+		})),
+	}, { additionalProperties: false });
 	pi.registerTool({
 		name: "write_stdin",
+		...writeStdinDocumentation,
 		label: tr("Send input", "发送输入"),
 		description:
-			"Send input to a running session's PTY; returns output like exec_command. Bytes go verbatim with nothing appended: end each line with \\r (Windows console programs ignore \\n); send ESC or arrows alone. " +
-			"Empty input is rejected with empty_poll_removed. To read without writing use terminal_url; to wait use monitor. An exit observed here consumes an armed wake; cancellation leaves the process alive.",
+			"Send input to a running session's PTY; returns output like exec_command." +
+			writeStdinTopicPointers,
 		outputSchema: processScriptResultSchema,
-		parameters: Type.Object({
-			session_id: Type.Number({ description: "Session id from exec_command." }),
-			chars: Type.Optional(
-				Type.String({
-					description:
-						"Text with C-style escapes: \\xHH, \\uHHHH, \\u{H\u2026}, \\n \\r \\t \\0 \\a \\e \\b \\f \\v \\\\ \\\". Unknown \\X preserved literally. Mutually exclusive with chars_b64.",
-				}),
-			),
-			chars_b64: Type.Optional(
-				Type.String({
-					description: "Raw bytes (base64) to write. Mutually exclusive with chars.",
-				}),
-			),
-			yield_time_ms: Type.Optional(
-				Type.Number({
-					description: `Attachment window in ms, not a process timeout. Default ${DEFAULT_WRITE_STDIN_YIELD_MS}, clamped to [${MIN_YIELD_TIME_MS}, ${MAX_YIELD_TIME_MS}].`,
-				}),
-			),
-		}, { additionalProperties: false }),
+		parameters: writeStdinParameters,
 		async execute(toolCallId, params, signal, onUpdate, eventCtx) {
 			ctx.ui ??= eventCtx.ui;
 			const shape = await runWriteStdin(ctx, params, signal, onUpdate, toolCallId);
@@ -1356,21 +1347,23 @@ export function activate(
 				structuredContent: processScriptResult(shape),
 			};
 		},
-	});
+	} satisfies ToolDefinition<typeof writeStdinParameters> & { docTopics(): Readonly<Record<string, string>> });
 
+	const setOnExitParameters = Type.Object({
+		session_id: Type.Number({ description: "Session id from exec_command." }),
+		on_exit: StringEnum(
+			["none", "wake"] as const,
+			'"none": disarm (also after eviction) as soon as auto-resume is unwanted. "wake": arm auto-resume while running, only when the human explicitly asked.',
+		),
+	});
 	pi.registerTool({
 		name: "set_on_exit",
+		...setOnExitDocumentation,
 		label: tr("Set exit wake", "设置退出唤醒"),
 		description:
-			"Change a session's on_exit policy without stopping the process; kill_session terminates it and suppresses the wake. A follow-up already queued cannot be recalled.",
+			"Change a session's on_exit policy without stopping the process." + setOnExitTopicPointers,
 		outputSchema: setOnExitScriptResultSchema,
-		parameters: Type.Object({
-			session_id: Type.Number({ description: "Session id from exec_command." }),
-			on_exit: StringEnum(
-				["none", "wake"] as const,
-				'"none": disarm (also after eviction) as soon as auto-resume is unwanted. "wake": arm auto-resume while running, only when the human explicitly asked.',
-			),
-		}),
+		parameters: setOnExitParameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, eventCtx) {
 			ctx.ui ??= eventCtx.ui;
 			const { session_id: sid, on_exit: policy } = params as { session_id: number; on_exit: OnExitPolicy };
@@ -1420,21 +1413,23 @@ export function activate(
 				},
 			};
 		},
-	});
+	} satisfies ToolDefinition<typeof setOnExitParameters> & { docTopics(): Readonly<Record<string, string>> });
 
+	const monitorParameters = Type.Object({
+		session_id: Type.Number({ description: "Existing running session id." }),
+		action: Type.Optional(StringEnum(["start", "cancel"] as const, "start (default) establishes or replaces; cancel removes silently.")),
+		condition: Type.Optional(Type.String({ description: "JavaScript regex source without / delimiters. Omit to await completion only." })),
+		max_returns: Type.Optional(Type.Number({ description: "Positive safe integer; default 10 matched batches. End does not count; the last return ends the monitor, not the process." })),
+		remind_after_ms: Type.Optional(Type.Number({ description: "Silence before one reminder quoting the current screen; default 1200000 (20 minutes), integer 1–2147483647. A match restarts it; the reminder neither counts toward max_returns nor ends the monitor." })),
+	});
 	pi.registerTool({
 		name: "monitor",
+		...monitorDocumentation,
 		label: tr("Monitor", "监视"),
 		description:
-			"Wait for a running session's future output: each batch matching condition wakes you, or without condition its end wakes you once. Observes without consuming output; only output after the call counts. " +
-			"Matches coalesce for about 250 ms. kill_session or a session reset also ends a monitor silently; delivered follow-ups cannot be recalled. On a no-return reminder, read the terminal, then answer a prompt with write_stdin, call monitor again, or cancel. A session settling on an unseen input prompt raises an input-wait alert with or without a monitor.",
-		parameters: Type.Object({
-			session_id: Type.Number({ description: "Existing running session id." }),
-			action: Type.Optional(StringEnum(["start", "cancel"] as const, "start (default) establishes or replaces; cancel removes silently.")),
-			condition: Type.Optional(Type.String({ description: "JavaScript regex source without / delimiters. Omit to await completion only." })),
-			max_returns: Type.Optional(Type.Number({ description: "Positive safe integer; default 10 matched batches. End does not count; the last return ends the monitor, not the process." })),
-			remind_after_ms: Type.Optional(Type.Number({ description: "Silence before one reminder quoting the current screen; default 1200000 (20 minutes), integer 1–2147483647. A match restarts it; the reminder neither counts toward max_returns nor ends the monitor." })),
-		}),
+			"Wait for a running session's future output: each batch matching condition wakes you, or without condition its end wakes you once." +
+			monitorTopicPointers,
+		parameters: monitorParameters,
 		outputSchema: monitorScriptResultSchema,
 		async execute(_toolCallId, params, signal) {
 			let details: MonitorScriptResult;
@@ -1457,21 +1452,23 @@ export function activate(
 				...(details.status === "error" ? { isError: true } : {}),
 			};
 		},
-	});
+	} satisfies ToolDefinition<typeof monitorParameters> & { docTopics(): Readonly<Record<string, string>> });
 
+	const killSessionParameters = Type.Object({
+		session_id: Type.Number({ description: "Session to terminate." }),
+		signal: Type.Optional(Type.String({
+			description: 'Initial signal (default "SIGTERM"). Examples: SIGINT, SIGHUP, SIGKILL.',
+		})),
+	});
 	pi.registerTool({
 		name: "kill_session",
+		...killSessionDocumentation,
 		label: tr("Terminate session", "结束会话"),
 		description:
-			"Terminate a session: SIGTERM, then SIGKILL after 2 s; on Windows any signal force-kills the process tree. A kill is a normal ending; the result shows the final screen, which counts as a terminal read. " +
-			"Before signaling it suppresses an armed on_exit wake and cancels the monitor, even if termination fails. The terminal stays listed until reclaimed.",
+			"Terminate a session: SIGTERM, then SIGKILL after 2 s; on Windows any signal force-kills the process tree." +
+			killSessionTopicPointers,
 		outputSchema: killScriptResultSchema,
-		parameters: Type.Object({
-			session_id: Type.Number({ description: "Session to terminate." }),
-			signal: Type.Optional(
-				Type.String({ description: 'Initial signal (default "SIGTERM"). Examples: SIGINT, SIGHUP, SIGKILL.' }),
-			),
-		}),
+		parameters: killSessionParameters,
 		async execute(toolCallId, params, _signal, _onUpdate, eventCtx) {
 			ctx.ui ??= eventCtx.ui;
 			const sid = (params as { session_id: number; signal?: string }).session_id;
@@ -1525,14 +1522,16 @@ export function activate(
 				structuredContent: killScriptResult(details),
 			};
 		},
-	});
+	} satisfies ToolDefinition<typeof killSessionParameters> & { docTopics(): Readonly<Record<string, string>> });
 
+	const listSessionsParameters = Type.Object({});
 	pi.registerTool({
 		name: "list_sessions",
+		...listSessionsDocumentation,
 		label: tr("List sessions", "列出会话"),
-		description: "List this omp run's unified-exec terminals: running ones, and returned ones not yet reclaimed, with their titles and lifecycle state.",
+		description: "List this omp run's unified-exec terminals: running ones, and returned ones not yet reclaimed, with their titles and lifecycle state." + listSessionsTopicPointers,
 		outputSchema: listSessionsScriptResultSchema,
-		parameters: Type.Object({}),
+		parameters: listSessionsParameters,
 		async execute(_toolCallId, _params, _signal, _onUpdate, eventCtx) {
 			ctx.ui ??= eventCtx.ui;
 			// Reporting a terminal's exit here counts as direct observation of its
@@ -1594,7 +1593,7 @@ export function activate(
 				}),
 			};
 		},
-	});
+	} satisfies ToolDefinition<typeof listSessionsParameters> & { docTopics(): Readonly<Record<string, string>> });
 
 	return {
 		store: ctx.store,

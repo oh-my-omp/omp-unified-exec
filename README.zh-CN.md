@@ -38,7 +38,7 @@ omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
 面向人的通知、widget、命令标签、omp bash 卡片中的附加说明以及 Tern
 终端 HUD 都遵循 `OMOMP_LANG`（不区分大小写的 `en` 或 `zh`）。未设置或无效时，
 插件使用第一个非空的 `LC_ALL`、`LC_MESSAGES` 或 `LANG`（以 `zh` 开头则使用中文）；
-否则使用英文。本 Pi 兼容插件不读取 `omomp` 文件。命令说明和工具标签在每个会话
+否则使用英文。选择界面语言时，本插件不读取 `omomp` 文件。命令说明和工具标签在每个会话
 注册时解析一次环境变量；通知、widget、渲染器和 HUD 在生成显示文字时解析。
 工具说明、提示词、协议值和面向模型的工具结果保持英文。
 
@@ -79,12 +79,17 @@ HUD 直接读取会话，不保存任何副本。它只在 omp 原生渲染时�
 
 在一个持久的 PTY 会话里运行命令。用于长命令、交互程序（REPL、TUI、`ssh`、`sudo`）、并发计算和开发期 daemon；短的一次性命令用宿主的 `bash`。没有命令截止时间，退出的进程也不会被重启。用 `monitor` 和 `read term://…` 观察会话，用 `write_stdin` 发送输入；输出是渲染后的终端屏幕（见[终端输出](#terminal-output)）。
 
-用 `read xd://exec_command` 查看完整工具说明与 topic 指针。
-插件通过工具自己的 `docTopics()` 提供正文：
+用 `read xd://<tool>` 查看六个工具各自的精简说明与 topic 指针。
+每个工具通过自己的 `docTopics()` 提供正文：
 
 - `xd://exec_command/interactive`：输入字节、输出监控与远程脚本引用。
 - `xd://exec_command/lifecycle`：终端回收与退出唤醒。
 - `xd://exec_command/waiting`：命令生命期、仅等待完成的 monitor 与不消费输出的读取。
+- `xd://write_stdin/input`：原样输入、空输入拒绝、取消与观察到退出。
+- `xd://set_on_exit/wake`：启用、解除与已排队的退出唤醒。
+- `xd://monitor/subscription`：后续输出匹配、取消、提醒与等待输入通知。
+- `xd://kill_session/termination`：信号、唤醒/monitor 取消与终端保留。
+- `xd://list_sessions/inventory`：列表状态、输出读取与退出唤醒的影响。
 
 Markdown 文件随包放在 `fork-features/topics/`；读取 topic 不依赖外部配置扩展。
 不存在的 topic 返回缺失 topic 错误。
@@ -426,7 +431,7 @@ omp-unified-exec:
 
 以上即默认值。`judgePrompt` 是 judge 或 `@smol` 读到的材料；它回答的问题和回答格式是固定的。占位符：`{last_response}`（最终回复）、`{notices}`（agent 将读到的待发通知）和 `{todo}`（目标、各状态项数和未完成项，不可用时为 `(unavailable)`）。`noticeTemplate` 是注入的正文：`{summary}`（`[unified-exec] …` 那一行）、`{items}`（按终端的各行）、`{instruction}`（最后一行）、`{terminal_count}` 和 `{notice_count}`。花括号里不是单个名字时（如 `{ "done": true }`）原样保留。替换只做一遍，插入的文本不会再被展开。面向人的会话记录保持默认排版。
 
-该段先从 `<cwd>/.omp/omomp.{yml,yaml,json,toml}` 读取，再从 agent 目录的 `omomp.*` 读取，第一个有效副本生效；每次停止都重新读取，修改无需重启。未知的键、模式或占位符使该副本无效：警告提示一次，然后使用下一个位置或默认值。
+该段先从 `<cwd>/.omp/omomp.{yml,yaml,json,toml}` 读取，再从 agent 目录的 `omomp.*` 读取，第一个有效副本生效；每次停止都重新读取，修改无需重启。未知的键、模式或占位符使该副本无效：警告提示一次，然后使用下一个位置或默认值。插件自己的配置与判定失败说明使用当前界面语言；字段名、模型标识与外部错误载荷保持原样。
 
 ## 命令
 
@@ -566,6 +571,9 @@ fork-features/
 ├── terminal-lifecycle.ts # returned-terminal TTL, read/reclaim reminders, grace, reclaim, finished-work collection
 ├── stop-config.ts        # `omp-unified-exec` omomp section: stop mode, judge prompt, notice template
 ├── stop-gate.ts          # judge / @smol / todo stop detectors over factory-loaded omp modules
+├── stop-reasons.ts       # structured stop/config reasons; English/Chinese boundary rendering
+├── exec-command-docs.ts  # six tools' lazy documentation providers and topic pointers
+├── topics/               # packaged body-only tool documentation
 ├── monitor-subscription.ts # monitor conditions, batching and reminders as terminal notices
 ├── input-wait.ts         # input prompt detection; input-wait alerts as terminal notices
 ├── log-archive.ts        # seven-day gzip compression of session logs
