@@ -38,7 +38,8 @@ omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
 面向人的通知、widget、命令标签、omp bash 卡片中的附加说明以及 Tern
 终端 HUD 都遵循 `OMOMP_LANG`（不区分大小写的 `en` 或 `zh`）。未设置或无效时，
 插件使用第一个非空的 `LC_ALL`、`LC_MESSAGES` 或 `LANG`（以 `zh` 开头则使用中文）；
-否则使用英文。本 Pi 兼容插件在每次显示时读取环境变量，不读取 `omomp` 文件。
+否则使用英文。本 Pi 兼容插件不读取 `omomp` 文件。命令说明和工具标签在每个会话
+注册时解析一次环境变量；通知、widget、渲染器和 HUD 在生成显示文字时解析。
 工具说明、提示词、协议值和面向模型的工具结果保持英文。
 
 ## 功能

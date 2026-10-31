@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+- Clarify UI language evaluation in both READMEs: command descriptions and tool labels resolve the environment at each session's registration, while notifications, widgets, renderers and the HUD resolve it when generating display text. The environment-only resolver and registered tool behavior are unchanged.
+
 ## 0.14.20 - 2026-10-31
 
 - `exec_command` now owns its `interactive`, `lifecycle` and `waiting` documentation topics through the registered definition's `docTopics()`. Body-only Markdown ships in `fork-features/topics/`, full-description pointers use `xd://exec_command/<topic>`, and remote-script quoting is documented with the input/monitor contract. The waiting topic describes plugin behavior without importing local waiting policies or depending on an external topic registry.

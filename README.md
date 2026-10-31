@@ -72,9 +72,11 @@ Human-facing notifications, widgets, command labels, the omp bash card annotatio
 and the Tern terminal HUD follow `OMOMP_LANG` (`en` or `zh`, case-insensitive).
 When it is unset or invalid, the plugin uses the first non-empty `LC_ALL`,
 `LC_MESSAGES`, or `LANG` value (`zh*` selects Chinese); otherwise it uses English.
-This Pi-compatible plugin reads the environment at each display call and does not
-read an `omomp` file. Tool descriptions, prompts, protocol values, and
-model-facing tool results remain in English.
+This Pi-compatible plugin does not read an `omomp` file. Command descriptions and
+tool labels resolve the environment once when registered for each session;
+notifications, widgets, renderers, and the HUD resolve it when generating their
+display text. Tool descriptions, prompts, protocol values, and model-facing tool
+results remain in English.
 
 ## What it does
 
