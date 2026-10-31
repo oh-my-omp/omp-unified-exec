@@ -28,6 +28,7 @@
 	"files": [
 		"src",
 		"fork-features/*.ts",
+		"fork-features/topics/*.md",
 		"README.md",
 		"LICENSE"
 	],

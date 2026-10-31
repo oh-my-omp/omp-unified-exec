@@ -44,6 +44,7 @@ import { Type, type TUnsafe } from "typebox";
 
 import { type ActivatedExtension, withHostPresentation } from "../fork-features/omp-presentation.ts";
 import { approvalCommand, approveBoundCommand, type CommandApprovalHost } from "../fork-features/command-approval.ts";
+import { execCommandDocumentation, execCommandTopicPointers } from "../fork-features/exec-command-docs.ts";
 import { bindingContext, bindSession, type HostBindingState, recheckBinding } from "../fork-features/session-binding.ts";
 import { MonitorError } from "../fork-features/monitor-subscription.ts";
 import { loadStopConfig } from "../fork-features/stop-config.ts";
@@ -1257,6 +1258,7 @@ export function activate(
 
 	pi.registerTool({
 		name: "exec_command",
+		...execCommandDocumentation,
 		label: tr("Execute command", "执行命令"),
 		...(approvalHost ? {
 			approval: (args: unknown) => approveBoundCommand(approvalHost, binding, args),
@@ -1271,7 +1273,8 @@ export function activate(
 			"Run a command in a PTY for long-running, interactive (REPL, TUI, ssh, sudo), concurrent or daemon work; bash for one-shot commands. No command deadline. Returns session_id if running, else exit_code. " +
 			"A process that exits is never restarted. With a session_id, send input with write_stdin, wait for output or completion with monitor, and read terminal_url (term://) for state. " +
 			"Results show rendered terminal state, not raw bytes: a running result shows unseen history plus the current screen (screen_changed:false when unchanged), a finished one its final screen. terminal_url gives retained history or a full-screen program's screen, /screen the active text, /screen.png colours and styles; raw bytes stay in log_path. " +
-			"Notices name a terminal by session_id and title; they wait while you work and arrive when you stop. A returned terminal stays in list_sessions until reclaimed: an abnormal return is reported at once; 30 minutes after the return or the last read, a never-read terminal gets a read reminder and a read one a reclaim notice, after which it is killed with its background jobs and unlisted unless read within 5 minutes. When your final response shows the task finished, returned terminals are reclaimed silently. term:// stays readable after reclaim.",
+			"Notices name a terminal by session_id and title; they wait while you work and arrive when you stop. A returned terminal stays in list_sessions until reclaimed: an abnormal return is reported at once; 30 minutes after the return or the last read, a never-read terminal gets a read reminder and a read one a reclaim notice, after which it is killed with its background jobs and unlisted unless read within 5 minutes. When your final response shows the task finished, returned terminals are reclaimed silently. term:// stays readable after reclaim." +
+			execCommandTopicPointers,
 		outputSchema: processScriptResultSchema,
 		parameters: Type.Object({
 			cmd: Type.String({ description: "Shell command to execute." }),

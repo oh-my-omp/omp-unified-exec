@@ -64,6 +64,7 @@ A sibling view, indexed by concern:
 | Concern | File(s) |
 |---|---|
 | Tool schemas and orchestration | `src/index.ts` (`exec_command`, `write_stdin`, `set_on_exit`, `monitor`, `kill_session`, `list_sessions`) |
+| Tool-owned `exec_command` topics (`read xd://exec_command/<topic>`) and full-description pointers | `fork-features/exec-command-docs.ts`, `fork-features/topics/*.md`; attached in `src/index.ts`, included by `package.json` `files` |
 | Session lifecycle (spawn, write, kill, log-stream) | `src/session.ts` |
 | Session registry, LRU eviction, shutdown | `src/session-store.ts` |
 | Per-call observation (`CollectResult`: screen, final screen or none) | `src/collect.ts`; produced by `ExecSession.collect` in `src/session.ts` |

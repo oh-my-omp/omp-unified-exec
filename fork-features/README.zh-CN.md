@@ -11,6 +11,7 @@
 | 改动 | 文件 | 原因 | 上游 |
 |---|---|---|---|
 | 包名 `omp-unified-exec` | `package.json`（`name`、`repository`、`homepage`） | omp 以包名命名插件 | 仅 fork |
+| 工具自带的 `exec_command` 文档 topic | `fork-features/exec-command-docs.ts`、`fork-features/topics/*.md`、`src/index.ts`、`package.json` 的 `files` | 注册工具上的 `docTopics()` 通过 `xd://exec_command/{interactive,lifecycle,waiting}` 提供纯 Markdown 正文。完整说明末尾的指针指导读取，呈现包装保留 provider。静态文件随插件发布，不依赖外部 topic 注册表，也不包含本地等待政策。 | 仅 fork |
 | 仅使用环境变量的界面 i18n（`OMOMP_LANG`，然后是 locale 环境变量回退） | `src/i18n.ts`、`src/index.ts`、`fork-features/omp-presentation.ts`、`fork-features/tern-terminal-hud.ts`、`fork-features/terminal-notice.ts`、两个 README | 这个 Pi 兼容 fork 不能依赖启动时的 `omomp-lang` 扩展或 `omomp` 文件；所有面向人的插件界面都遵循启动环境，同时保持模型/协议文本稳定 | 仅 fork |
 | 为 fork 重写的中英文 README：Tern 录屏演示、omp 安装、Tern 终端 HUD、omp 呈现、fork 结构；移除上游的 npm、徽章和维护公告 | `README.md`、`README.zh-CN.md`、`docs/assets/demo.{gif,mp4}`、`docs/assets/demo-lazygit.{gif,mp4}` | fork 的行为和安装方式已经偏离上游 README（npm 包、仅 Pi 的呈现），继续沿用会误导 omp 用户 | 仅 fork |
 | 只支持 omp：非 omp 宿主在扩展 factory 阶段、激活之前被拒绝 | `fork-features/omp-presentation.ts`、`src/index.ts`、`tests/omp-presentation.test.ts`；`package.json` 的 `omp.extensions` | `ExtensionAPI.arktype` 用于识别 omp。具名导出 `activate` 是直接测试工具核心的接缝，不是另一个受支持的宿主入口。 | 仅 fork |
@@ -56,6 +57,12 @@ omp 没有 `agent_settled` 事件，因此 fork 在运行真正结束的 `agent_
 本仓库的 shell 选择跟随宿主（[#63](https://github.com/oh-my-omp/omp-unified-exec/issues/63)）：上游的 `resolveDefaultShell` 在 POSIX 上返回 `bash`，其 `shell` 参数说明也这样写，spawn 选项还记录原始 `shell` 参数。上游对这些地方的改动会在 `src/shell.ts`、`src/index.ts` 和 `src/session.ts` 中以内容冲突的形式到来。解决方法：保留优先级（显式 `shell`、omp `shellPath`、`SHELL`、平台默认值）、在 `buildShellCommand` 之前解析，以及 `ExecSession.shell` 取 `command[0]`；上游对 Windows Git Bash/PowerShell 探测的修复只搬进平台默认值分支，选中的 shell 失败后也绝不增加回退。
 
 六个 PTY 工具面向模型的文本归 fork 所有（[#88](https://github.com/oh-my-omp/omp-unified-exec/issues/88)）。上游对 `src/index.ts` 中这些工具的 `description`、参数注释、`promptSnippet` 或 `promptGuidelines` 的改动会以内容冲突的形式到来。解决方法：保留 fork 的文本，只并入在这里仍然成立的事实，且每条只写一次：参数独有的类型、默认值、范围与互斥约束写进该参数的注释，其余写进描述；不恢复 `promptSnippet` 和 `promptGuidelines`。`exec_command` 描述的前 200 个字符必须继续写明与 `bash` 的分工、没有命令截止时间、返回 `session_id` 还是 `exit_code`，并在完整的词处结束。
+
+`exec_command` 定义还拥有 `docTopics()` 与完整说明末尾的 topic 指针。
+合并注册或呈现改动时保留 provider，并把 `fork-features/topics/*.md`
+保留在包的 `files` 中。omp 升级后，通过真实 `read` 读取已安装插件的三个
+`xd://exec_command/` topic、裸地址的完整说明和一个不存在的 topic；
+已知 topic 必须只返回 Markdown 正文，不存在的 topic 必须报错。
 
 `README.md` 和 `README.zh-CN.md` 归 fork 所有。同步改动到 README 时，保留 fork 的版本，只把在这里仍然成立的上游事实（工具参数、限制、语义）写进两个文件中 fork 对应的章节；两者保持逐节互译，`fork-features/README.md` 和 `fork-features/README.zh-CN.md` 也一样。
 

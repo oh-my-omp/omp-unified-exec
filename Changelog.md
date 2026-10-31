@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+- `exec_command` now owns its `interactive`, `lifecycle` and `waiting` documentation topics through the registered definition's `docTopics()`. Body-only Markdown ships in `fork-features/topics/`, full-description pointers use `xd://exec_command/<topic>`, and remote-script quoting is documented with the input/monitor contract. The waiting topic describes plugin behavior without importing local waiting policies or depending on an external topic registry.
+
 ## 0.14.19 - 2026-10-28
 
 - Model-facing text of the six PTY tools rewritten (`src/index.ts`, #88). omp inlines a device as its description cut at 200 characters plus the parameter schema with comments, so the `exec_command` description now opens with the `bash` split, the absent command deadline and the `session_id`/`exit_code` result; before, the cut fell mid-word ahead of all three. The `write_stdin`, `monitor` and `kill_session` heads also end on a word at the cut. Each rule now lives in one place: parameter-specific defaults, ranges and exclusions in that parameter's comment, everything else in the description. `promptSnippet` and `promptGuidelines` are deleted because omp never reads them; their facts that still matter (shell syntax, rendered output and `term://` paths, `\r` for Enter, monitor coalescing and reminder handling) moved into the descriptions. The six system-prompt sections drop from 1,865 to 1,732 tokens (OMP `countTokens`, `ClaudeV5`). Parameters, defaults and behaviour are unchanged. The e2e test that pinned prompt wording is removed.

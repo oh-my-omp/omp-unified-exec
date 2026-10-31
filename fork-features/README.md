@@ -16,6 +16,7 @@ both register `exec_command` and the other unified-exec tools.
 | Change | Files | Why | Upstream |
 |---|---|---|---|
 | Package name `omp-unified-exec` | `package.json` (`name`, `repository`, `homepage`) | omp names the plugin after the package | Fork-only |
+| Tool-owned `exec_command` documentation topics | `fork-features/exec-command-docs.ts`, `fork-features/topics/*.md`, `src/index.ts`, `package.json` `files` | `docTopics()` on the registered tool supplies plain Markdown through `xd://exec_command/{interactive,lifecycle,waiting}`. Full-description pointers guide reads; presentation preserves the provider. Static files ship with the plugin, without an external topic registry or local waiting policy. | Fork-only |
 | Environment-only UI i18n (`OMOMP_LANG`, then locale environment fallback) | `src/i18n.ts`, `src/index.ts`, `fork-features/omp-presentation.ts`, `fork-features/tern-terminal-hud.ts`, `fork-features/terminal-notice.ts`, both READMEs | The Pi-compatible fork cannot depend on the startup `omomp-lang` extension or an `omomp` file; all human-facing plugin surfaces must follow the launch environment while model/protocol text stays stable | Fork-only |
 | README rewritten for the fork, in English and Chinese: recorded Tern demos, omp install, Tern terminal HUD, omp presentation, fork layout; upstream's npm, badges and maintenance notice removed | `README.md`, `README.zh-CN.md`, `docs/assets/demo.{gif,mp4}`, `docs/assets/demo-lazygit.{gif,mp4}` | The fork's behaviour and installation diverged from upstream's README (npm package, Pi-only presentation), so it misled omp users | Fork-only |
 | Only omp is supported: non-omp hosts are rejected at the extension factory before activation | `fork-features/omp-presentation.ts`, `src/index.ts`, `tests/omp-presentation.test.ts`; `package.json` `omp.extensions` | `ExtensionAPI.arktype` identifies omp. The named `activate` export is the direct tool-core test seam, not another supported host entry point. | Fork-only |
@@ -119,6 +120,13 @@ comment, everything else in the description; do not restore `promptSnippet`
 or `promptGuidelines`. The first 200 characters of the `exec_command`
 description must keep stating the `bash` split, the absent command deadline
 and the `session_id`/`exit_code` result, and end on a word.
+
+The `exec_command` definition also owns `docTopics()` and the topic pointers at
+the end of its full description. Keep the provider when merging registration or
+presentation changes, and keep `fork-features/topics/*.md` in the package's
+`files`. On omp upgrades, read the installed plugin's three `xd://exec_command/`
+topics, its bare full description, and an unknown topic through real `read`;
+known topics must return body-only Markdown and the unknown one an error.
 
 `README.md` and `README.zh-CN.md` are fork-owned. When a sync touches the
 README, keep the fork's and carry over only upstream facts that still hold here

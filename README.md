@@ -191,6 +191,16 @@ command deadline, and nothing restarts a process that exits. Observe a session
 with `monitor` and `read term://…`, and send input with `write_stdin`; its output is the
 rendered terminal screen (see [Terminal output](#terminal-output)).
 
+Read `xd://exec_command` for the complete tool description and its topic pointers.
+The plugin supplies the topic bodies through the tool's `docTopics()`:
+
+- `xd://exec_command/interactive`: input bytes, monitoring output and remote-script quoting.
+- `xd://exec_command/lifecycle`: terminal reclaim and exit wakes.
+- `xd://exec_command/waiting`: command lifetime, completion-only monitors and non-consuming reads.
+
+The Markdown files ship in `fork-features/topics/`; topic reads need no external
+configuration extension. An unknown topic returns a missing-topic error.
+
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `cmd` | string | — | Shell command. Required. |

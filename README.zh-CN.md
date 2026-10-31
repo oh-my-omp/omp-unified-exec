@@ -78,6 +78,16 @@ HUD 直接读取会话，不保存任何副本。它只在 omp 原生渲染时�
 
 在一个持久的 PTY 会话里运行命令。用于长命令、交互程序（REPL、TUI、`ssh`、`sudo`）、并发计算和开发期 daemon；短的一次性命令用宿主的 `bash`。没有命令截止时间，退出的进程也不会被重启。用 `monitor` 和 `read term://…` 观察会话，用 `write_stdin` 发送输入；输出是渲染后的终端屏幕（见[终端输出](#terminal-output)）。
 
+用 `read xd://exec_command` 查看完整工具说明与 topic 指针。
+插件通过工具自己的 `docTopics()` 提供正文：
+
+- `xd://exec_command/interactive`：输入字节、输出监控与远程脚本引用。
+- `xd://exec_command/lifecycle`：终端回收与退出唤醒。
+- `xd://exec_command/waiting`：命令生命期、仅等待完成的 monitor 与不消费输出的读取。
+
+Markdown 文件随包放在 `fork-features/topics/`；读取 topic 不依赖外部配置扩展。
+不存在的 topic 返回缺失 topic 错误。
+
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `cmd` | string | — | Shell 命令。必填。 |
