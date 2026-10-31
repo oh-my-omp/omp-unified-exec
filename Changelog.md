@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+## 0.14.21 - 2026-10-31
+
 - Clarify UI language evaluation in both READMEs: command descriptions and tool labels resolve the environment at each session's registration, while notifications, widgets, renderers and the HUD resolve it when generating display text. The environment-only resolver and registered tool behavior are unchanged.
 
 ## 0.14.20 - 2026-10-31
