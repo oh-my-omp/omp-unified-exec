@@ -543,6 +543,8 @@ function makeHarness(t: TestContext, initiallyNative = false, ModeClass: new () 
 		},
 		emit,
 		get renders() { return renders; },
+		/** Listeners this activation holds in the process-global native-rendering set. */
+		get nativeListenerCount() { return nativeListeners.size; },
 		/** The terminals segment omp's pill holds this frame. */
 		get segment() {
 			const found = segments();
@@ -594,6 +596,23 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		await h.emit("session_start", false);
 		assert.equal(h.mounted, false, "a headless session has no segment");
 		await h.emit("session_start");
+		assert.equal(h.mounted, true);
+	});
+
+	it("holds its native-rendering listener only for a session period, so a disposed session stays collectable", async (t) => {
+		const h = makeHarness(t);
+		h.spawn();
+		assert.equal(h.nativeListenerCount, 0, "mounting subscribes nothing before a session starts");
+		await h.emit("session_start");
+		assert.equal(h.nativeListenerCount, 1);
+		await h.emit("session_shutdown");
+		assert.equal(h.nativeListenerCount, 0, "shutdown (including an idle park) releases the process-global listener");
+		h.setNative(true);
+		assert.equal(h.mounted, false, "an ended session period no longer reacts to native rendering");
+		await h.emit("session_start");
+		assert.equal(h.nativeListenerCount, 1, "the next session period subscribes again");
+		h.setNative(false);
+		h.setNative(true);
 		assert.equal(h.mounted, true);
 	});
 

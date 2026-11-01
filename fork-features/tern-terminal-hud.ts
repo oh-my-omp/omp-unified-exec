@@ -973,13 +973,19 @@ export function mountTerminalHud(pi: ExtensionAPI, store: SessionStore, host: Te
 		pillsRegistry.decorate = provider.decorate;
 	};
 
-	host.native.onNativeRenderingChange(sync);
+	// The native-rendering listener set is process-global: a listener left behind
+	// keeps this activation, and through it the disposed (e.g. parked) session,
+	// reachable for the life of the process. Subscribe for each session period only.
+	let unsubscribeNative: (() => void) | undefined;
 	pi.on("session_start", async (_event, eventCtx) => {
 		deactivate();
 		ui = eventCtx.hasUI ? eventCtx.ui : undefined;
+		unsubscribeNative ??= host.native.onNativeRenderingChange(sync);
 		sync();
 	});
 	pi.on("session_shutdown", async () => {
+		unsubscribeNative?.();
+		unsubscribeNative = undefined;
 		deactivate();
 		ui = undefined;
 	});
