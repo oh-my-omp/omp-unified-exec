@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+## 0.14.23 - 2026-11-01
+
 - The Tern HUD no longer keeps every finished session alive. Each activation (one per main session and per subagent) used to add a listener to omp's process-global native-rendering set at load and never remove it; the listener's closure reached the activation's state and `pi`, so every disposed subagent session, including idle-parked ones, stayed in memory until omp exited. The listener now lives from `session_start` to `session_shutdown` and resubscribes on the next `session_start`. Qualified on macOS arm64 with Bun 1.4.4 and omp 18.14.2: `OMOMP_LANG=en npm test` passed 415 tests (5 skips); real `omp --no-extensions -e <plugin>` runs dispatched four `task:low` subagents with a 20 s idle TTL, and after park plus forced GC a `WeakRef` to each subagent `AgentSession` read 4/4 alive with 0.14.22 and 0/4 with this change, also with the full omp-config extension and plugin set loaded.
 
 ## 0.14.22 - 2026-10-31
