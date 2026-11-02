@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+- `tests/exec-init.test.ts` builds its expected `exec.initFile` paths from a real temporary directory, so the path-resolution case also holds on Windows, where `path.resolve` adds a drive letter that `join("/", "proj")` lacks (#92). The same Windows CI run passed the Git Bash case that sources an init file from a `C:\…` path.
+
 ## 0.14.27 - 2026-11-02
 
 - New native plugin setting `exec.initFile` (string) (#92): a POSIX shell script that every `exec_command` shell sources before running `cmd`, so presets such as `export NAME=value` and command overrides such as `alias omp='omp --hide-thinking'` reach `exec_command` terminals only, not omp's `bash` tool. The user value is set in `/settings` → Plugins or with `omp plugin config set`; a project's `.omp/plugin-overrides.json` value replaces it, relative paths resolve against the calling session's cwd, and a blank value turns it off. With a value, the shell sources the file, stops with the file's status if it is nonzero, and then runs `cmd` through `eval` (bash also gets `shopt -s expand_aliases`), because zsh parses a whole `-c` string before running it and would not expand aliases the file defines. A missing or non-regular file, a non-string value, unreadable settings or a shell other than `sh`/`bash`/`dash`/`ash`/`ksh`/`zsh` fails the call before anything runs. Results, listings, notices and approval keep showing `cmd` as given; approval does not inspect the file. omp's POSIX-shell test moved from `fork-features/command-approval.ts` to `src/shell.ts`, shared by both (`fork-features/exec-init.ts`, `runExecCommand` in `src/index.ts`, `tests/exec-init.test.ts`).

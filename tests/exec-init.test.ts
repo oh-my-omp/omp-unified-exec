@@ -155,9 +155,10 @@ describe("exec.initFile", () => {
 
 	it("resolves ~ to the home directory and other relative paths against the session cwd", () => {
 		const home = homedir();
-		assert.equal(resolveInitPath("~", "/proj", home), home);
-		assert.equal(resolveInitPath("~/omp/init.sh", "/proj", home), join(home, "omp", "init.sh"));
-		assert.equal(resolveInitPath("tools/init.sh", join("/", "proj"), home), join("/", "proj", "tools", "init.sh"));
-		assert.equal(resolveInitPath("~user/init.sh", join("/", "proj"), home), join("/", "proj", "~user", "init.sh"));
+		const cwd = tempRoot();
+		assert.equal(resolveInitPath("~", cwd, home), home);
+		assert.equal(resolveInitPath("~/omp/init.sh", cwd, home), join(home, "omp", "init.sh"));
+		assert.equal(resolveInitPath("tools/init.sh", cwd, home), join(cwd, "tools", "init.sh"));
+		assert.equal(resolveInitPath("~user/init.sh", cwd, home), join(cwd, "~user", "init.sh"));
 	});
 });
