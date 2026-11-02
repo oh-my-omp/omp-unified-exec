@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+## 0.14.29 - 2026-11-02
+
 - The six tools are top-level omp tools (#93). omp mounts an extension tool registered without `loadMode` as a discoverable `xd://` device, so the model could only call `exec_command` and the others by writing a JSON string to `xd://<tool>` through `write`. The omp registration wrapper (`presentOnOmp` in `fork-features/omp-presentation.ts`) now registers every tool with `loadMode: "essential"`; `read xd://<tool>` and the `xd://<tool>/<topic>` topics still resolve. The rule that the first 200 characters of the `exec_command` description carry its essentials, which existed only because omp cuts device descriptions at 200 characters, and its requalification step and test assertion are removed.
   Verified with omp 18.15.0 against the working copy (`--no-extensions -e src/index.ts`): `get_state` `dumpTools` listed all six tools and the system prompt had no device section for them, where the installed 0.14.28 listed none of them and inlined all six as devices; in `--mode json -p` with `opencode-go/deepseek-v4.1-flash`, the model's call arrived as `tool_execution_start` `toolName: "exec_command"` with `{"cmd":"echo native-mount-ok","title":"probe"}` and returned `exit_code: 0`.
 
