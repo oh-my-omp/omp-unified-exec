@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+## 0.14.30 - 2026-11-02
+
 - `monitor` has a judge mode (#95). `judge` states an intent and `judge_interval_ms` (default 60 seconds) sets the time between judgments; each interval omp's judge role chain answers whether the current visible screen meets the intent, judging only screens that differ from the last judged one and from the one shown when the monitor started. Each met screen is a counted `monitor_judge_match` return quoting that screen; a failed judgment (no judge model, an error, no choice, 30 s without an answer) sends `monitor_judge_failed` and ends the monitor; starting without a judge model returns `judge_unavailable`. The monitor status in the tool result and `list_sessions` reports `watch` (`end`, `regex` with its condition, `judge` with intent and `interval_ms`) instead of `condition`, and notice bodies carry the same `watch`.
   Verified with omp 18.16.0 against the working copy and `opencode-go/deepseek-v4.1-flash`: `judge` with `condition` returned `invalid_judge`, `judge_interval_ms: 0` returned `invalid_judge_interval_ms`, `list_sessions` showed `[monitor 0/1 judge="the service is ready to accept work" every=10s …]`; on a script printing "starting three worker processes..." and 30 s later "All workers joined the queue; incoming jobs are now being dispatched.", the 10 s judge monitor stayed silent on the first screen and delivered one `monitor_judge_match` quoting the second, which started a turn.
 
