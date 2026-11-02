@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+## 0.14.28 - 2026-11-02
+
 - `tests/exec-init.test.ts` builds its expected `exec.initFile` paths from a real temporary directory, so the path-resolution case also holds on Windows, where `path.resolve` adds a drive letter that `join("/", "proj")` lacks (#92). The same Windows CI run passed the Git Bash case that sources an init file from a `C:\…` path.
 
 ## 0.14.27 - 2026-11-02
