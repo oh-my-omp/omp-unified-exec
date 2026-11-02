@@ -921,9 +921,10 @@ export async function loadTernHudHost(): Promise<TernHudHost> {
  * the store holds a session, and the ANSI TUI never sees it. A segment click
  * opens the Terminals view; Open replaces it with the session's terminal
  * page, whose Back reopens the view on the same session. At most one of them
- * is open.
+ * is open. `store` is read at each session start and open: the store belongs
+ * to the runtime the activation serves then.
  */
-export function mountTerminalHud(pi: ExtensionAPI, store: SessionStore, host: TernHudHost, kill: KillSession): void {
+export function mountTerminalHud(pi: ExtensionAPI, store: () => SessionStore, host: TernHudHost, kill: KillSession): void {
 	let ui: ExtensionContext["ui"] | undefined;
 	let provider: SegmentProvider | undefined;
 	let sheetOpen = false;
@@ -937,14 +938,14 @@ export function mountTerminalHud(pi: ExtensionAPI, store: SessionStore, host: Te
 			while (ui === host) {
 				const result = await host.custom<SheetResult>(
 					(tui, _theme, _keybindings, done) =>
-						new TerminalsSheet(store, () => tui.requestRender(), selected, done, kill),
+						new TerminalsSheet(store(), () => tui.requestRender(), selected, done, kill),
 					{ overlay: true },
 				);
 				if (result.kind === "closed" || ui !== host) return;
 				selected = result.id;
 				await host.custom<void>(
 					(tui, _theme, _keybindings, done) =>
-						new TerminalPage(store, result.id, () => tui.requestRender(), () => done(), kill),
+						new TerminalPage(store(), result.id, () => tui.requestRender(), () => done(), kill),
 					{ overlay: true },
 				);
 			}
@@ -968,7 +969,7 @@ export function mountTerminalHud(pi: ExtensionAPI, store: SessionStore, host: Te
 			return;
 		}
 		if (provider) return;
-		provider = new SegmentProvider(store, () => void openSheet());
+		provider = new SegmentProvider(store(), () => void openSheet());
 		wrapHudPills(host.pills);
 		pillsRegistry.decorate = provider.decorate;
 	};

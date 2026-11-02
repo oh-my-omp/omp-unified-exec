@@ -424,7 +424,12 @@ export function buildNoticeDisplayMessage(value: unknown): string {
 	}
 }
 
-export type NoticeOutcome = "delivered" | "dropped";
+/**
+ * `withheld`: not sent because the agent's work is finished and the batch held
+ * only lifecycle reminders, which must not start a turn; the lifecycle then
+ * does silently what the reminder asked of the agent.
+ */
+export type NoticeOutcome = "delivered" | "dropped" | "withheld";
 
 /**
  * The terminal lifecycle's own reminders, as opposed to follow-ups the agent
@@ -485,10 +490,16 @@ interface Pending {
 }
 
 export interface NoticeDispatcherOptions {
-	/** Deliver one follow-up that starts a turn (pi.sendMessage wrapper). May throw. */
+	/** Deliver one follow-up that starts a turn (pi.sendMessage wrapper). May throw or reject. */
 	send: (message: NoticeMessage) => void | Promise<void>;
-	/** Stop decisions; without one every notice is delivered with the default template. */
-	gate?: NoticeGate;
+	/** The current stop decisions; none delivers every notice with the default template. */
+	gate?: () => NoticeGate | undefined;
+	/**
+	 * Whether the agent's host considers its work finished (an adopted
+	 * subagent, idle or parked): lifecycle reminders alone then never start a
+	 * turn and are withheld; with another notice they go out together.
+	 */
+	finished?: () => boolean;
 	/** Notices submitted within this window share one follow-up. */
 	debounceMs?: number;
 	onSendError?: (error: unknown) => void;
@@ -517,9 +528,12 @@ type HostPhase =
  * delivery after a stop with a final response, the gate decides whether that
  * response finished the work; if so, every returned terminal is reclaimed and
  * the notices about terminals the lifecycle no longer owns are dropped, once,
- * and the rest are delivered. A failed send keeps notices pending for the next
- * flush, which safe boundaries (tool end, a settled run, the lifecycle's
- * minute sweep) trigger — never a self-rescheduling loop.
+ * and the rest are delivered. For an agent whose host considers it finished
+ * (an adopted subagent), a batch of lifecycle reminders alone is withheld
+ * instead, so routine housekeeping never wakes it. A failed send keeps
+ * notices pending for the next flush, which safe boundaries (tool end, a
+ * settled run, the lifecycle's minute sweep) trigger — never a
+ * self-rescheduling loop.
  */
 export class NoticeDispatcher {
 	private pending = new Map<string, Pending>();
@@ -617,10 +631,16 @@ export class NoticeDispatcher {
 	/** Deliver everything pending if the host is stopped. Safe from any boundary; a send or decision in flight defers the rest. */
 	flush(): void {
 		if (this.stopped || this.inFlight || this.phase.kind !== "stopped") return;
-		const gate = this.opts.gate;
+		const gate = this.opts.gate?.();
 		const config = gate?.config() ?? DEFAULT_STOP_CONFIG;
 		this.dropWhere((entry) => !entry.current() || (config.mode === "off" && isLifecycleNotice(entry.notice.body.kind)));
 		if (this.pending.size === 0) return;
+		if (this.opts.finished?.() && [...this.pending.values()].every((entry) => isLifecycleNotice(entry.notice.body.kind))) {
+			const withheld = [...this.pending.values()];
+			this.pending = new Map();
+			for (const entry of withheld) for (const settle of entry.settle) settle("withheld");
+			return;
+		}
 		const stop = this.phase.stop;
 		switch (stop.kind) {
 			case "deciding":

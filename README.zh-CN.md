@@ -359,13 +359,13 @@ whiptail/dialog 前端到了 PTY 上只是普通的绘制（备用屏、隐藏�
 - **异常返回**（非零退出、信号、启动/运行时失败）立即发送一条 `abnormal_return` 通知，读没读过都发。`kill_session`、HUD 或 `/unified-exec-sessions` 的 kill 算正常结束。
 - **读取**从返回起计：一次完整的 `read term://…`（文本或 `/screen.png`），或一次已定稿、展示了已返回终端的 `write_stdin`/`kill_session` 结果（shell 已退出时的 `exec_command` 结果也算）。出错或取消的结果不算。`list_sessions`、`monitor` 的 End 和唤醒只报告状态，不算读取。
 - 返回或最近一次读取**30 分钟**后：
-  - 从未读过：发一条 `unread` 通知；检查会一直保留终端到被读（只有[完成的工作](#finished-work)会回收未读终端）；
+  - 从未读过：发一条 `unread` 通知；检查会一直保留终端到被读（只有[完成的工作](#finished-work)会回收未读终端；[已完成的子 agent](#finished-subagents-and-omps-idle-park) 的终端不发提醒，直接回收）；
   - 读过：发一条 `reclaim_due` 通知，进入 **5 分钟反悔期**。反悔期内读取会重新开始 30 分钟；否则回收。
 - **回收**结束终端进程组里剩下的一切——Linux 上仍持有终端的后台任务，以及 macOS 上终端关闭后仍在运行的任务（SIGTERM，2 秒后 SIGKILL）——把终端从 `list_sessions` 和 HUD 中移除，并发送一条 `reclaimed` 通知。同一次检查回收的终端共用一条后续消息。`term://` 地址和 `log_path` 仍可读。进程结束不了的终端保留，下次检查再试（Windows 上根进程已退出的进程树无法触及）。
 - **检查**每分钟一次，所以每一步最多晚一分钟。
 - 达到 64 个会话上限时的 **LRU 淘汰**会发一条注明上限的 `reclaimed` 通知。
 - **完成的工作**立即回收全部已返回终端，读没读过都回收，不发通知。见[完成的工作](#finished-work)。
-- 会话关闭先停止生命周期再结束终端，关闭造成的 kill 不发通知。
+- 会话关闭先停止生命周期再结束终端，关闭造成的 kill 不发通知。omp 停放（park）空闲子 agent 不算会话关闭：见[已完成的子 agent](#finished-subagents-and-omps-idle-park)。
 
 <a id="terminal-notices"></a>
 
@@ -398,7 +398,7 @@ omp 用 `session_stop` 报告主 agent 的最终停止，并带上它的最后�
 - **已完成：**立即回收全部已返回的终端，读没读过都回收，不发 `reclaimed` 通知；待发通知中关于已消失终端的那些被丢弃。运行中的终端及其通知保持原样，同一次停止中之后到达的通知照常送达。
 - **未完成，或无法判定：**全部通知照常送达。
 
-判定期间开始的运行会作废这次判定，通知等到那次运行停下。子 agent、被中止的运行和等待后台工作的运行没有最终回复，从不判定。
+判定期间开始的运行会作废这次判定，通知等到那次运行停下。子 agent、被中止的运行和等待后台工作的运行没有最终回复，从不判定；任务已完成的子 agent 按[已完成的子 agent](#finished-subagents-and-omps-idle-park)处理。
 
 omomp 中 `omp-unified-exec` 段的 `stop` 选择判定方式：
 
@@ -432,6 +432,17 @@ omp-unified-exec:
 以上即默认值。`judgePrompt` 是 judge 或 `@smol` 读到的材料；它回答的问题和回答格式是固定的。占位符：`{last_response}`（最终回复）、`{notices}`（agent 将读到的待发通知）和 `{todo}`（目标、各状态项数和未完成项，不可用时为 `(unavailable)`）。`noticeTemplate` 是注入的正文：`{summary}`（`[unified-exec] …` 那一行）、`{items}`（按终端的各行）、`{instruction}`（最后一行）、`{terminal_count}` 和 `{notice_count}`。花括号里不是单个名字时（如 `{ "done": true }`）原样保留。替换只做一遍，插入的文本不会再被展开。面向人的会话记录保持默认排版。
 
 该段先从 `<cwd>/.omp/omomp.{yml,yaml,json,toml}` 读取，再从 agent 目录的 `omomp.*` 读取，第一个有效副本生效；每次停止都重新读取，修改无需重启。未知的键、模式或占位符使该副本无效：警告提示一次，然后使用下一个位置或默认值。插件自己的配置与判定失败说明使用当前界面语言；字段名、模型标识与外部错误载荷保持原样。
+
+<a id="finished-subagents-and-omps-idle-park"></a>
+
+### 已完成的子 agent 与 omp 的空闲停放
+
+omp 的任务执行器收养（adopt）子 agent 时，它的任务已经完成，结果已交回父 agent。此后子 agent 空闲满 `task.agentIdleTtlMs`（默认七分钟），omp 就停放（park）它：释放它的会话，等有消息送达时再以新会话唤醒（revive）它。插件为此不设自己的计时器，只读取 omp 的 agent 注册表和生命周期。
+
+- **常规通知从不为已完成的子 agent 启动轮次**，无论它空闲还是已停放：只含 `abnormal_return`、`unread`、`reclaim_due` 或 `reclaimed` 通知的一批被扣下不发。通知本来要 agent 做的事静默完成：`unread` 或 `reclaim_due` 的终端立即回收。与 agent 必须处理的通知同批时，它们随之一起送达。
+- **停放保留终端。** 停放引发的 `session_shutdown` 只结束这次激活，不结束终端：运行中的命令、monitor、`on_exit` 唤醒、等待输入提醒和 30 分钟生命周期都照常继续。
+- **agent 必须处理的通知会唤醒它。** 已停放子 agent 的 `exit_wake`、`monitor_match`、`monitor_end`、`monitor_silent` 或 `input_wait` 通知会请 omp 唤醒它（`ensureLive`），然后送达唤醒后的会话。因其他原因（父 agent 发来消息）被唤醒时，它同样接回原来的终端：`session_id`、`term://` 地址和日志都不变。
+- **终端随 agent 结束：** omp 释放或结束已停放的子 agent 时（包括主会话结束时），它的终端按关闭处理（SIGTERM，1 秒后 SIGKILL），主会话的关闭会等这一步完成。
 
 ## 命令
 
@@ -471,7 +482,7 @@ LIFECYCLE_SWEEP_MS           = 60_000 (lifecycle check interval)
 - **shell 退出与终端关闭：**会话一直运行到其终端关闭。在 shell 退出后仍存活并持有 PTY 的后代进程（例如 `nohup` 或忽略 SIGHUP 的任务）会让终端保持打开；这类结果会带一条 `note`，说明如何把它分离出去（`setsid cmd >log 2>&1 </dev/null &`），运行中会话小部件会把该会话标为 `terminal held`。此时 `kill_session`、回收和关闭仍向 shell 的进程组发信号，仍在组内的后代会被结束；已离开该组的（`setsid`）不会。
 - **终端已关闭**不会让宿主崩溃；写入时报告 `failure_message`。
 - **Esc** 中断当前等待，但会话继续运行。
-- **关闭**时向每个会话发送 SIGTERM，1 秒后对仍存活的发送 SIGKILL。仍处于 150 ms 启动宽限期内的 `exec_command` 不会拿到 `session_id`：它等关闭结束进程后报告这次退出（进程撑过 SIGKILL 等待时报告 `running: true` 与 `exit not confirmed`），因此下一次 `session_start` 之后不会再看到该会话。其余终端已被关闭释放的进行中调用返回空输出，进程状态按实际报告：已退出，或在 SIGKILL 生效前仍在运行。
+- **关闭**时向每个会话发送 SIGTERM，1 秒后对仍存活的发送 SIGKILL。omp 停放空闲子 agent 不算关闭；它的终端一直保留到 omp 释放该 agent（见[已完成的子 agent](#finished-subagents-and-omps-idle-park)）。仍处于 150 ms 启动宽限期内的 `exec_command` 不会拿到 `session_id`：它等关闭结束进程后报告这次退出（进程撑过 SIGKILL 等待时报告 `running: true` 与 `exit not confirmed`），因此下一次 `session_start` 之后不会再看到该会话。其余终端已被关闭释放的进行中调用返回空输出，进程状态按实际报告：已退出，或在 SIGKILL 生效前仍在运行。
 - **LRU 淘汰**在达到 64 个会话时进行，淘汰最旧的非保护会话，优先选已退出的；最近使用的 8 个永不淘汰。被这样淘汰的受管终端会收到一条注明上限的 `reclaimed` 通知。
 - **观察**按会话串行执行；流式更新、`read term://`、monitor 与 Tern HUD 不消费普通观察。冻结终端资源的生命周期不受会话存储成员关系限制。
 - **日志**放在临时目录（`/tmp` 或 `%TEMP%`），文件名为 `pi-unified-exec-<omp pid>-<会话 id>-<随机>.log`。本包从不删除日志内容。最后写入超过七天的日志，在确认写入方已不存在后，会被替换为标准 gzip 文件 `<log_path>.gz`，修改时间保持不变；写入方不存在指：本进程已关闭它，文件名中的 omp pid 已不存在，或它最后写入于本次开机之前（不带 pid 的旧文件名只按最后一条判断）。omp 在扩展加载时检查一次，之后每天检查一次。在 Linux 上用 `zcat <文件>` 查看归档；在 macOS 上用 `gzcat <文件>` 或 `zcat < <文件>`，因为 macOS 的 `zcat` 接收路径参数时会去找 `<文件>.Z`。请用不会执行控制序列的查看器查看原始 PTY 日志，不要用 `cat`。
@@ -561,6 +572,7 @@ src/
 fork-features/
 ├── omp-presentation.ts   # omp host detection, bash-renderer delegation, theme appearance, shellPath setting
 ├── command-approval.ts   # built-in bash approval port and factory-loaded host helpers
+├── agent-park.ts         # omp's agent registry/lifecycle reader; parked subagents' terminal runtimes
 ├── session-binding.ts    # activation-local AgentSession identity for approval settings and stop detectors
 ├── omp-tools.d.ts        # types of the omp modules loaded at runtime
 ├── tern-terminal-hud.ts  # terminals segment in omp's pill, Terminals view, terminal page

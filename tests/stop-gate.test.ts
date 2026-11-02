@@ -57,7 +57,7 @@ function harness(config: StopConfig = DEFAULT_STOP_CONFIG): Harness {
 		tracked: (id) => h.tracked.has(id),
 		verdict: () => {},
 	};
-	Object.assign(h, { notices: new NoticeDispatcher({ send: (message) => { h.sent.push(message); }, gate, setTimeoutFn: () => 1, clearTimeoutFn: () => {} }) });
+	Object.assign(h, { notices: new NoticeDispatcher({ send: (message) => { h.sent.push(message); }, gate: () => gate, setTimeoutFn: () => 1, clearTimeoutFn: () => {} }) });
 	return h;
 }
 
@@ -161,6 +161,20 @@ describe("notice delivery around runs", () => {
 		void h.notices.submit(match(1));
 		h.notices.flush();
 		assert.match(h.sent[0].content, /^1 for 1: Do not reply to the user/);
+	});
+
+	it("a finished agent gets lifecycle reminders only together with a notice it must handle", async () => {
+		const sent: NoticeMessage[] = [];
+		const notices = new NoticeDispatcher({ send: (message) => { sent.push(message); }, finished: () => true, setTimeoutFn: () => 1, clearTimeoutFn: () => {} });
+		const alone = notices.submit(unread(1));
+		notices.flush();
+		assert.equal(await alone, "withheld" satisfies NoticeOutcome);
+		assert.equal(sent.length, 0, "no turn for routine housekeeping");
+		const reminder = notices.submit(unread(2));
+		const wake = notices.submit(match(3));
+		notices.flush();
+		assert.deepEqual([await reminder, await wake], ["delivered", "delivered"]);
+		assert.deepEqual(sent[0].details.notices.map((n) => n.kind), ["unread", "monitor_match"]);
 	});
 });
 

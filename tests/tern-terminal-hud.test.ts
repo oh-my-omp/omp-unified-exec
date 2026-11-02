@@ -497,7 +497,7 @@ function makeHarness(t: TestContext, initiallyNative = false, ModeClass: new () 
 		},
 	};
 	const pills = parseInteractiveModeModule({ InteractiveMode: ModeClass });
-	mountTerminalHud(pi, store, { native, pills }, async (id) => {
+	mountTerminalHud(pi, () => store, { native, pills }, async (id) => {
 		killCalls.push(id);
 		const session = store.get(id);
 		assert.ok(session, "kill targets a stored real session");

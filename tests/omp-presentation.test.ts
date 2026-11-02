@@ -363,7 +363,7 @@ describe("host presentation activation", () => {
 		const factory = withHostPresentation((host): ActivatedExtension => {
 			activations++;
 			host.registerTool(definition);
-			return { store: new SessionStore({ maxSessions: 10, lruProtectedCount: 2 }), kill: async () => false };
+			return { store: () => new SessionStore({ maxSessions: 10, lruProtectedCount: 2 }), kill: async () => false };
 		});
 		assert.throws(() => factory(api), {
 			name: "Error",
@@ -411,7 +411,7 @@ describe("host presentation activation", () => {
 		const activate = withHostPresentation((host): ActivatedExtension => {
 			activations++;
 			host.registerTool(definition);
-			return { store: new SessionStore({ maxSessions: 10, lruProtectedCount: 2 }), kill: async () => false };
+			return { store: () => new SessionStore({ maxSessions: 10, lruProtectedCount: 2 }), kill: async () => false };
 		});
 		const result = activate(api);
 		assert.ok(result instanceof Promise);

@@ -593,7 +593,9 @@ background processes may still hold the terminal — or the terminal closes.
   `monitor` End and wakes report status only and do not count.
 - **30 minutes** after the return or the latest read:
   - never read: one `unread` notice; the checks keep the terminal until it is
-    read (only [finished work](#finished-work) reclaims it unread);
+    read (only [finished work](#finished-work) reclaims it unread; a
+    [finished subagent's](#finished-subagents-and-omps-idle-park) is reclaimed
+    instead of reminded);
   - read: a `reclaim_due` notice and a **5-minute grace**. A read during the
     grace starts a new 30 minutes; otherwise the terminal is reclaimed.
 - **Reclaim** kills whatever is left of the terminal's process group —
@@ -610,7 +612,8 @@ background processes may still hold the terminal — or the terminal closes.
 - **Finished work** reclaims every returned terminal at once, read or not,
   without notices. See [Finished work](#finished-work).
 - Session shutdown stops the lifecycle before ending terminals; its kills send
-  no notices.
+  no notices. omp parking an idle subagent is not a shutdown: see
+  [Finished subagents](#finished-subagents-and-omps-idle-park).
 
 ### Terminal notices
 
@@ -663,7 +666,8 @@ decides once whether that response means the task is completely finished:
 
 A run that starts during the decision discards it, and the notices wait for
 that run's stop. Subagents, aborted runs and runs awaiting background work
-have no final response and are never decided.
+have no final response and are never decided; a subagent whose task is
+finished follows [Finished subagents](#finished-subagents-and-omps-idle-park).
 
 `stop` in the `omp-unified-exec` section of omomp picks the detector:
 
@@ -714,6 +718,33 @@ placeholder makes a copy invalid: a warning names it once and the next
 location, or the defaults, apply. Owned configuration and detector failure explanations
 use the current UI language; field names, model identifiers and external error
 payloads remain unchanged.
+
+### Finished subagents and omp's idle park
+
+A subagent's task is finished once omp's task executor adopts it, after the
+result went back to its parent. omp then parks it after `task.agentIdleTtlMs`
+of idleness (seven minutes by default): it disposes the subagent's session
+and revives it, as a new session, when a message reaches it. The plugin keeps
+no timer of its own for this; it reads omp's agent registry and lifecycle.
+
+- **Routine notices never start a turn** in a finished subagent, idle or
+  parked: a batch holding only `abnormal_return`, `unread`, `reclaim_due` or
+  `reclaimed` notices is withheld. What it asked of the agent happens
+  silently: an `unread` or `reclaim_due` terminal is reclaimed at once.
+  Together with a notice the agent must handle, they are delivered with it.
+- **The park keeps the terminals.** Its `session_shutdown` ends the
+  activation, not the terminals: running commands, monitors, `on_exit`
+  wakes, input-wait alerts and the 30-minute lifecycle carry on.
+- **Notices the agent must handle revive it.** An `exit_wake`,
+  `monitor_match`, `monitor_end`, `monitor_silent` or `input_wait` notice for
+  a parked subagent asks omp to revive it (`ensureLive`), then goes to the
+  revived session. A revive for any other reason (a message from its parent)
+  resumes the same terminals as well: their `session_id`s, `term://`
+  addresses and logs are unchanged.
+- **The terminals end with the agent:** when omp releases or kills the
+  parked subagent (including when the main session ends), its terminals get
+  the shutdown treatment (SIGTERM, SIGKILL after 1 s), and the main session's
+  shutdown waits for that.
 
 ## Command
 
@@ -776,6 +807,8 @@ LIFECYCLE_SWEEP_MS           = 60_000 (lifecycle check interval)
 - **A closed terminal** never crashes the host; writes report `failure_message`.
 - **Esc** breaks the current wait but leaves the session running.
 - **Shutdown** sends SIGTERM to every session and SIGKILLs survivors after 1s.
+  omp parking an idle subagent is not a shutdown; its terminals stay until omp
+  releases the agent ([Finished subagents](#finished-subagents-and-omps-idle-park)).
   An `exec_command` still inside its 150 ms start-up grace never gets a
   `session_id`: it waits for the shutdown to end the process and reports that
   exit (or `running: true` with `exit not confirmed` if the process outlives
@@ -896,6 +929,7 @@ src/
 fork-features/
 ├── omp-presentation.ts   # omp host detection, bash-renderer delegation, theme appearance, shellPath setting
 ├── command-approval.ts   # built-in bash approval port and factory-loaded host helpers
+├── agent-park.ts         # omp's agent registry/lifecycle reader; parked subagents' terminal runtimes
 ├── session-binding.ts    # activation-local AgentSession identity for approval settings and stop detectors
 ├── omp-tools.d.ts        # types of the omp modules loaded at runtime
 ├── tern-terminal-hud.ts  # terminals segment in omp's pill, Terminals view, terminal page

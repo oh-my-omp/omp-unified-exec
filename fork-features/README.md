@@ -38,6 +38,7 @@ both register `exec_command` and the other unified-exec tools.
 | Session logs carry the owner omp pid (`pi-unified-exec-<pid>-<sid>-<hex>.log`); a log last written more than seven days ago whose writer is provably gone is replaced by a standard gzip `<log>.gz`, never deleted | `fork-features/log-archive.ts`, `fork-features/omp-presentation.ts` (`scheduleLogArchive`), `src/session.ts`, `tests/log-archive.test.ts` | Upstream kept every raw log uncompressed forever. A writer is gone when this process closed the stream (a process-global record of open log streams, kept across reloads), when the pid in the name no longer exists, or when the log predates the last boot; mtime alone cannot prove another process is not still holding an idle session's fd, and unlinking under a live writer would lose its later output. The gzip goes to a private `wx` temp file, is published with `link` (an existing archive is never overwritten) and the source is unlinked only if its device, inode, size and mtime are unchanged. omp scans at load and daily with an unref'd timer. | Fork-only |
 | Notices wait while a run is in progress and go out merged when it settles; a finished-work stop gate judges the main agent's final response (`auto`: OMP's judge role, else `@smol`, else omp-todo-more's item counts) and, when the work is done, reclaims every returned terminal silently and drops its notices; the `omp-unified-exec` omomp section sets `stop` (`off`/`auto`/`judge`/`llm`/`todo`), `judgePrompt` and `noticeTemplate` with placeholders | `fork-features/stop-config.ts`, `fork-features/stop-gate.ts`, `fork-features/terminal-notice.ts` (`NoticeDispatcher` run phase, `NoticeGate`, `isLifecycleNotice`, notice template), `fork-features/terminal-lifecycle.ts` (`collectReturned`), `fork-features/omp-presentation.ts` (`loadStopHost`), `fork-features/omp-tools.d.ts`, `fork-features/session-binding.ts`; `src/index.ts` (`agent_start`, `agent_end`, `session_stop`); `tests/stop-gate.test.ts`, `tests/current-api.test.ts` | In session `01a17846` notices sent as `followUp` during a 90-minute run waited in omp's follow-up queue, which an extension cannot edit, and after the final answer each started its own turn (about 60 turns answering "Nothing to do here."), followed by lifecycle reminders every few minutes. Upstream's `agent_settled` flush point does not exist in omp. The dispatcher holds notices from `agent_start` until an `agent_end` that omp does not continue (or that awaits background work), then sends one message. Before the first send after a `session_stop` final response it decides once, fenced by a generation that every `agent_start`, switch and branch advances, so a verdict that outlives its stop changes nothing. Reclaim stays with the lifecycle (`collectReturned`: silent, a held terminal keeps its prior state), so no reminder about a collected terminal can follow. The detectors load omp's `judgment` (`resolveJudge`, `journalJudgmentUsage`, `sharedJudgmentCache`, `kindOf`), `config/model-resolver.resolveRoleChain`, `config/model-roles.roleCandidatePool`, `@oh-my-pi/pi-ai.completeSimple` and `getAgentDir` at factory load; the todo detector reads `counts` from omp-todo-more's `omp-todo-more:read` reply. | Fork-only |
 | Model-facing tool text for the six PTY tools: concise descriptions and parameter comments, with detailed guidance in tool-owned topics; `promptSnippet` and `promptGuidelines` are deleted; the first 200 characters of the `exec_command` description state the `bash` split, the absent command deadline and the `session_id`/`exit_code` result ([#88](https://github.com/oh-my-omp/omp-unified-exec/issues/88)) | `src/index.ts`, `fork-features/exec-command-docs.ts`, `fork-features/topics/*.md` | omp inlines a plugin device into the system prompt as its description cut at 200 characters plus its full parameter schema, comments included; it never reads `promptSnippet` or `promptGuidelines`. Detailed call documentation stays in topics instead of lengthening the description; parameter-specific defaults, ranges and exclusions remain in the schema. | Fork-only |
+| A subagent's terminals survive omp's idle park ([#90](https://github.com/oh-my-omp/omp-unified-exec/issues/90)): routine lifecycle notices never start a turn in a finished (adopted) subagent and are carried out silently; notices it must handle (wake, monitor, input wait) revive a parked one through omp and reach the revived session, which resumes the same `session_id`s; omp's release or abort of the parked agent ends its terminals | `fork-features/agent-park.ts`, `fork-features/terminal-notice.ts` (`finished`, `withheld`), `fork-features/terminal-lifecycle.ts` (`reclaimWithheld`), `fork-features/omp-presentation.ts` (`loadAgentHost`, `ActivatedExtension.store`), `fork-features/tern-terminal-hud.ts`, `fork-features/omp-tools.d.ts`; `createRuntime`, `deliverNotice`, `endRuntime`, `session_start` and `session_shutdown` in `src/index.ts`; `tests/agent-park.test.ts` | omp parks an adopted subagent after `task.agentIdleTtlMs` (default 420000 ms) by disposing its AgentSession, whose `session_shutdown` carries no cause; the handler used to kill every terminal and drop every notice, so monitors and `on_exit` wakes died with the park and the revived activation started with an empty store. Before the park, a subagent has no stop gate, so routine notices started turns in a finished subagent and restarted its idle TTL. The agent's terminal runtime is now owned per omp registry generation (`AgentRef`), not per activation: `AgentLifecycleManager.isParking` marks a park's shutdown, a process-global map keeps the runtime, the revived activation's `session_start` takes it back, and one registry listener ends it on `removed` or `aborted`. The old activation's `pi.sendMessage` stays bound to the disposed session and never revives, so a parked runtime delivers by `ensureLive` and then through the revived activation. | Fork-only |
 
 Existing tool names and retained environment variables (`PI_UNIFIED_EXEC_*`)
 keep their names. Modules used only for deleted paths are removed rather than
@@ -100,6 +101,15 @@ its `agent_settled` handler or `flushPending` call sites in `src/index.ts`
 arrive as content conflicts; keep the `agent_start` / `agent_end` /
 `session_stop` handlers and the dispatcher's run phase, and port only facts
 that still hold for them.
+
+A subagent's terminals outlive omp's park ([#90](https://github.com/oh-my-omp/omp-unified-exec/issues/90)),
+so `activate` in `src/index.ts` builds its store, coordinator, lifecycle and
+dispatcher in `createRuntime` and swaps runtimes at `session_start`, and its
+`session_shutdown` handler only detaches a parking agent's runtime; the
+teardown lives in `endRuntime`. Upstream edits to the `session_shutdown` or
+`session_start` handlers, or to the objects `activate` creates, arrive as
+content conflicts. Keep the runtime split and the park check, and port upstream
+teardown facts into `endRuntime`.
 
 Shell selection follows the host here ([#63](https://github.com/oh-my-omp/omp-unified-exec/issues/63)):
 upstream's `resolveDefaultShell` returns `bash` on POSIX, its `shell`
@@ -200,6 +210,19 @@ that finishes the task must start no notice turn and remove the terminal from
 notice; a notice raised during a long tool call must arrive only after the run
 settles; `stop: off` must drop lifecycle notices and keep monitor ones; and
 `judge`, `llm` and `todo` must each decide when chosen explicitly.
+
+On omp upgrades, requalify the agent park. `@oh-my-pi/pi-coding-agent` must
+still export `AgentRegistry` with `global()`, `get(id)` and `onChange()`
+emitting `removed` and `status_changed` with the entry as `ref`, and
+`@oh-my-pi/pi-coding-agent/registry/agent-lifecycle` must stay mapped for
+plugins with `AgentLifecycleManager.global()`, `isParking(id, ref)` (true
+through the park's `session_shutdown`), `has(id, ref)` and `ensureLive(id)`
+(resolving after the revived activation's `session_start`). Through real omp
+with `task.agentIdleTtlMs` lowered: a parked subagent's running terminal must
+survive and be driven by the same `session_id` after a revive; a parked
+subagent's non-zero exit must not revive it; an `on_exit: "wake"` exit must
+revive it and deliver one `exit_wake`; quitting the main session must leave no
+process of a parked subagent's terminal.
 
 On omp upgrades, requalify the shell bridge: `@oh-my-pi/pi-coding-agent/config/registry`
 must still export `lookup`, and `lookup("shellPath").get(host.pi.settings)` must
