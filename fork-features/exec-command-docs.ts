@@ -10,7 +10,7 @@ export const execCommandDocumentation: { docTopics(): Readonly<Record<string, st
 };
 
 export const execCommandTopicPointers = "\n\nTopics — read the one a call needs before making it:\n" +
-	"- `xd://exec_command/interactive` — before sending input to a running terminal, or before using `monitor` with a `condition`\n" +
+	"- `xd://exec_command/interactive` — before sending input to a running terminal, or before using `monitor` with a `condition` or `judge`\n" +
 	"- `xd://exec_command/lifecycle` — before relying on a terminal after its command returned, when a notice mentions a reclaim, or before setting `on_exit: wake`\n" +
 	"- `xd://exec_command/waiting` — before waiting for something outside your control: a host coming back, CI finishing, a deploy";
 
@@ -36,7 +36,7 @@ export const monitorDocumentation: { docTopics(): Readonly<Record<string, string
 	}),
 };
 export const monitorTopicPointers = "\n\nTopics — read the one a call needs before making it:\n" +
-	"- `xd://monitor/subscription` — before starting or cancelling a monitor, or after a match, reminder or input-wait alert";
+	"- `xd://monitor/subscription` — before starting or cancelling a monitor, before using `judge`, or after a match, judgment, reminder or input-wait alert";
 
 export const killSessionDocumentation: { docTopics(): Readonly<Record<string, string>> } = {
 	docTopics: () => ({

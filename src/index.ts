@@ -56,11 +56,12 @@ import {
 	listSessionsDocumentation, listSessionsTopicPointers,
 } from "../fork-features/exec-command-docs.ts";
 import { bindingContext, bindSession, type HostBindingState, recheckBinding } from "../fork-features/session-binding.ts";
-import { MonitorError } from "../fork-features/monitor-subscription.ts";
+import { MonitorError, type MonitorWatchStatus } from "../fork-features/monitor-subscription.ts";
 import { loadInitFile, shellScript } from "../fork-features/exec-init.ts";
 import { parseGraceReclaim, type PluginSettingsReader } from "../fork-features/plugin-settings.ts";
 import { loadStopConfig } from "../fork-features/stop-config.ts";
 import { detectStop, type StopHost } from "../fork-features/stop-gate.ts";
+import { screenJudge, type ScreenJudge } from "../fork-features/screen-judge.ts";
 import { renderStopConfigReason, renderStopReason } from "../fork-features/stop-reasons.ts";
 import { type LifecycleClock, type ReclaimResult, TerminalLifecycle } from "../fork-features/terminal-lifecycle.ts";
 import { buildNoticeDisplayMessage, MAX_TITLE_CHARS, NoticeDispatcher, type NoticeGate, type NoticeMessage, outcomeText, parseTerminalTitle } from "../fork-features/terminal-notice.ts";
@@ -183,6 +184,8 @@ type RuntimeHost =
 		readonly kind: "attached";
 		readonly send: (message: NoticeMessage) => void;
 		readonly gate: NoticeGate | undefined;
+		/** Judges judge monitors' screens for the bound session; undefined without omp's judgment API. */
+		readonly judge: ScreenJudge | undefined;
 		/** The `notice.graceReclaim` plugin setting, read for each reclaiming sweep. */
 		readonly graceReclaimNotice: () => Promise<boolean>;
 	}
@@ -246,6 +249,15 @@ type WriteStdinArgs = {
 	chars_b64?: string;
 	yield_time_ms?: number;
 };
+
+/** A monitor's watch in the list_sessions text. */
+function watchLabel(watch: MonitorWatchStatus): string {
+	switch (watch.kind) {
+		case "end": return "completion";
+		case "regex": return `condition=${JSON.stringify(watch.condition)}`;
+		case "judge": return `judge=${JSON.stringify(watch.intent)} every=${formatElapsed(watch.interval_ms)}`;
+	}
+}
 
 /** The write surface does not observe a session without sending input. */
 export class EmptyPollRemovedError extends Error {
@@ -1016,7 +1028,7 @@ function createRuntime(opts: RuntimeOptions): ExtensionCtx {
 			);
 		},
 	});
-	const coordinator = new CompletionCoordinator({ notices });
+	const coordinator = new CompletionCoordinator({ notices, judge: () => (ctx.host.kind === "attached" ? ctx.host.judge : undefined) });
 	const lifecycle = new TerminalLifecycle({
 		...opts.lifecycleClock,
 		notices,
@@ -1214,6 +1226,7 @@ export function activate(
 			);
 		},
 		gate,
+		judge: stopHost && screenJudge(stopHost, () => (binding.kind === "bound" ? binding.session : undefined)),
 		graceReclaimNotice: async () => {
 			const warnOnce = (key: string, message: string): void => {
 				if (reportedConfigProblems.has(key)) return;
@@ -1558,16 +1571,18 @@ export function activate(
 	const monitorParameters = Type.Object({
 		session_id: Type.Number({ description: "Existing running session id." }),
 		action: Type.Optional(StringEnum(["start", "cancel"] as const, "start (default) establishes or replaces; cancel removes silently.")),
-		condition: Type.Optional(Type.String({ description: "JavaScript regex source without / delimiters. Omit to await completion only." })),
-		max_returns: Type.Optional(Type.Number({ description: "Positive safe integer; default 10 matched batches. End does not count; the last return ends the monitor, not the process." })),
-		remind_after_ms: Type.Optional(Type.Number({ description: "Silence before one reminder quoting the current screen; default 1200000 (20 minutes), integer 1–2147483647. A match restarts it; the reminder neither counts toward max_returns nor ends the monitor." })),
+		condition: Type.Optional(Type.String({ description: "JavaScript regex source without / delimiters. Omit both condition and judge to await completion only." })),
+		judge: Type.Optional(Type.String({ description: "Intent the judge checks each new screen against, e.g. \"the server is ready to accept requests\"; each screen judged met wakes you. Excludes condition." })),
+		judge_interval_ms: Type.Optional(Type.Number({ description: "With judge: time between judgments; default 60000, integer 1–2147483647. An unchanged screen is not judged again." })),
+		max_returns: Type.Optional(Type.Number({ description: "Positive safe integer; default 10 returns (matched batches or met screens). End does not count; the last return ends the monitor, not the process." })),
+		remind_after_ms: Type.Optional(Type.Number({ description: "Silence before one reminder quoting the current screen; default 1200000 (20 minutes), integer 1–2147483647. A return restarts it; the reminder neither counts toward max_returns nor ends the monitor." })),
 	});
 	pi.registerTool({
 		name: "monitor",
 		...monitorDocumentation,
 		label: tr("Monitor", "监视"),
 		description:
-			"Wait for a running session's future output: each batch matching condition wakes you, or without condition its end wakes you once." +
+			"Wait for a running session's future output: each batch matching condition or each new screen the judge finds meets your intent wakes you; with neither, its end wakes you once." +
 			monitorTopicPointers,
 		parameters: monitorParameters,
 		outputSchema: monitorScriptResultSchema,
@@ -1579,7 +1594,10 @@ export function activate(
 				} else {
 					const session = ctx.store.get(params.session_id);
 					if (!session) throw new MonitorError("unknown_session", `No such session: ${params.session_id}`);
-					const monitor = await ctx.coordinator.startMonitor(session, { condition: params.condition, maxReturns: params.max_returns, remindAfterMs: params.remind_after_ms }, signal);
+					const monitor = await ctx.coordinator.startMonitor(session, {
+						condition: params.condition, judge: params.judge, judgeIntervalMs: params.judge_interval_ms,
+						maxReturns: params.max_returns, remindAfterMs: params.remind_after_ms,
+					}, signal);
 					details = { session_id: params.session_id, status: "started", monitor };
 				}
 			} catch (error) {
@@ -1716,7 +1734,7 @@ export function activate(
 							: `  [exited${s.exit_code !== undefined && s.exit_code !== null ? ` exit_code=${s.exit_code}` : ""}${s.signal ? ` signal=${s.signal}` : ""}]`;
 						const life = s.lifecycle ? `  [returned ${s.lifecycle.returned}; ${s.lifecycle.read ? "read" : "unread"}; ${s.lifecycle.phase}]` : "";
 						const wake = s.wake_armed ? " [wake]" : "";
-						const monitor = s.monitor ? ` [monitor ${s.monitor.returns}/${s.monitor.max_returns} condition=${JSON.stringify(s.monitor.condition)} remind_after=${formatElapsed(s.monitor.remind_after_ms)}]` : "";
+						const monitor = s.monitor ? ` [monitor ${s.monitor.returns}/${s.monitor.max_returns} ${watchLabel(s.monitor.watch)} remind_after=${formatElapsed(s.monitor.remind_after_ms)}]` : "";
 						return `  ${String(s.session_id).padStart(3)}  ${JSON.stringify(s.title)}  pid=${String(s.pid ?? "?").padStart(6)}  ${((s.elapsed_ms / 1000).toFixed(1) + "s").padStart(8)}${wake}${monitor}  ${oneLineCommand(s.command, 60)}${exited}${life}\n        shell: ${sanitizeMeta(s.shell ?? "")}\n        log: ${s.log_path}${s.terminal_url ? `\n        terminal_url: ${s.terminal_url}` : ""}`;
 					})
 				: ["  (no terminals)"];

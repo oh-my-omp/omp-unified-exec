@@ -1,5 +1,6 @@
 import type { InputWaitAlert } from "../fork-features/input-wait.ts";
 import { MonitorError, MonitorSubscription, parseMonitorCondition, parseRemindAfter, type MonitorEndReason, type MonitorSession, type MonitorStatus } from "../fork-features/monitor-subscription.ts";
+import type { ScreenJudge } from "../fork-features/screen-judge.ts";
 import type { NoticeDispatcher, TerminalNotice } from "../fork-features/terminal-notice.ts";
 
 /**
@@ -85,6 +86,8 @@ interface CompletionRecord {
 export interface CompletionCoordinatorOptions {
 	/** The one delivery path for terminal notices: wakes, monitor returns and input-wait alerts. */
 	notices: NoticeDispatcher;
+	/** The screen judge of the agent's current session; undefined while parked or without omp's judgment API. */
+	judge?: () => ScreenJudge | undefined;
 	/** Debounce so naturally simultaneous completions are submitted together. */
 	debounceMs?: number;
 	/** Injectable timers. Test hooks. */
@@ -95,8 +98,12 @@ export interface CompletionCoordinatorOptions {
 
 /** Validated by `startMonitor`; omitted fields take the monitor defaults. */
 export interface MonitorOptions {
-	/** JavaScript regex source; omitted waits for output closure only. */
+	/** JavaScript regex source; with neither it nor `judge` the monitor waits for output closure only. */
 	condition?: string;
+	/** The intent each new screen is judged against; excludes `condition`. */
+	judge?: string;
+	/** Time between judgments (default 60 seconds); only with `judge`. */
+	judgeIntervalMs?: number;
 	maxReturns?: number;
 	/** Silence before a one-time reminder that the monitor has not returned (default 20 minutes). */
 	remindAfterMs?: number;
@@ -140,15 +147,19 @@ export class CompletionCoordinator {
 	}
 
 	async startMonitor(session: MonitorSession, options: MonitorOptions = {}, signal?: AbortSignal): Promise<MonitorStatus> {
-		const condition = parseMonitorCondition(options.condition);
+		const condition = parseMonitorCondition(options);
 		const maximum = options.maxReturns ?? 10;
 		if (!Number.isSafeInteger(maximum) || maximum < 1) throw new MonitorError("invalid_max_returns", "max_returns must be a positive safe integer");
 		const remindAfterMs = parseRemindAfter(options.remindAfterMs);
+		const judge = this.opts.judge ?? (() => undefined);
+		if (condition.kind === "judge" && judge()?.available() !== true) {
+			throw new MonitorError("judge_unavailable", "no judge model resolves for this session");
+		}
 		const notices = this.opts.notices;
 		const send = (notice: TerminalNotice, isCurrent: () => boolean) => notices.submit(notice, isCurrent);
 		const scope = this.monitors;
 		const current = (subscription: MonitorSubscription): boolean => !this.stopped && this.monitors === scope && scope.get(session.id) === subscription;
-		const subscription = new MonitorSubscription(session, condition, maximum, remindAfterMs, send,
+		const subscription = new MonitorSubscription(session, condition, maximum, remindAfterMs, judge, send,
 			(sub, completed) => {
 				if (!current(sub)) return;
 				// Consume the ordinary wake before removing monitor ownership.
@@ -167,8 +178,8 @@ export class CompletionCoordinator {
 			const old = scope.get(session.id);
 			scope.set(session.id, subscription);
 			old?.cancel();
-			// The silent period starts with publication, not with the tool result.
-			subscription.startReminder();
+			// The silent period and judgments start with publication, not with the tool result.
+			subscription.begin();
 			return true;
 		}, signal);
 		if (result !== "accepted") {

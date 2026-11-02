@@ -52,7 +52,7 @@ omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
 - **统一的通知通道。** 完成唤醒、monitor 的返回与提醒、等待输入提醒和生命周期通知都是终端通知：每条用 `session_id` 和传给 `exec_command` 的标题指明终端，并附一句简短原因。agent 运行期间通知只等待，停下时合并成一条后续消息送达。
 - **工作完成后保持安静。** 主 agent 停下时，任何通知发出之前先判定它的最终回复（OMP 的 judge，否则 `@smol`，否则 Todo 列表）；工作已完成时，已返回的终端被回收、其通知被丢弃，不再触发新的轮次。见[完成的工作](#finished-work)。
 - **可选的完成唤醒。** `on_exit: "wake"` 让后台进程在无人观察时退出后唤醒一次 agent；`set_on_exit` 可以取消。
-- **等待匹配输出。** `monitor` 不消费输出地观察已有会话，在匹配批次或结束时唤醒模型；默认最多成功返回十次匹配消息。monitor 20 分钟没有返回时，会提醒 agent 一次去检查会话。
+- **等待匹配输出。** `monitor` 不消费输出地观察已有会话，在匹配批次、judge 模型判定满足所述意图的新屏幕或结束时唤醒模型；默认最多成功返回十次。monitor 20 分钟没有返回时，会提醒 agent 一次去检查会话。
 - **等待输入提醒。** 无论有没有 monitor，会话屏幕停在 agent 还没看过的提示上（`apt upgrade` 询问 sshd_config 这类 debconf/whiptail 对话框、`[Y/n]`、密码、分页器）时，都会唤醒 agent。
 - **omp 原生呈现。** `exec_command`、`write_stdin` 和 `kill_session` 用 omp 自己的 bash 卡片渲染（命令行、输出、退出码标签、错误配色），在 ANSI TUI 和 Tern 里都是如此。
 - **Tern 里的终端 HUD。** 不用调用工具，就能查看、回滚、输入并结束模型的会话。
@@ -88,7 +88,7 @@ HUD 直接读取会话，不保存任何副本。它只在 omp 原生渲染时�
 - `xd://exec_command/waiting`：命令生命期、仅等待完成的 monitor 与不消费输出的读取。
 - `xd://write_stdin/input`：原样输入、空输入拒绝、取消与观察到退出。
 - `xd://set_on_exit/wake`：启用、解除与已排队的退出唤醒。
-- `xd://monitor/subscription`：后续输出匹配、取消、提醒与等待输入通知。
+- `xd://monitor/subscription`：后续输出匹配、judge monitor、取消、提醒与等待输入通知。
 - `xd://kill_session/termination`：信号、唤醒/monitor 取消与终端保留。
 - `xd://list_sessions/inventory`：列表状态、输出读取与退出唤醒的影响。
 
@@ -311,8 +311,10 @@ write_stdin chars_b64="G3s6wgo="  → exact 5 decoded bytes
 |---|---|---|---|
 | `session_id` | number | — | 已有的运行中会话。 |
 | `action` | `"start"` \| `"cancel"` | `"start"` | 建立/替换该会话唯一的订阅，或静默取消。 |
-| `condition` | string | 不传 | JavaScript 正则源码（不带 `/` 分隔符）；不传则只在输出关闭时返回。 |
-| `max_returns` | number | `10` | 正安全整数，计成功的匹配消息数，不是行数，也不含 End。 |
+| `condition` | string | 不传 | JavaScript 正则源码（不带 `/` 分隔符）；它和 `judge` 都不传则只在输出关闭时返回。 |
+| `judge` | string | 不传 | judge 模型用来检查每个新屏幕的意图；与 `condition` 互斥。 |
+| `judge_interval_ms` | number | `60000` | 仅与 `judge` 一起使用。1–2147483647 的整数：两次判定之间的间隔。 |
+| `max_returns` | number | `10` | 正安全整数，计成功的匹配消息或满足屏幕消息数，不是行数，也不含 End。 |
 | `remind_after_ms` | number | `1200000` | 1–2147483647 的整数：monitor 多久没有返回就提醒一次。 |
 
 条件接收新增或改变的渲染逻辑行，包括没有换行的提示符；wrapped 物理行会合并。
@@ -326,18 +328,27 @@ write_stdin chars_b64="G3s6wgo="  → exact 5 decoded bytes
 会话的 `terminal_url` 与 `log_path`。60 秒内匹配超过 20 个时提示收窄条件，
 但继续观察；最后一次允许的匹配注明上限，只结束 monitor，不结束进程。
 
+judge monitor 用于没有稳定文本标记的状态。启动后经过一个 `judge_interval_ms`（默认 60 秒），以及每次判定结束后再经过一个间隔，
+它读取当前可见屏幕；若该屏幕与上次判定的屏幕（或 monitor 启动时显示的屏幕）不同，就由 omp 的 judge 角色链回答一个
+满足/不满足的问题：状态是屏幕清洗后的非空行，问题里带着意图。不满足时保持安静。每个满足的屏幕是一条
+`monitor_judge_match` 通知，引用被判定屏幕的最后 16 行并计为一次返回，所以之后变化了但仍满足意图的屏幕会再次返回，
+直到 `max_returns`。判定失败（没有 judge 模型、出错、没有给出选择或 30 秒内没有回答）时发送一条带失败原因的
+`monitor_judge_failed` 通知并结束 monitor，不结束进程。会话解析不到 judge 模型时，启动返回 `judge_unavailable`。
+判定以 `unified-exec-monitor` 用途计入会话费用；同样的屏幕和意图由 omp 的判定缓存直接回答，不调用模型。
+omp 停放 agent 期间，判定等到它被唤醒后再进行。
+
 实际输出关闭时发送 End（一条 `monitor_end` 通知），附尚未返回的匹配和退出码/信号；人工 HUD/slash
 与 LRU 终止写明原因。End 合并已启用的普通完成唤醒。模型 `kill_session`、
 显式取消、替换、reset 与关闭都静默结束，即使模型 kill 失败也是如此。
-已排队交给宿主的后续消息无法撤回。未知/已结束会话、非法正则、非法上限及非法
+已排队交给宿主的后续消息无法撤回。未知/已结束会话、非法正则、非法或冲突的 judge 参数、非法上限及非法
 提醒间隔返回类型化错误。
 
-monitor 建立后或上一次匹配送达后，若 `remind_after_ms`（默认 20 分钟）内没有送达任何匹配或 End，
+monitor 建立后或上一次返回送达后，若 `remind_after_ms`（默认 20 分钟）内没有送达任何返回或 End，
 就发送一条正文带 `silentMs` 的 `monitor_silent` 通知：说明 monitor
-没有返回，给出距上次输出的时间、屏幕类型、最后八行非空屏幕内容（标明是命令输出）和终端读取地址，
+没有返回、在等待什么，给出距上次输出的时间、屏幕类型、最后八行非空屏幕内容（标明是命令输出）和终端读取地址，
 请 agent 检查会话是在等输入、卡住了还是只是慢。提醒不计入 `max_returns`，也不结束 monitor；
-在下一次匹配送达开启新的静默期之前不会重复，所以 agent 要继续等就再调用一次 `monitor` 取得新的期限。
-有待发送的匹配时先发匹配，End 会取代尚未送达的提醒。
+在下一次返回送达开启新的静默期之前不会重复，所以 agent 要继续等就再调用一次 `monitor` 取得新的期限。
+judge 失败先于待发送的返回，待发送的返回先于到期的提醒，End 会取代尚未送达的提醒或满足屏幕。
 
 ### 等待输入提醒
 
@@ -370,7 +381,7 @@ whiptail/dialog 前端到了 PTY 上只是普通的绘制（备用屏、隐藏�
 
 ### `list_sessions`
 
-列出存储中的全部终端：运行中的，以及命令已返回、尚未被[生命周期](#terminal-lifecycle)回收的。每条记录带 `title`、启动时的 `shell`、`running`、终端关闭后的 `exit_code`/`signal`、`wake_armed`、活动 monitor 的条件/成功次数/上限/提醒间隔，以及命令返回后的 `lifecycle`：如何返回（`normally` 或 `abnormally (<原因>)`）、是否读过、所处阶段（`ttl`、`unread_reminded`、`grace`、`reclaiming`）。响应带 `running_count`、`returned_count` 和当前宿主时间 `tool_time_utc`。在这里报告退出会取消尚未发出的 `on_exit` 唤醒，但不算读过终端的输出。
+列出存储中的全部终端：运行中的，以及命令已返回、尚未被[生命周期](#terminal-lifecycle)回收的。每条记录带 `title`、启动时的 `shell`、`running`、终端关闭后的 `exit_code`/`signal`、`wake_armed`、活动 monitor 的 `watch`（`end`、带条件的 `regex`，或带意图与间隔的 `judge`）/成功次数/上限/提醒间隔，以及命令返回后的 `lifecycle`：如何返回（`normally` 或 `abnormally (<原因>)`）、是否读过、所处阶段（`ttl`、`unread_reminded`、`grace`、`reclaiming`）。响应带 `running_count`、`returned_count` 和当前宿主时间 `tool_time_utc`。在这里报告退出会取消尚未发出的 `on_exit` 唤醒，但不算读过终端的输出。
 
 <a id="terminal-lifecycle"></a>
 
@@ -410,7 +421,7 @@ whiptail/dialog 前端到了 PTY 上只是普通的绘制（备用屏、隐藏�
 Do not reply to the user about this notice: act on it with tools, then continue the original task.
 ```
 
-`details.notices` 逐条列出 `session_id`、`title`、`kind`、`reason`、`terminal_url`、`log_path` 和带类型的 `body`。种类：`exit_wake`、`abnormal_return`、`monitor_match`、`monitor_end`、`monitor_silent`、`input_wait`、`unread`、`reclaim_due`、`reclaimed`。不再描述其终端的通知（唤醒已被观察或取消、monitor 已取消、屏幕已展示过、一次读取已重启 TTL）不发送直接丢弃。发送失败时在下一次工具结束、运行结束或每分钟检查时重试。
+`details.notices` 逐条列出 `session_id`、`title`、`kind`、`reason`、`terminal_url`、`log_path` 和带类型的 `body`。种类：`exit_wake`、`abnormal_return`、`monitor_match`、`monitor_judge_match`、`monitor_judge_failed`、`monitor_end`、`monitor_silent`、`input_wait`、`unread`、`reclaim_due`、`reclaimed`。不再描述其终端的通知（唤醒已被观察或取消、monitor 已取消、屏幕已展示过、一次读取已重启 TTL）不发送直接丢弃。发送失败时在下一次工具结束、运行结束或每分钟检查时重试。
 
 <a id="finished-work"></a>
 
@@ -464,7 +475,7 @@ omp 的任务执行器收养（adopt）子 agent 时，它的任务已经完成�
 
 - **常规通知从不为已完成的子 agent 启动轮次**，无论它空闲还是已停放：只含 `abnormal_return`、`unread`、`reclaim_due` 或 `reclaimed` 通知的一批被扣下不发。通知本来要 agent 做的事静默完成：`unread` 或 `reclaim_due` 的终端立即回收。与 agent 必须处理的通知同批时，它们随之一起送达。
 - **停放保留终端。** 停放引发的 `session_shutdown` 只结束这次激活，不结束终端：运行中的命令、monitor、`on_exit` 唤醒、等待输入提醒和 30 分钟生命周期都照常继续。
-- **agent 必须处理的通知会唤醒它。** 已停放子 agent 的 `exit_wake`、`monitor_match`、`monitor_end`、`monitor_silent` 或 `input_wait` 通知会请 omp 唤醒它（`ensureLive`），然后送达唤醒后的会话。因其他原因（父 agent 发来消息）被唤醒时，它同样接回原来的终端：`session_id`、`term://` 地址和日志都不变。
+- **agent 必须处理的通知会唤醒它。** 已停放子 agent 的 `exit_wake`、`monitor_match`、`monitor_judge_match`、`monitor_judge_failed`、`monitor_end`、`monitor_silent` 或 `input_wait` 通知会请 omp 唤醒它（`ensureLive`），然后送达唤醒后的会话。因其他原因（父 agent 发来消息）被唤醒时，它同样接回原来的终端：`session_id`、`term://` 地址和日志都不变。
 - **终端随 agent 结束：** omp 释放或结束已停放的子 agent 时（包括主会话结束时），它的终端按关闭处理（SIGTERM，1 秒后 SIGKILL），主会话的关闭会等这一步完成。
 
 ## 命令
@@ -489,6 +500,8 @@ LRU_PROTECTED_COUNT          = 8
 DEFAULT_MAX_BYTES            = 50 KiB  (model-visible per-call cap)
 DEFAULT_MAX_LINES            = 2000
 DEFAULT_REMIND_AFTER_MS      = 1_200_000 (monitor silence before one reminder)
+DEFAULT_JUDGE_INTERVAL_MS    = 60_000 (judge monitor: time between judgments)
+JUDGE_DEADLINE_MS            = 30_000 (judge monitor: one judgment's deadline)
 INPUT_WAIT_QUIET_MS          = 5_000 (output silence before the screen is examined for a prompt)
 RECLAIM_TTL_MS               = 1_800_000 (after a return or read: read reminder or reclaim-due notice)
 RECLAIM_GRACE_MS             = 300_000 (reclaim-due notice to reclaim, unless read)
@@ -530,6 +543,19 @@ Server listening on :3000
   GET /health 200 in 3ms
 
 > kill_session(session_id=1)   # stays listed until its lifecycle reclaims it
+```
+
+### 没有固定文本的状态
+
+```
+> exec_command(cmd="./deploy.sh staging", title="staging deploy", yield_time_ms=5000)
+[still running]
+session_id: 2
+…
+> monitor(session_id=2, judge="the deploy finished and every service reports healthy", judge_interval_ms=30000, max_returns=1)
+{"session_id":2,"status":"started","monitor":{"watch":{"kind":"judge","intent":"the deploy finished and every service reports healthy","interval_ms":30000},"returns":0,"max_returns":1,…}}
+# 每 30 秒判定一次变化了的屏幕；第一个被判定满足的屏幕以引用该屏幕的
+# monitor_judge_match 通知唤醒模型，随后 monitor 结束。
 ```
 
 ### 交互式 Python REPL
@@ -608,10 +634,11 @@ fork-features/
 ├── plugin-settings.ts    # native plugin settings (`omp.settings`): `notice.graceReclaim`, read via omp's getPluginSettings
 ├── exec-init.ts          # `exec.initFile`: resolve the init file, source it before `cmd` in POSIX shells
 ├── stop-gate.ts          # judge / @smol / todo stop detectors over factory-loaded omp modules
+├── screen-judge.ts       # judge monitors' screen judgment through omp's judge role chain
 ├── stop-reasons.ts       # structured stop/config reasons; English/Chinese boundary rendering
 ├── exec-command-docs.ts  # six tools' lazy documentation providers and topic pointers
 ├── topics/               # packaged body-only tool documentation
-├── monitor-subscription.ts # monitor conditions, batching and reminders as terminal notices
+├── monitor-subscription.ts # monitor conditions, batching, judgments and reminders as terminal notices
 ├── input-wait.ts         # input prompt detection; input-wait alerts as terminal notices
 ├── log-archive.ts        # seven-day gzip compression of session logs
 ├── tern-plugin-removal.ts# removes the Tern plugin earlier versions installed

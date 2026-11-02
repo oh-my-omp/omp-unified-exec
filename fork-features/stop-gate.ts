@@ -46,7 +46,7 @@ interface RoleCandidate {
 	readonly thinkingLevel?: string;
 }
 
-interface ChainJudge {
+export interface ChainJudge {
 	primaryModel(): unknown;
 	judge(request: unknown, options: { signal: AbortSignal }): Promise<unknown>;
 }
@@ -99,7 +99,7 @@ export async function loadStopHost(): Promise<StopHost> {
 // ---- the session the detectors run for -------------------------------------
 
 /** The members of omp's AgentSession the detectors read. */
-interface DetectorSession {
+export interface DetectorSession {
 	readonly settings: unknown;
 	readonly sessionManager: unknown;
 	readonly sessionId: string;
@@ -215,13 +215,14 @@ export function parseLlmAnswer(text: string): "done" | "not_done" | undefined {
 	return undefined;
 }
 
-function judgeChain(host: StopHost, session: DetectorSession): ChainJudge | undefined {
+/** omp's judge role chain for the session, billed to it under `purpose`; undefined when no judge model resolves. */
+export function judgeChain(host: StopHost, session: DetectorSession, purpose: string): ChainJudge | undefined {
 	const chain = host.resolveJudge({
 		settings: session.settings,
 		registry: session.registry,
 		sessionId: session.sessionId,
 		metadataResolver: session.metadataForProvider,
-		purpose: "unified-exec-stop",
+		purpose,
 		onUsage: host.journalJudgmentUsage(session.sessionManager),
 		telemetry: session.telemetry,
 		cache: host.sharedJudgmentCache(),
@@ -292,7 +293,7 @@ export async function detectStop(deps: StopDetectorDeps, config: StopConfig, inp
 	const session = detectorSession(deps.session());
 	if (session === undefined) return { kind: "undecided", cause: "unavailable", reason: { kind: "no_session" } };
 	const deadline = AbortSignal.any([signal, AbortSignal.timeout(DETECT_DEADLINE_MS)]);
-	const judge = config.mode === "llm" ? undefined : judgeChain(deps.host, session);
+	const judge = config.mode === "llm" ? undefined : judgeChain(deps.host, session, "unified-exec-stop");
 	if (judge !== undefined) return runJudge(judge, prompt, deadline);
 	if (config.mode === "judge") return { kind: "undecided", cause: "unavailable", reason: { kind: "no_judge" } };
 	const models = smolModels(deps.host, session);

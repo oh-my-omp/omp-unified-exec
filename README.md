@@ -121,9 +121,10 @@ results remain in English.
 - **Opt-in completion wake.** `on_exit: "wake"` resumes the agent once when a
   backgrounded process exits unobserved; `set_on_exit` disarms it.
 - **Await matching output.** `monitor` watches an existing session without
-  consuming output, wakes for matching batches or completion, and defaults to
-  at most ten successful match returns. A monitor that has not returned for 20
-  minutes reminds the agent once to check the session.
+  consuming output, wakes for matching batches, for new screens a judge model
+  finds meet a stated intent, or for completion, and defaults to at most ten
+  successful returns. A monitor that has not returned for 20 minutes reminds
+  the agent once to check the session.
 - **Input-wait alerts.** With or without a monitor, a session whose screen
   settles on a prompt the agent has not seen (a debconf/whiptail dialog such as
   the sshd_config question during `apt upgrade`, `[Y/n]`, a password, a pager)
@@ -203,7 +204,7 @@ Each tool supplies its own topic bodies through `docTopics()`:
 - `xd://exec_command/waiting`: command lifetime, completion-only monitors and non-consuming reads.
 - `xd://write_stdin/input`: verbatim input, empty-input rejection, cancellation and observed exits.
 - `xd://set_on_exit/wake`: arming, disarming and queued exit wakes.
-- `xd://monitor/subscription`: future-output matching, cancellation, reminders and input-wait alerts.
+- `xd://monitor/subscription`: future-output matching, judge monitors, cancellation, reminders and input-wait alerts.
 - `xd://kill_session/termination`: signals, wake/monitor suppression and retained terminals.
 - `xd://list_sessions/inventory`: inventory state, output reads and exit-wake effects.
 
@@ -529,8 +530,10 @@ the process or consuming ordinary observations.
 |---|---|---|---|
 | `session_id` | number | — | Existing running session. |
 | `action` | `"start"` \| `"cancel"` | `"start"` | Start/replaces the session's one subscription, or silently cancel it. |
-| `condition` | string | omitted | JavaScript regex source (no `/` delimiters); omit to return only at output closure. |
-| `max_returns` | number | `10` | Positive safe integer, counting successful match messages, not lines or End. |
+| `condition` | string | omitted | JavaScript regex source (no `/` delimiters); omit it and `judge` to return only at output closure. |
+| `judge` | string | omitted | Intent a judge model checks each new screen against; excludes `condition`. |
+| `judge_interval_ms` | number | `60000` | With `judge` only. Integer 1–2147483647: time between judgments. |
+| `max_returns` | number | `10` | Positive safe integer, counting successful match or met-screen messages, not lines or End. |
 | `remind_after_ms` | number | `1200000` | Integer 1–2147483647: silence before one reminder that the monitor has not returned. |
 
 Conditions see changed/new rendered logical lines, including prompts without a
@@ -548,25 +551,43 @@ returns/limit, and the session's `terminal_url` and `log_path`. More than
 20 matches in the last 60 seconds adds a narrow-the-condition advisory, without
 stopping. The final allowed match announces the limit and ends only the monitor.
 
+A judge monitor serves states that no stable text marks. One
+`judge_interval_ms` (60 seconds by default) after it starts, and one interval
+after each judgment ends, it reads the current visible screen; if that screen
+differs from the screen it last judged (or showed when the monitor started),
+omp's judge role chain answers one met/not-met question whose state is the
+screen's sanitized non-blank lines and whose question carries the intent. Not
+met is silent. Each met screen is a `monitor_judge_match` notice quoting the
+judged screen's last 16 lines and counts as a return, so a later changed screen
+that still meets the intent returns again until `max_returns`. A judgment that
+fails (no judge model, an error, no choice, or no answer within 30 seconds) sends
+one `monitor_judge_failed` notice with the failure and ends the monitor, not the
+process. Starting fails with `judge_unavailable` when no judge model resolves for
+the session. Judgments are billed to the session under the
+`unified-exec-monitor` purpose; omp's judgment cache answers a repeated screen
+and intent without a model call. While omp has the agent parked, judgments wait
+for its revival.
+
 Actual output closure sends End (a `monitor_end` notice) with pending matches and exit code/signal;
 human HUD/slash and LRU terminations identify their reason. End merges an
 already-armed ordinary completion wake. Model `kill_session`, explicit cancel,
 replacement, reset and shutdown end monitoring silently, including a failed
 model kill. Already-enqueued follow-ups cannot be recalled. Unknown/ended
-sessions, invalid regexes, invalid limits and invalid reminder intervals return
-typed errors.
+sessions, invalid regexes, invalid or conflicting judge parameters, invalid
+limits and invalid reminder intervals return typed errors.
 
-If no match or End has been delivered for `remind_after_ms` (20 minutes by
-default) since the monitor started or since its last delivered match, it sends
+If no return or End has been delivered for `remind_after_ms` (20 minutes by
+default) since the monitor started or since its last delivered return, it sends
 one `monitor_silent` notice with `silentMs` in its body:
-the monitor has not returned, the time since the last output, the screen kind
-and the last eight non-blank screen lines (labelled as command output), and
-the terminal's read address, asking the agent to check whether the session is
-waiting for input, stalled or slow. The reminder does not count toward
+the monitor has not returned, what it waits for, the time since the last output,
+the screen kind and the last eight non-blank screen lines (labelled as command
+output), and the terminal's read address, asking the agent to check whether the
+session is waiting for input, stalled or slow. The reminder does not count toward
 `max_returns` and does not end the monitor; it is not repeated until a
-delivered match starts a new silent period, so a waiting agent calls `monitor`
-again for another deadline. A pending match goes out before a due reminder, and
-End replaces an undelivered one.
+delivered return starts a new silent period, so a waiting agent calls `monitor`
+again for another deadline. A judge failure goes out before a pending return,
+a pending return before a due reminder, and End replaces an undelivered
+reminder or met screen.
 
 ### Input-wait alerts
 
@@ -620,7 +641,8 @@ counts as read as well.
 Lists every stored terminal: running ones, and returned ones until their
 [lifecycle](#terminal-lifecycle) reclaims them. Each entry has its `title`, the
 `shell` it started with, `running`, `exit_code`/`signal` once the terminal
-closed, `wake_armed`, an active monitor's condition/returns/limit/reminder
+closed, `wake_armed`, an active monitor's `watch` (`end`, `regex` with its
+condition, or `judge` with its intent and interval), returns/limit/reminder
 interval and, once the command returned, `lifecycle`: how it returned
 (`normally` or `abnormally (<reason>)`), whether it has been read, and its
 phase (`ttl`, `unread_reminded`, `grace`, `reclaiming`). The response carries
@@ -706,7 +728,8 @@ Do not reply to the user about this notice: act on it with tools, then continue 
 
 `details.notices` lists each notice with `session_id`, `title`, `kind`,
 `reason`, `terminal_url`, `log_path` and its typed `body`. Kinds: `exit_wake`,
-`abnormal_return`, `monitor_match`, `monitor_end`, `monitor_silent`,
+`abnormal_return`, `monitor_match`, `monitor_judge_match`,
+`monitor_judge_failed`, `monitor_end`, `monitor_silent`,
 `input_wait`, `unread`, `reclaim_due`, `reclaimed`. A notice that no longer
 describes its terminal (a wake observed or disarmed, a monitor cancelled, a
 screen already shown, a read that restarted the TTL) is dropped unsent. A
@@ -796,7 +819,8 @@ no timer of its own for this; it reads omp's agent registry and lifecycle.
   activation, not the terminals: running commands, monitors, `on_exit`
   wakes, input-wait alerts and the 30-minute lifecycle carry on.
 - **Notices the agent must handle revive it.** An `exit_wake`,
-  `monitor_match`, `monitor_end`, `monitor_silent` or `input_wait` notice for
+  `monitor_match`, `monitor_judge_match`, `monitor_judge_failed`,
+  `monitor_end`, `monitor_silent` or `input_wait` notice for
   a parked subagent asks omp to revive it (`ensureLive`), then goes to the
   revived session. A revive for any other reason (a message from its parent)
   resumes the same terminals as well: their `session_id`s, `term://`
@@ -838,6 +862,8 @@ LRU_PROTECTED_COUNT          = 8
 DEFAULT_MAX_BYTES            = 50 KiB  (model-visible per-call cap)
 DEFAULT_MAX_LINES            = 2000
 DEFAULT_REMIND_AFTER_MS      = 1_200_000 (monitor silence before one reminder)
+DEFAULT_JUDGE_INTERVAL_MS    = 60_000 (judge monitor: time between judgments)
+JUDGE_DEADLINE_MS            = 30_000 (judge monitor: one judgment's deadline)
 INPUT_WAIT_QUIET_MS          = 5_000 (output silence before the screen is examined for a prompt)
 RECLAIM_TTL_MS               = 1_800_000 (after a return or read: read reminder or reclaim-due notice)
 RECLAIM_GRACE_MS             = 300_000 (reclaim-due notice to reclaim, unless read)
@@ -913,6 +939,19 @@ Server listening on :3000
   GET /health 200 in 3ms
 
 > kill_session(session_id=1)   # stays listed until its lifecycle reclaims it
+```
+
+### A state without fixed text
+
+```
+> exec_command(cmd="./deploy.sh staging", title="staging deploy", yield_time_ms=5000)
+[still running]
+session_id: 2
+…
+> monitor(session_id=2, judge="the deploy finished and every service reports healthy", judge_interval_ms=30000, max_returns=1)
+{"session_id":2,"status":"started","monitor":{"watch":{"kind":"judge","intent":"the deploy finished and every service reports healthy","interval_ms":30000},"returns":0,"max_returns":1,…}}
+# Every 30 s a changed screen is judged; the first screen judged met wakes the model
+# with a monitor_judge_match notice quoting it, and the monitor ends.
 ```
 
 ### Interactive Python REPL
@@ -1002,10 +1041,11 @@ fork-features/
 ├── plugin-settings.ts    # native plugin settings (`omp.settings`): `notice.graceReclaim`, read via omp's getPluginSettings
 ├── exec-init.ts          # `exec.initFile`: resolve the init file, source it before `cmd` in POSIX shells
 ├── stop-gate.ts          # judge / @smol / todo stop detectors over factory-loaded omp modules
+├── screen-judge.ts       # judge monitors' screen judgment through omp's judge role chain
 ├── stop-reasons.ts       # structured stop/config reasons; English/Chinese boundary rendering
 ├── exec-command-docs.ts  # six tools' lazy documentation providers and topic pointers
 ├── topics/               # packaged body-only tool documentation
-├── monitor-subscription.ts # monitor conditions, batching and reminders as terminal notices
+├── monitor-subscription.ts # monitor conditions, batching, judgments and reminders as terminal notices
 ├── input-wait.ts         # input prompt detection; input-wait alerts as terminal notices
 ├── log-archive.ts        # seven-day gzip compression of session logs
 ├── tern-plugin-removal.ts# removes the Tern plugin earlier versions installed

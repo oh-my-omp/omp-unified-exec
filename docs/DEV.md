@@ -88,7 +88,7 @@ A sibling view, indexed by concern:
 | Tern terminal HUD: pill segment, Terminals view, terminal page | `fork-features/tern-terminal-hud.ts` |
 | Removal of the Tern plugin versions up to 0.14.7 installed | `fork-features/tern-plugin-removal.ts` |
 | `term://` resources, read handler and screenshots | `fork-features/terminal-resource.ts`, `fork-features/terminal-url.ts`, `fork-features/terminal-image.ts` |
-| Monitors: conditions, batching, End/match/reminder notices | `fork-features/monitor-subscription.ts`; subscriptions owned by `src/completion.ts` (`startMonitor`) |
+| Monitors: conditions, judge monitors, batching, End/match/judgment/reminder notices | `fork-features/monitor-subscription.ts`; screen judgment through omp's judge chain in `fork-features/screen-judge.ts`, reached per judgment through `RuntimeHost.judge` in `src/index.ts`; subscriptions owned by `src/completion.ts` (`startMonitor`) |
 | Input-wait alerts: prompt detection, quiet watcher, notice | `fork-features/input-wait.ts`; `ExecSession.watchInputWait` in `src/session.ts`; `alertInputWait` in `src/completion.ts` |
 | Session log naming, open-log tracking and seven-day gzip compression | `fork-features/log-archive.ts`; `ExecSession.spawn` in `src/session.ts`; scheduled by `withHostPresentation` |
 | Command approval and host session binding | `fork-features/command-approval.ts`, `fork-features/session-binding.ts` |
@@ -210,8 +210,9 @@ loop; see the existing `\x` and `\u` branches for the pattern.
 The constants in the README's `## Constants` section live in the module that
 owns them: yield limits, early-exit grace, session-store limits and
 `INPUT_WAIT_QUIET_MS` at the top of `src/index.ts`, `TERMINAL_HISTORY_CELLS`
-in `src/terminal-screen.ts`, `DEFAULT_REMIND_AFTER_MS` in
-`fork-features/monitor-subscription.ts`, `RECLAIM_TTL_MS`,
+in `src/terminal-screen.ts`, `DEFAULT_REMIND_AFTER_MS` and
+`DEFAULT_JUDGE_INTERVAL_MS` in `fork-features/monitor-subscription.ts`,
+`JUDGE_DEADLINE_MS` in `fork-features/screen-judge.ts`, `RECLAIM_TTL_MS`,
 `RECLAIM_GRACE_MS` and `LIFECYCLE_SWEEP_MS` in
 `fork-features/terminal-lifecycle.ts`, the output caps in the host's
 `DEFAULT_MAX_BYTES` / `DEFAULT_MAX_LINES`. When you touch one:

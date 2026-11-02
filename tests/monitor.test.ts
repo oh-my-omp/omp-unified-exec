@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { MonitorSubscription, type MonitorSession } from "../fork-features/monitor-subscription.ts";
+import type { ScreenJudge, ScreenVerdict } from "../fork-features/screen-judge.ts";
 import { NoticeDispatcher, type NoticeMessage, type NoticeOutcome } from "../fork-features/terminal-notice.ts";
 import { CompletionCoordinator } from "../src/completion.ts";
 import { ExecSession } from "../src/session.ts";
@@ -189,7 +190,7 @@ describe("monitor source and delivery", () => {
 		assert.match(reminder.content, /MATCH early/, "the reminder quotes the current screen");
 		await delay(900);
 		assert.deepEqual(messages.flatMap((m) => m.details.notices).map((n) => n.kind), ["monitor_match", "monitor_silent"], "one reminder per silent period");
-		assert.deepEqual(coordinator.monitorStatus(session.id), { condition: "MATCH", returns: 1, max_returns: 10, remind_after_ms: 600 });
+		assert.deepEqual(coordinator.monitorStatus(session.id), { watch: { kind: "regex", condition: "MATCH" }, returns: 1, max_returns: 10, remind_after_ms: 600 });
 	});
 
 	it("rejects an invalid remind_after_ms without replacing the existing monitor", async (t) => {
@@ -200,7 +201,7 @@ describe("monitor source and delivery", () => {
 		for (const remindAfterMs of [0, 1.5, 2 ** 31]) {
 			await assert.rejects(coordinator.startMonitor(session, { remindAfterMs }), /invalid_remind_after_ms/);
 		}
-		assert.deepEqual(coordinator.monitorStatus(session.id), { condition: "KEEP", returns: 0, max_returns: 10, remind_after_ms: 1_200_000 });
+		assert.deepEqual(coordinator.monitorStatus(session.id), { watch: { kind: "regex", condition: "KEEP" }, returns: 0, max_returns: 10, remind_after_ms: 1_200_000 });
 	});
 
 	it("prefers pending matches over a due reminder and serializes End after an in-flight reminder", async () => {
@@ -214,7 +215,7 @@ describe("monitor source and delivery", () => {
 		const matchStarted = Promise.withResolvers<void>();
 		const ended = Promise.withResolvers<void>();
 		const finished: boolean[] = [];
-		const subscription = new MonitorSubscription(fake, { kind: "regex", source: "M", regex: /M/ }, 10, 40,
+		const subscription = new MonitorSubscription(fake, { kind: "regex", source: "M", regex: /M/ }, 10, 40, () => undefined,
 			(notice) => {
 				sent.push(notice.body.kind);
 				if (notice.body.kind === "monitor_silent") {
@@ -238,6 +239,108 @@ describe("monitor source and delivery", () => {
 		assert.deepEqual(sent, ["monitor_match", "monitor_silent", "monitor_end"]);
 		assert.deepEqual(finished, [true]);
 		subscription.cancel();
+	});
+});
+
+describe("judge monitor", () => {
+	interface Judged { readonly intent: string; readonly screen: string; readonly signal: AbortSignal }
+	/** A screen judge whose verdicts the test decides, one judgment at a time. */
+	function stubJudge(verdict: (judged: Judged) => Promise<ScreenVerdict> | ScreenVerdict, available = true) {
+		const judged: Judged[] = [];
+		const judge: ScreenJudge = {
+			available: () => available,
+			judge: async (intent, screen, signal) => {
+				const call = { intent, screen, signal };
+				judged.push(call);
+				return verdict(call);
+			},
+		};
+		return { judge, judged };
+	}
+	const kinds = (messages: readonly NoticeMessage[]) => messages.flatMap((m) => m.details.notices).map((n) => n.kind);
+
+	it("validates judge parameters and needs a judge model", async (t) => {
+		const session = await readySession(9201);
+		const { judge } = stubJudge(() => ({ kind: "not_met" }));
+		const coordinator = new CompletionCoordinator({ notices: new NoticeDispatcher({ send: () => {} }), judge: () => judge });
+		const unavailable = new CompletionCoordinator({ notices: new NoticeDispatcher({ send: () => {} }), judge: () => stubJudge(() => ({ kind: "met" }), false).judge });
+		t.after(async () => { coordinator.shutdown(); unavailable.shutdown(); await close(session); });
+		await assert.rejects(coordinator.startMonitor(session, { judge: "ready", condition: "R" }), /invalid_judge:/);
+		await assert.rejects(coordinator.startMonitor(session, { judge: "  " }), /invalid_judge:/);
+		await assert.rejects(coordinator.startMonitor(session, { judgeIntervalMs: 1000 }), /invalid_judge_interval_ms/);
+		for (const judgeIntervalMs of [0, 1.5, 2 ** 31]) {
+			await assert.rejects(coordinator.startMonitor(session, { judge: "ready", judgeIntervalMs }), /invalid_judge_interval_ms/);
+		}
+		await assert.rejects(unavailable.startMonitor(session, { judge: "ready" }), /judge_unavailable/);
+		await assert.rejects(new CompletionCoordinator({ notices: new NoticeDispatcher({ send: () => {} }) }).startMonitor(session, { judge: "ready" }), /judge_unavailable/);
+		const status = await coordinator.startMonitor(session, { judge: " the server is ready " });
+		assert.deepEqual(status.watch, { kind: "judge", intent: "the server is ready", interval_ms: 60_000 });
+	});
+
+	it("judges only new screens, stays silent while not met and returns each met screen", async (t) => {
+		const session = await readySession(9202);
+		const messages: NoticeMessage[] = [];
+		const { judge, judged } = stubJudge(({ screen }) => ({ kind: screen.includes("listening") ? "met" : "not_met" }));
+		const coordinator = new CompletionCoordinator({ notices: new NoticeDispatcher({ send: (message) => { messages.push(message); }, debounceMs: 5 }), judge: () => judge });
+		t.after(async () => { coordinator.shutdown(); await close(session); });
+		await coordinator.startMonitor(session, { judge: "the server accepts requests", judgeIntervalMs: 100, maxReturns: 2 });
+		await delay(350);
+		assert.equal(judged.length, 0, "the screen shown when the monitor started is not judged");
+		session.write(encoder.encode("starting workers\n"));
+		await delay(350);
+		assert.equal(judged.length, 1, "an unchanged screen is judged once");
+		assert.equal(judged[0]!.intent, "the server accepts requests");
+		assert.match(judged[0]!.screen, /READY\nstarting workers/);
+		assert.deepEqual(kinds(messages), [], "not met is silent");
+		session.write(encoder.encode("listening on :8080\n"));
+		await delay(350);
+		assert.deepEqual(kinds(messages), ["monitor_judge_match"]);
+		const { body } = messages[0]!.details.notices[0]!;
+		assert.ok(body.kind === "monitor_judge_match");
+		assert.deepEqual(body.screenLines, ["READY", "starting workers", "listening on :8080"]);
+		assert.match(messages[0]!.content, /meets intent "the server accepts requests"/);
+		assert.equal(coordinator.monitorStatus(session.id)?.returns, 1);
+		session.write(encoder.encode("GET /health 200\n"));
+		await delay(350);
+		assert.deepEqual(kinds(messages), ["monitor_judge_match", "monitor_judge_match"], "a changed screen still met returns again");
+		assert.match(messages[1]!.content, /limit reached/);
+		assert.equal(coordinator.monitorStatus(session.id), undefined);
+	});
+
+	it("ends the monitor with a failure notice when a judgment fails", async (t) => {
+		const session = await readySession(9203);
+		const messages: NoticeMessage[] = [];
+		const { judge, judged } = stubJudge(() => ({ kind: "failed", detail: "quota exhausted" }));
+		const coordinator = new CompletionCoordinator({ notices: new NoticeDispatcher({ send: (message) => { messages.push(message); }, debounceMs: 5 }), judge: () => judge });
+		t.after(async () => { coordinator.shutdown(); await close(session); });
+		await coordinator.startMonitor(session, { judge: "the build passed", judgeIntervalMs: 100 });
+		session.write(encoder.encode("compiling\n"));
+		await delay(400);
+		assert.deepEqual(kinds(messages), ["monitor_judge_failed"]);
+		assert.match(messages[0]!.content, /monitor judge failed, monitor ended: quota exhausted/);
+		assert.equal(coordinator.monitorStatus(session.id), undefined);
+		session.write(encoder.encode("more output\n"));
+		await delay(300);
+		assert.equal(judged.length, 1, "an ended monitor judges no more");
+	});
+
+	it("aborts an in-flight judgment at End and delivers only End", async (t) => {
+		const session = await terminalSession(9204);
+		const messages: NoticeMessage[] = [];
+		const answer = Promise.withResolvers<ScreenVerdict>();
+		const { judge, judged } = stubJudge(() => answer.promise);
+		const coordinator = new CompletionCoordinator({ notices: new NoticeDispatcher({ send: (message) => { messages.push(message); }, debounceMs: 5 }), judge: () => judge });
+		t.after(async () => { coordinator.shutdown(); await close(session); });
+		await coordinator.startMonitor(session, { judge: "the job finished", judgeIntervalMs: 100 });
+		session.write(encoder.encode("working\n"));
+		for (let attempt = 0; attempt < 50 && judged.length === 0; attempt++) await delay(20);
+		assert.equal(judged.length, 1);
+		session.write(encoder.encode("EXIT\n"));
+		for (let attempt = 0; attempt < 100 && messages.length === 0; attempt++) await delay(20);
+		assert.equal(judged[0]!.signal.aborted, true);
+		answer.resolve({ kind: "met" });
+		await delay(200);
+		assert.deepEqual(kinds(messages), ["monitor_end"]);
 	});
 });
 

@@ -17,7 +17,7 @@ function notice(sessionId: number, body: TerminalNotice["body"]): TerminalNotice
 }
 const unread = (sessionId: number) => notice(sessionId, { kind: "unread", outcome: { kind: "normal" }, returnedAgoMs: 1_800_000 });
 const match = (sessionId: number) => notice(sessionId, {
-	kind: "monitor_match", monitor: { condition: "x", returns: 1, maxReturns: 10, remindAfterMs: 1_200_000 }, lines: ["x"], omitted: 0, recentMatches: 1,
+	kind: "monitor_match", monitor: { watch: { kind: "regex", condition: "x" }, returns: 1, maxReturns: 10, remindAfterMs: 1_200_000 }, lines: ["x"], omitted: 0, recentMatches: 1,
 });
 
 interface Harness {

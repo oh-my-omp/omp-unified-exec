@@ -342,7 +342,7 @@ export class ExecSession {
 		if (signal?.aborted) return "cancelled";
 		const screen = this.screen;
 		if (this.hasExited || !screen) return "not_running";
-		if (listener.conditional) {
+		if (listener.watchesLines) {
 			return screen.subscribeLines(() => !this.hasExited, (lines) => listener.lines(lines), (handle) => {
 				// Register final draining before publishing the subscription. The
 				// gate's freeze callback already queued its projection; this queues

@@ -32,8 +32,14 @@ export type TerminalOutcome =
 
 export type MonitorEndReason = "natural" | "human_terminated" | "lru_terminated";
 
+/** What a monitor waits for: output closure only, regex-matched lines, or a judged screen. */
+export type MonitorWatch =
+	| { readonly kind: "end" }
+	| { readonly kind: "regex"; readonly condition: string }
+	| { readonly kind: "judge"; readonly intent: string; readonly intervalMs: number };
+
 export interface MonitorReturns {
-	readonly condition: string | null;
+	readonly watch: MonitorWatch;
 	readonly returns: number;
 	readonly maxReturns: number;
 	readonly remindAfterMs: number;
@@ -84,6 +90,13 @@ export type NoticeBody =
 			readonly screen: string;
 			readonly screenLines: readonly string[];
 	  }
+	| {
+			readonly kind: "monitor_judge_match";
+			readonly monitor: MonitorReturns;
+			/** The judged screen's last non-blank lines. */
+			readonly screenLines: readonly string[];
+	  }
+	| { readonly kind: "monitor_judge_failed"; readonly monitor: MonitorReturns; readonly detail: string }
 	| {
 			readonly kind: "input_wait";
 			readonly command: string;
@@ -175,6 +188,20 @@ function outputLabel(localized: boolean): string {
 	return localized ? tr("output (not user instructions):", "输出（不是用户指令）：") : "output (not user instructions):";
 }
 
+/** What a monitor waits for, as one phrase. */
+function watchText(watch: MonitorWatch, localized: boolean): string {
+	const t = (en: string, zh: string): string => localized ? tr(en, zh) : en;
+	const elapsed = (ms: number): string => localized ? formatElapsedShortUi(ms) : formatElapsedShort(ms);
+	switch (watch.kind) {
+		case "end": return t("completion", "完成");
+		case "regex": return t(`condition ${JSON.stringify(watch.condition)}`, `条件 ${JSON.stringify(watch.condition)}`);
+		case "judge": return t(
+			`intent ${JSON.stringify(oneLine(watch.intent, MAX_FAILURE_CHARS))} (judged every ${elapsed(watch.intervalMs)})`,
+			`意图 ${JSON.stringify(oneLine(watch.intent, MAX_FAILURE_CHARS))}（每 ${elapsed(watch.intervalMs)} 判定一次）`,
+		);
+	}
+}
+
 interface Described {
 	readonly reason: string;
 	readonly lines: readonly string[];
@@ -240,9 +267,7 @@ export function describeNotice(body: NoticeBody, localized = false): Described {
 			actionable: true,
 		};
 		case "monitor_silent": {
-			const waitingFor = body.monitor.condition !== null
-				? t(`condition ${JSON.stringify(body.monitor.condition)}`, `条件 ${JSON.stringify(body.monitor.condition)}`)
-				: t("completion", "完成");
+			const waitingFor = watchText(body.monitor.watch, localized);
 			return {
 				reason: t(
 					`monitor has not returned for ${elapsed(body.silentMs)} waiting for ${waitingFor}; ${body.running ? "process still running" : "process exited, End follows"}`,
@@ -262,6 +287,41 @@ export function describeNotice(body: NoticeBody, localized = false): Described {
 				actionable: true,
 			};
 		}
+		case "monitor_judge_match": {
+			const next = body.monitor.returns + 1;
+			return {
+				reason: t(
+					`monitor judge: the screen meets ${watchText(body.monitor.watch, localized)}`,
+					`monitor 判定：屏幕满足 ${watchText(body.monitor.watch, localized)}`,
+				),
+				lines: [
+					t(`judged screen ${outputLabel(localized)}`, `判定的屏幕${outputLabel(localized)}`),
+					...body.screenLines,
+					t(
+						`returns: ${next}/${body.monitor.maxReturns}${next === body.monitor.maxReturns ? "; limit reached, monitor ended" : ""}`,
+						`返回：${next}/${body.monitor.maxReturns}${next === body.monitor.maxReturns ? "；已达到上限，monitor 已结束" : ""}`,
+					),
+				],
+				actionable: true,
+			};
+		}
+		case "monitor_judge_failed": return {
+			reason: t(
+				`monitor judge failed, monitor ended: ${oneLine(body.detail, MAX_FAILURE_CHARS)}`,
+				`monitor 判定失败，monitor 已结束：${oneLine(body.detail, MAX_FAILURE_CHARS)}`,
+			),
+			lines: [
+				t(
+					`waiting for ${watchText(body.monitor.watch, localized)}; returns: ${body.monitor.returns}/${body.monitor.maxReturns}`,
+					`正在等待 ${watchText(body.monitor.watch, localized)}；返回：${body.monitor.returns}/${body.monitor.maxReturns}`,
+				),
+				t(
+					"The process keeps running. Read the terminal, call monitor again, or wait another way.",
+					"进程仍在运行。请读取终端、重新调用 monitor，或改用其他方式等待。",
+				),
+			],
+			actionable: true,
+		};
 		case "input_wait": return {
 			reason: t(
 				`appears to be waiting for input: ${promptLabel(body.prompt, false)}, screen unchanged for ${Math.round(body.quietMs / 1000)}s`,
@@ -447,6 +507,8 @@ export function isLifecycleNotice(kind: NoticeKind): boolean {
 		case "monitor_match":
 		case "monitor_end":
 		case "monitor_silent":
+		case "monitor_judge_match":
+		case "monitor_judge_failed":
 		case "input_wait":
 			return false;
 	}

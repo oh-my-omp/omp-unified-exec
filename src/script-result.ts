@@ -168,7 +168,11 @@ export function setOnExitScriptResult(value: {
 }
 
 const monitorStatusSchema = Type.Object({
-	condition: Type.Union([Type.String(), Type.Null()]),
+	watch: Type.Union([
+		Type.Object({ kind: Type.Literal("end") }),
+		Type.Object({ kind: Type.Literal("regex"), condition: Type.String() }),
+		Type.Object({ kind: Type.Literal("judge"), intent: Type.String(), interval_ms: Type.Number() }),
+	]),
 	returns: Type.Number(),
 	max_returns: Type.Number(),
 	remind_after_ms: Type.Number(),
