@@ -16,8 +16,11 @@
  *     setting) says so, read once per sweep while the reclaims run.
  * The retained term:// and the log stay readable after reclaim. When the
  * agent's work is judged finished, `collectReturned` reclaims every returned
- * terminal at once, read or not, without notices. Eviction at the store's
- * cap, which no reminder announced, always sends a reclaimed notice.
+ * terminal at once, read or not, without notices. When the dispatcher
+ * withholds a read or reclaim-due reminder because the agent is finished
+ * (an idle or parked subagent), the terminal is reclaimed at once, silently.
+ * Eviction at the store's cap, which no reminder announced, always sends a
+ * reclaimed notice.
  *
  * Reads are term:// reads of the returned terminal, and tool results that
  * showed it after it returned, committed when the host finalizes them.
@@ -258,12 +261,12 @@ export class TerminalLifecycle {
 						this.submit(entry, {
 							identity,
 							body: { kind: "reclaim_due", outcome: life.outcome, lastReadAgoMs: now - life.read.at, graceMs: this.graceMs, ttlMs: this.ttlMs },
-						}, () => entry.life === next);
+						}, () => entry.life === next, () => this.reclaimWithheld(entry, next));
 					} else {
 						const next: Life = { ...life, phase: { kind: "unread_reminded" } };
 						entry.life = next;
 						this.submit(entry, { identity, body: { kind: "unread", outcome: life.outcome, returnedAgoMs: now - life.returnedAt } },
-							() => entry.life === next);
+							() => entry.life === next, () => this.reclaimWithheld(entry, next));
 					}
 					break;
 				}
@@ -330,8 +333,18 @@ export class TerminalLifecycle {
 		return result;
 	}
 
-	private submit(entry: Tracked, notice: TerminalNotice, current: () => boolean): void {
-		void this.opts.notices.submit(notice, () => !this.stopped && this.tracked.get(entry.session.id) === entry && current());
+	/**
+	 * Nobody will act on a withheld reminder: reclaim the terminal now. One
+	 * that something still holds is retried at the next sweep.
+	 */
+	private reclaimWithheld(entry: Tracked, reminded: Life): void {
+		if (this.stopped || this.tracked.get(entry.session.id) !== entry || entry.life !== reminded || reminded.kind !== "returned") return;
+		void this.reclaimEntry(entry, { ...reminded, phase: { kind: "grace", until: this.now() } });
+	}
+
+	private submit(entry: Tracked, notice: TerminalNotice, current: () => boolean, withheld?: () => void): void {
+		void this.opts.notices.submit(notice, () => !this.stopped && this.tracked.get(entry.session.id) === entry && current())
+			.then((outcome) => { if (outcome === "withheld") withheld?.(); });
 	}
 
 	private ensureSweeper(): void {

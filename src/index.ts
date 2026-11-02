@@ -23,7 +23,9 @@
  *     is bounded by the screen size.
  *   - Aborting the tool call (Esc) breaks the wait but does not kill the
  *     session; the next turn can still drive it.
- *   - Sessions are terminated on session_shutdown (codex parity); a process
+ *   - Sessions are terminated on session_shutdown (codex parity), except when
+ *     omp parks the subagent: its terminals then outlive the activation and
+ *     the revived agent resumes them (fork-features/agent-park.ts). A process
  *     that exits is never restarted.
  *   - A background terminal stays listed after its command returns until the
  *     terminal lifecycle reclaims it (fork-features/terminal-lifecycle.ts);
@@ -42,6 +44,7 @@ import { type AgentToolResult, type AgentToolUpdateCallback, type ExtensionAPI, 
 import { Box, Text, type Component } from "@earendil-works/pi-tui";
 import { Type, type TUnsafe } from "typebox";
 
+import { type AgentHost, type AgentIdentity, type ParkedRuntime, parkedRuntimes } from "../fork-features/agent-park.ts";
 import { type ActivatedExtension, withHostPresentation } from "../fork-features/omp-presentation.ts";
 import { approvalCommand, approveBoundCommand, type CommandApprovalHost } from "../fork-features/command-approval.ts";
 import {
@@ -59,7 +62,7 @@ import { loadStopConfig } from "../fork-features/stop-config.ts";
 import { detectStop, type StopHost } from "../fork-features/stop-gate.ts";
 import { renderStopConfigReason, renderStopReason } from "../fork-features/stop-reasons.ts";
 import { type LifecycleClock, type ReclaimResult, TerminalLifecycle } from "../fork-features/terminal-lifecycle.ts";
-import { buildNoticeDisplayMessage, MAX_TITLE_CHARS, NoticeDispatcher, type NoticeGate, outcomeText, parseTerminalTitle } from "../fork-features/terminal-notice.ts";
+import { buildNoticeDisplayMessage, MAX_TITLE_CHARS, NoticeDispatcher, type NoticeGate, type NoticeMessage, outcomeText, parseTerminalTitle } from "../fork-features/terminal-notice.ts";
 import { type CollectResult, NO_OUTPUT } from "./collect.ts";
 import { CompletionCoordinator, type OnExitPolicy, sanitizeMeta } from "./completion.ts";
 import { formatElapsed, formatElapsedUi, nowUtcIso } from "./format-time.ts";
@@ -169,7 +172,27 @@ function encode(str: string): Uint8Array {
 
 // ---------------- Extension ----------------
 
-interface ExtensionCtx {
+/**
+ * Who delivers a runtime's notices: the activation it is attached to (its
+ * `pi.sendMessage`, stop gate and plugin settings), nobody while omp has the
+ * agent parked, or nobody ever again once its terminals ended.
+ */
+type RuntimeHost =
+	| {
+		readonly kind: "attached";
+		readonly send: (message: NoticeMessage) => void;
+		readonly gate: NoticeGate | undefined;
+		/** The `notice.graceReclaim` plugin setting, read for each reclaiming sweep. */
+		readonly graceReclaimNotice: () => Promise<boolean>;
+	}
+	| { readonly kind: "parked" }
+	| { readonly kind: "ended" };
+
+/**
+ * One agent's terminal runtime. An activation creates it; when omp parks the
+ * agent it outlives that activation and the revived agent's activation resumes it.
+ */
+interface ExtensionCtx extends ParkedRuntime {
 	store: SessionStore;
 	/** Agent-level wake scheduling for on_exit: "wake" (see completion.ts). */
 	coordinator: CompletionCoordinator;
@@ -197,6 +220,10 @@ interface ExtensionCtx {
 	shellPath?: () => string | undefined;
 	/** omp's shared GitHub view-cache invalidation for `gh` mutations, as the host bash calls it. */
 	invalidateGithubCache?: (command: string) => void;
+	/** Where notices go now. */
+	host: RuntimeHost;
+	/** The agent these terminals belong to, from its session_start; undefined without omp's agent registry. */
+	agent: AgentIdentity | undefined;
 }
 
 type ExecCommandArgs = {
@@ -955,11 +982,151 @@ function finalResponseText(event: unknown): string | undefined {
 	return text.trim() ? text : undefined;
 }
 
+interface RuntimeOptions {
+	readonly attachment: RuntimeHost;
+	readonly agentHost: AgentHost | undefined;
+	readonly lifecycleClock: LifecycleClock;
+	readonly appearance: () => TerminalAppearance;
+	readonly shellPath: (() => string | undefined) | undefined;
+	readonly invalidateGithubCache: ((command: string) => void) | undefined;
+}
+
+/** A new agent runtime, attached to the activation that creates it. */
+function createRuntime(opts: RuntimeOptions): ExtensionCtx {
+	const { agentHost } = opts;
+	const notices = new NoticeDispatcher({
+		// Sent only while the agent is stopped, so it starts one model turn.
+		send: (message) => deliverNotice(ctx, agentHost, message),
+		gate: () => (ctx.host.kind === "attached" ? ctx.host.gate : undefined),
+		finished: () => agentHost !== undefined && ctx.agent !== undefined && agentHost.isAdopted(ctx.agent),
+		onSendError: (err) => {
+			ctx.ui?.notify(
+				tr(
+					`unified-exec: failed to deliver a terminal notice: ${err instanceof Error ? err.message : String(err)}`,
+					`unified-exec：终端通知投递失败：${err instanceof Error ? err.message : String(err)}`,
+				),
+				"warning",
+			);
+		},
+	});
+	const coordinator = new CompletionCoordinator({ notices });
+	const lifecycle = new TerminalLifecycle({
+		...opts.lifecycleClock,
+		notices,
+		// A parked agent's reclaimed notice could only be withheld: it is a routine notice to a finished agent.
+		graceReclaimNotice: () => (ctx.host.kind === "attached" ? ctx.host.graceReclaimNotice() : Promise.resolve(false)),
+		reclaim: async (id): Promise<ReclaimResult> => {
+			const session = ctx.store.get(id);
+			if (!session) return { kind: "gone", killedProcesses: false };
+			const terminalOpen = !session.hasExited;
+			const leftover = await killLeftoverGroup(session);
+			if (leftover === "survived") return { kind: "held" };
+			const outcome = await terminateSessionById(ctx, id, "SIGTERM", { kind: "reclaim" });
+			updateRunningSessionsUi(ctx);
+			if (outcome && !outcome.killed) return { kind: "held" };
+			return { kind: "gone", killedProcesses: terminalOpen || leftover === "killed" };
+		},
+	});
+	const ctx: ExtensionCtx = {
+		coordinator,
+		notices,
+		lifecycle,
+		store: new SessionStore({
+			maxSessions: MAX_SESSIONS, lruProtectedCount: LRU_PROTECTED_COUNT,
+			onEvict: (session, reason) => {
+				if (reason === "lru" && !session.hasExited) coordinator.monitorEndReason(session.id, "lru_terminated");
+			},
+		}),
+		ui: undefined,
+		widgetVisible: false,
+		exitUnsubscribers: new Map(),
+		warnedShellFallback: false,
+		notifiedBashSource: false,
+		pendingSessions: new Set(),
+		shuttingDown: false,
+		appearance: opts.appearance,
+		shellPath: opts.shellPath,
+		invalidateGithubCache: opts.invalidateGithubCache,
+		host: opts.attachment,
+		agent: undefined,
+		end: () => endRuntime(ctx),
+	};
+	return ctx;
+}
+
+/**
+ * Send through the activation the runtime is attached to. A parked agent, or
+ * one omp is parking, is revived first: omp's `ensureLive` cancels a park that
+ * has not detached the session yet, otherwise waits for it and returns once
+ * the revived activation resumed this runtime, whose delivery then sends.
+ */
+async function deliverNotice(ctx: ExtensionCtx, agentHost: AgentHost | undefined, message: NoticeMessage): Promise<void> {
+	const agent = ctx.agent;
+	if (agentHost && agent && (ctx.host.kind === "parked" || agentHost.isParking(agent))) await agentHost.revive(agent.agentId);
+	const host = ctx.host;
+	if (host.kind !== "attached") throw new Error(`agent ${agent?.agentId ?? "(unknown)"} did not resume its terminals`);
+	host.send(message);
+}
+
+/**
+ * End the runtime for good: reject new sessions and terminate everything it
+ * owns, including sessions still inside exec_command's early-exit grace
+ * window (spawned but not yet inserted into the store).
+ */
+async function endRuntime(ctx: ExtensionCtx): Promise<void> {
+	ctx.host = { kind: "ended" };
+	ctx.shuttingDown = true;
+	// Cancel lifecycle sweeps, wake timers/listeners and pending notices
+	// first: these kills create no notices, and no stale prompt may ever be
+	// injected into a new or closed session.
+	ctx.lifecycle.shutdown();
+	ctx.coordinator.shutdown();
+	ctx.notices.stop();
+	const drained = ctx.store.terminateAll();
+	for (const s of ctx.pendingSessions) {
+		void s.releaseForShutdown();
+		if (!s.hasExited) {
+			s.terminate();
+			drained.push(s);
+		}
+	}
+	// The ending now owns these: their exec_command must not insert them into
+	// the store once its grace ends (the store belongs to this ended period).
+	ctx.pendingSessions.clear();
+	clearSessionExitWatchers(ctx);
+	updateRunningSessionsUi(ctx);
+	// Children run detached (own process groups), so anything that ignores
+	// SIGTERM would outlive pi as an orphan. Give them a short grace, then
+	// SIGKILL survivors and wait briefly for confirmation. On Windows the
+	// initial kill is already a force tree-kill and a second taskkill is
+	// byte-identical, so skip the escalation there (the grace wait above
+	// still confirms exits). Event-driven per session: each wait resolves
+	// the instant that session's exit fires.
+	await Promise.all(drained.map((s) => waitForExitOrDeadline({ exited: s.exited, durationMs: SHUTDOWN_TERM_GRACE_MS })));
+	if (!IS_WINDOWS) {
+		const survivors = drained.filter((s) => !s.hasExited);
+		for (const s of survivors) s.kill("SIGKILL");
+		await Promise.all(survivors.map((s) => waitForExitOrDeadline({ exited: s.exited, durationMs: SHUTDOWN_KILL_GRACE_MS })));
+	}
+	if (drained.length && ctx.ui) {
+		const leftover = drained.filter((s) => !s.hasExited).length;
+		ctx.ui.notify(
+			tr(
+				`unified-exec: terminated ${drained.length - leftover} live session(s) on shutdown${leftover ? `; ${leftover} did not confirm exit` : ""}`,
+				`unified-exec：关机时终止了 ${drained.length - leftover} 个活动会话${leftover ? `；${leftover} 个会话未确认退出` : ""}`,
+			),
+			leftover ? "warning" : "info",
+		);
+	}
+}
+
 /**
  * Activate the tool core; the default factory supplies omp's appearance and
  * live shell setting. `lifecycleClock` replaces the host clock for terminal
  * TTLs and the minute sweep; `stopHost` enables stop decisions;
- * `pluginSettings` reads the native plugin settings (absent: manifest defaults).
+ * `pluginSettings` reads the native plugin settings (absent: manifest
+ * defaults); `agentHost` (omp's agent registry and lifecycle) lets a
+ * subagent's terminals outlive its park.
  */
 export function activate(
 	pi: ExtensionAPI,
@@ -970,6 +1137,7 @@ export function activate(
 	lifecycleClock: LifecycleClock = {},
 	stopHost?: StopHost,
 	pluginSettings?: PluginSettingsReader,
+	agentHost?: AgentHost,
 ): ActivatedExtension {
 	let binding: HostBindingState = { kind: "pending" };
 	// The conversation the stop gate reads its config and todo list for, from the latest session_start.
@@ -1028,8 +1196,9 @@ export function activate(
 			}
 		},
 	};
-	const notices = new NoticeDispatcher({
-		// Sent only while the agent is stopped, so it starts one model turn.
+	// This activation's delivery: present only while a runtime is attached to it.
+	const attachment: RuntimeHost = {
+		kind: "attached",
 		send: (message) => {
 			pi.sendMessage(
 				{ customType: "unified-exec-notice", content: message.content, display: true, details: message.details },
@@ -1037,20 +1206,6 @@ export function activate(
 			);
 		},
 		gate,
-		onSendError: (err) => {
-			ctx.ui?.notify(
-				tr(
-					`unified-exec: failed to deliver a terminal notice: ${err instanceof Error ? err.message : String(err)}`,
-					`unified-exec：终端通知投递失败：${err instanceof Error ? err.message : String(err)}`,
-				),
-				"warning",
-			);
-		},
-	});
-	const coordinator = new CompletionCoordinator({ notices });
-	const lifecycle = new TerminalLifecycle({
-		...lifecycleClock,
-		notices,
 		graceReclaimNotice: async () => {
 			const warnOnce = (key: string, message: string): void => {
 				if (reportedConfigProblems.has(key)) return;
@@ -1078,39 +1233,10 @@ export function activate(
 			));
 			return read.fallback;
 		},
-		reclaim: async (id): Promise<ReclaimResult> => {
-			const session = ctx.store.get(id);
-			if (!session) return { kind: "gone", killedProcesses: false };
-			const terminalOpen = !session.hasExited;
-			const leftover = await killLeftoverGroup(session);
-			if (leftover === "survived") return { kind: "held" };
-			const outcome = await terminateSessionById(ctx, id, "SIGTERM", { kind: "reclaim" });
-			updateRunningSessionsUi(ctx);
-			if (outcome && !outcome.killed) return { kind: "held" };
-			return { kind: "gone", killedProcesses: terminalOpen || leftover === "killed" };
-		},
-	});
-	const ctx: ExtensionCtx = {
-		coordinator,
-		notices,
-		lifecycle,
-		store: new SessionStore({
-			maxSessions: MAX_SESSIONS, lruProtectedCount: LRU_PROTECTED_COUNT,
-			onEvict: (session, reason) => {
-				if (reason === "lru" && !session.hasExited) coordinator.monitorEndReason(session.id, "lru_terminated");
-			},
-		}),
-		ui: undefined,
-		widgetVisible: false,
-		exitUnsubscribers: new Map(),
-		warnedShellFallback: false,
-		notifiedBashSource: false,
-		pendingSessions: new Set(),
-		shuttingDown: false,
-		appearance,
-		shellPath,
-		invalidateGithubCache,
 	};
+	const parked = parkedRuntimes<ExtensionCtx>();
+	// The runtime this activation serves; a revived agent's activation swaps in the one its park left behind.
+	let ctx = createRuntime({ attachment, agentHost, lifecycleClock, appearance, shellPath, invalidateGithubCache });
 	const registerMessageRenderer = (pi as ExtensionAPI & {
 		registerMessageRenderer?: (
 			customType: string,
@@ -1151,12 +1277,21 @@ export function activate(
 		if (approvalHost && binding.kind === "pending") binding = bindSession(approvalHost, bindingContext(eventCtx));
 		hostCwd = eventCtx.cwd;
 		agentId = bindingContext(eventCtx).agentId;
+		const agent = agentHost && agentId !== undefined ? agentHost.identify(agentId) : undefined;
+		const resumed = agent && parked.take(agent.generation);
+		if (resumed) {
+			// omp revived a parked agent: its terminals, monitors, wakes and pending notices carry on here.
+			ctx = resumed;
+		} else {
+			ctx.shuttingDown = false; // reload/new/resume re-arms the extension
+			// Never resurrect notices or wakes from a previous session.
+			ctx.notices.reset();
+			ctx.coordinator.reset();
+			ctx.lifecycle.restart();
+			ctx.agent = agent;
+		}
+		ctx.host = attachment;
 		ctx.ui = eventCtx.ui;
-		ctx.shuttingDown = false; // reload/new/resume re-arms the extension
-		// Never resurrect notices or wakes from a previous session.
-		ctx.notices.reset();
-		ctx.coordinator.reset();
-		ctx.lifecycle.restart();
 		updateRunningSessionsUi(ctx);
 	});
 
@@ -1183,52 +1318,19 @@ export function activate(
 	});
 
 	pi.on("session_shutdown", async () => {
-		// Reject new sessions from here on and terminate everything we own —
-		// including sessions still inside exec_command's early-exit grace
-		// window (spawned but not yet inserted into the store).
-		ctx.shuttingDown = true;
-		// Cancel lifecycle sweeps, wake timers/listeners and pending notices
-		// first: shutdown's own kills create no notices, and no stale prompt may
-		// ever be injected into a new or closed session.
-		ctx.lifecycle.shutdown();
-		ctx.coordinator.shutdown();
-		ctx.notices.stop();
-		const drained = ctx.store.terminateAll();
-		for (const s of ctx.pendingSessions) {
-			void s.releaseForShutdown();
-			if (!s.hasExited) {
-				s.terminate();
-				drained.push(s);
-			}
+		const agent = ctx.agent;
+		if (agentHost && agent && agentHost.isParking(agent)) {
+			// omp parks the agent: this activation ends, its terminals do not. Its
+			// release or abort ends them; a revival resumes them.
+			ctx.host = { kind: "parked" };
+			ctx.ui = undefined;
+			ctx.widgetVisible = false;
+			parked.hold(agentHost, agent.generation, ctx);
+			return;
 		}
-		// Shutdown now owns these: their exec_command must not insert them into
-		// the store once its grace ends (the store belongs to this ended period).
-		ctx.pendingSessions.clear();
-		clearSessionExitWatchers(ctx);
-		updateRunningSessionsUi(ctx);
-		// Children run detached (own process groups), so anything that ignores
-		// SIGTERM would outlive pi as an orphan. Give them a short grace, then
-		// SIGKILL survivors and wait briefly for confirmation. On Windows the
-		// initial kill is already a force tree-kill and a second taskkill is
-		// byte-identical, so skip the escalation there (the grace wait above
-		// still confirms exits). Event-driven per session: each wait resolves
-		// the instant that session's exit fires.
-		await Promise.all(drained.map((s) => waitForExitOrDeadline({ exited: s.exited, durationMs: SHUTDOWN_TERM_GRACE_MS })));
-		if (!IS_WINDOWS) {
-			const survivors = drained.filter((s) => !s.hasExited);
-			for (const s of survivors) s.kill("SIGKILL");
-			await Promise.all(survivors.map((s) => waitForExitOrDeadline({ exited: s.exited, durationMs: SHUTDOWN_KILL_GRACE_MS })));
-		}
-		if (drained.length && ctx.ui) {
-			const leftover = drained.filter((s) => !s.hasExited).length;
-			ctx.ui.notify(
-				tr(
-					`unified-exec: terminated ${drained.length - leftover} live session(s) on shutdown${leftover ? `; ${leftover} did not confirm exit` : ""}`,
-					`unified-exec：关机时终止了 ${drained.length - leftover} 个活动会话${leftover ? `；${leftover} 个会话未确认退出` : ""}`,
-				),
-				leftover ? "warning" : "info",
-			);
-		}
+		await ctx.end();
+		// A main session's teardown released its parked children first; their terminals end before it returns.
+		await parked.settled();
 	});
 
 	// Human-facing escape hatch: inspect and kill live sessions without going
@@ -1465,11 +1567,11 @@ export function activate(
 			let details: MonitorScriptResult;
 			try {
 				if (params.action === "cancel") {
-					details = { session_id: params.session_id, status: coordinator.cancelMonitor(params.session_id) ? "cancelled" : "not_monitored" };
+					details = { session_id: params.session_id, status: ctx.coordinator.cancelMonitor(params.session_id) ? "cancelled" : "not_monitored" };
 				} else {
 					const session = ctx.store.get(params.session_id);
 					if (!session) throw new MonitorError("unknown_session", `No such session: ${params.session_id}`);
-					const monitor = await coordinator.startMonitor(session, { condition: params.condition, maxReturns: params.max_returns, remindAfterMs: params.remind_after_ms }, signal);
+					const monitor = await ctx.coordinator.startMonitor(session, { condition: params.condition, maxReturns: params.max_returns, remindAfterMs: params.remind_after_ms }, signal);
 					details = { session_id: params.session_id, status: "started", monitor };
 				}
 			} catch (error) {
@@ -1626,7 +1728,7 @@ export function activate(
 	} satisfies ToolDefinition<typeof listSessionsParameters> & { docTopics(): Readonly<Record<string, string>> });
 
 	return {
-		store: ctx.store,
+		store: () => ctx.store,
 		// A human kill from the Tern HUD: same path as the slash command.
 		kill: async (id) => {
 			const outcome = await terminateSessionById(ctx, id, "SIGTERM", { kind: "human" });

@@ -74,6 +74,10 @@ declare module "@oh-my-pi/pi-coding-agent/tools/gh-cache-invalidation" {
 	export const invalidateGithubCacheForBashCommand: unknown;
 }
 
+declare module "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle" {
+	export const AgentLifecycleManager: unknown;
+}
+
 declare module "@oh-my-pi/pi-coding-agent/extensibility/plugins/loader" {
 	export const getPluginSettings: unknown;
 }
