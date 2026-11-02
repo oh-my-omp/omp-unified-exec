@@ -67,7 +67,6 @@ test("all six registrations own packaged providers and end with full topic point
 		assert.equal(Object.hasOwn(topics, "nope"), false);
 	}
 	const exec = tools.get("exec_command")!;
-	assert.match(exec.description.slice(0, 200), /bash for one-shot commands.*No command deadline.*exit_code/);
 	assert.doesNotMatch(exec.description, /30 minutes|screen_changed|Notices name/);
 	assert.match(execCommandDocumentation.docTopics().interactive, /screen_changed:false/);
 	assert.match(execCommandDocumentation.docTopics().lifecycle, /Notices name.*session_id.*title/);

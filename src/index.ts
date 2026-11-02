@@ -1401,8 +1401,8 @@ export function activate(
 	});
 
 	// ---------------- Tools ----------------
-	// omp inlines the first 200 description characters and the parameter schema.
-	// Detailed invocation guidance belongs to each tool's packaged topics.
+	// omp gives the model each description and parameter schema; detailed
+	// invocation guidance belongs to each tool's packaged topics.
 
 	const execCommandParameters = Type.Object({
 		cmd: Type.String({ description: "Shell command to execute." }),

@@ -1,9 +1,11 @@
 /**
  * oh-my-pi (omp) presentation for the unified-exec tools.
  *
- * exec_command / write_stdin / kill_session delegate to omp's own bash
- * renderer through display-only adapters; every other tool uses omp's default
- * card. Model-visible results are untouched. The factory rejects non-omp hosts
+ * Every tool registers with `loadMode: "essential"`, so omp lists it as a
+ * top-level function instead of mounting it under `xd://`. exec_command /
+ * write_stdin / kill_session delegate to omp's own bash renderer through
+ * display-only adapters; every other tool uses omp's default card.
+ * Model-visible results are untouched. The factory rejects non-omp hosts
  * before activation and initializes the Tern terminal HUD on omp.
  */
 import type { ExtensionAPI, ToolDefinition, TruncationResult } from "@earendil-works/pi-coding-agent";
@@ -378,7 +380,8 @@ function isShellPresented(name: string): name is ShellPresentedTool {
 }
 
 /**
- * omp's registration API: bash delegation attached for the shell-presented tools.
+ * omp's registration API: every tool top-level (`loadMode: "essential"`), bash
+ * delegation attached for the shell-presented tools.
  * The bash renderer is required; a missing or reshaped one fails plugin loading.
  */
 async function presentOnOmp(pi: ExtensionAPI): Promise<ExtensionAPI> {
@@ -391,8 +394,9 @@ async function presentOnOmp(pi: ExtensionAPI): Promise<ExtensionAPI> {
 		kill_session: delegateToShell(bash, killShellArgs),
 	};
 	const registerTool: ExtensionAPI["registerTool"] = (definition) => {
-		const presented = isShellPresented(definition.name) ? { ...definition, ...hooks[definition.name] } : definition;
-		// omp's registerTool takes its own render signatures; Pi's ToolDefinition type cannot express them.
+		const topLevel = { ...definition, loadMode: "essential" };
+		const presented = isShellPresented(definition.name) ? { ...topLevel, ...hooks[definition.name] } : topLevel;
+		// omp's registerTool takes its own render signatures and `loadMode`; Pi's ToolDefinition type cannot express them.
 		pi.registerTool(presented as unknown as ToolDefinition);
 	};
 	return Object.create(pi, { registerTool: { value: registerTool } }) as ExtensionAPI;
