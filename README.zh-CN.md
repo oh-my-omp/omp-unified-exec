@@ -79,6 +79,7 @@ HUD 直接读取会话，不保存任何副本。它只在 omp 原生渲染时�
 
 在一个持久的 PTY 会话里运行命令。用于长命令、交互程序（REPL、TUI、`ssh`、`sudo`）、并发计算和开发期 daemon；短的一次性命令用宿主的 `bash`。没有命令截止时间，退出的进程也不会被重启。用 `monitor` 和 `read term://…` 观察会话，用 `write_stdin` 发送输入；输出是渲染后的终端屏幕（见[终端输出](#terminal-output)）。
 
+六个工具都是 omp 的顶层工具（`loadMode: "essential"`），不是 `xd://` 设备。
 用 `read xd://<tool>` 查看六个工具各自的精简说明与 topic 指针。
 每个工具通过自己的 `docTopics()` 提供正文：
 

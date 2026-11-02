@@ -84,7 +84,7 @@ A sibling view, indexed by concern:
 | Bun.Terminal backend, runtime admission, spawn preflight, shell-exit events, process-group signals, Windows tree-kill | `src/pty.ts` |
 | Shell selection & argv construction | `src/shell.ts` |
 | `exec.initFile` plugin setting: parse, path resolution, the source-then-`eval` script for POSIX shells | `fork-features/exec-init.ts`; omp's POSIX-shell test in `src/shell.ts` (`isPosixShell`, shared with command approval); read per call in `runExecCommand` (`src/index.ts`); `tests/exec-init.test.ts` |
-| omp-only host admission, bash delegation, argument/result display adapters, live `shellPath` registry lookup | `fork-features/omp-presentation.ts` |
+| omp-only host admission, top-level `loadMode`, bash delegation, argument/result display adapters, live `shellPath` registry lookup | `fork-features/omp-presentation.ts` |
 | Tern terminal HUD: pill segment, Terminals view, terminal page | `fork-features/tern-terminal-hud.ts` |
 | Removal of the Tern plugin versions up to 0.14.7 installed | `fork-features/tern-plugin-removal.ts` |
 | `term://` resources, read handler and screenshots | `fork-features/terminal-resource.ts`, `fork-features/terminal-url.ts`, `fork-features/terminal-image.ts` |

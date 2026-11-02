@@ -194,6 +194,7 @@ command deadline, and nothing restarts a process that exits. Observe a session
 with `monitor` and `read term://…`, and send input with `write_stdin`; its output is the
 rendered terminal screen (see [Terminal output](#terminal-output)).
 
+All six are top-level omp tools (`loadMode: "essential"`), not `xd://` devices.
 Read `xd://<tool>` for any of the six tools' concise descriptions and topic pointers.
 Each tool supplies its own topic bodies through `docTopics()`:
 
