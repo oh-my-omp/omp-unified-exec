@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+## 0.14.24 - 2026-11-02
+
 - A terminal reclaimed after its reclaim-due grace no longer sends a `reclaimed` notice (`fork-features/terminal-lifecycle.ts`, `fork-features/terminal-notice.ts`). The `reclaim_due` notice already announced the reclaim, so the follow-up only woke the agent to end its turn; the `grace_expired` reclaim cause is gone and the reclaim-due text now says no further notice follows. Eviction at the 64-session cap still sends a `reclaimed` notice, since nothing announced it.
 
 ## 0.14.23 - 2026-11-01
