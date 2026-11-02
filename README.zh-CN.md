@@ -167,6 +167,27 @@ switch 与 branch 只复核身份。绑定不可用或失败时，审批返回�
 
 结果头、`details` 和 `structuredContent` 都以 `shell` 字段给出解析后的可执行文件：短命令、已启动的会话和启动失败都一样。`write_stdin` 结果、流式更新、`kill_session` 结果和 `list_sessions` 条目沿用会话启动时的 shell，不会重新选择。shell 只是元数据，从不加入 `output`。
 
+<a id="init-file"></a>
+
+#### 初始化文件
+
+插件设置 `exec.initFile` 指定一个 POSIX shell 脚本，每个 `exec_command` 的 shell 在运行 `cmd` 之前先 source 它。脚本里的 export 和别名只作用于 `exec_command` 终端，不影响 omp 的 `bash` 工具和 omp 本身：
+
+```sh
+# ~/.config/omp-unified-exec/init.sh
+export PIP_REQUIRE_VIRTUALENV=1
+alias omp='omp --hide-thinking'
+```
+
+- **用户级值：** 在 omp 的 `/settings` → Plugins 中设置，或执行 `omp plugin config set omp-unified-exec exec.initFile ~/.config/omp-unified-exec/init.sh`。请使用绝对路径或 `~/` 路径：相对路径在每个项目里会指向不同的文件。
+- **项目级值：** 手写在项目 `.omp/plugin-overrides.json` 的 `settings["omp-unified-exec"]["exec.initFile"]` 中。omp 按键合并设置，所以项目值会取代用户值；项目脚本若也需要用户的预设，自己 source 用户文件即可。相对路径相对于发起调用的会话 cwd 解析，从不相对于 `workdir`。空白值让该项目关闭用户值。
+- 每次调用开始时读取设置，改动从下一次调用起生效。
+- 文件必须存在且是普通文件，设置必须可读，值必须是字符串；否则调用失败，`failure_message` 写明问题，什么都不运行。omp 自身遇到格式错误的 `.omp/plugin-overrides.json` 时只记日志警告并忽略它，此时用户值生效。
+- 只有 POSIX shell（`sh`、`bash`、`dash`、`ash`、`ksh`、`zsh`，即 omp 视为 POSIX 的名称）能 source 它。设置存在时，shell 为其他程序（如 `fish`、`pwsh`、`cmd`）的调用会失败，而不是不带该文件运行。
+- shell 先 source 文件，状态非零就以该状态退出（文件里的 `set -e` 保持原义），然后经 `eval` 运行 `cmd`：zsh 会先解析完整个 `-c` 字符串再运行，同一字符串里定义的别名不会展开。bash 另外启用 `shopt -s expand_aliases`。因此 `cmd` 的错误位置可能显示为 `(eval)`。结果、`list_sessions`、通知和审批仍显示原样的 `cmd`；文件打印的内容出现在终端和日志里。
+- 别名只在 `cmd` 把它当作命令词时生效，包括 `&&` 或 `;` 之后。嵌套 shell、脚本以及 `xargs`、`timeout` 这类包装命令看不到别名，但能看到 export 的变量。在终端里启动的 `omp` 会为它自己的 `exec_command` 调用再次 source 同一个用户文件，所以文件要保持幂等。
+- 该文件是受信任的启动代码。命令审批只检查 `cmd`，不检查文件内容，也不检查别名展开的结果，因此项目值会运行该仓库文件写的任何内容。
+
 <a id="terminal-output"></a>
 
 #### 终端输出
@@ -362,7 +383,7 @@ whiptail/dialog 前端到了 PTY 上只是普通的绘制（备用屏、隐藏�
   - 从未读过：发一条 `unread` 通知；检查会一直保留终端到被读（只有[完成的工作](#finished-work)会回收未读终端；[已完成的子 agent](#finished-subagents-and-omps-idle-park) 的终端不发提醒，直接回收）；
   - 读过：发一条 `reclaim_due` 通知，进入 **5 分钟反悔期**。反悔期内读取会重新开始 30 分钟；否则回收。
 - **回收**结束终端进程组里剩下的一切——Linux 上仍持有终端的后台任务，以及 macOS 上终端关闭后仍在运行的任务（SIGTERM，2 秒后 SIGKILL）——并把终端从 `list_sessions` 和 HUD 中移除。`term://` 地址和 `log_path` 仍可读。进程结束不了的终端保留，下次检查再试（Windows 上根进程已退出的进程树无法触及）。
-- **反悔期满后的回收通知**默认不发，因为 `reclaim_due` 通知已经预告过。插件设置 `notice.graceReclaim`（布尔值，默认 `false`；在 omp 的 `/settings` → Plugins 或用 `omp plugin config` 设置，加 `--local` 写入项目的 `.omp/plugin-overrides.json`）打开后发送 `reclaimed` 通知，同一次检查回收的终端共用一条后续消息。每次有回收的检查都重新读取该设置，改动无需重启即生效。值不是布尔值或设置读不出来时按 `false` 处理，并警告一次。`stop: off` 照样丢弃这条通知，和其他生命周期通知一样。
+- **反悔期满后的回收通知**默认不发，因为 `reclaim_due` 通知已经预告过。插件设置 `notice.graceReclaim`（布尔值，默认 `false`；在 omp 的 `/settings` → Plugins 或用 `omp plugin config` 设置，二者都写用户值；也可以手写进项目的 `.omp/plugin-overrides.json`）打开后发送 `reclaimed` 通知，同一次检查回收的终端共用一条后续消息。每次有回收的检查都重新读取该设置，改动无需重启即生效。值不是布尔值或设置读不出来时按 `false` 处理，并警告一次。`stop: off` 照样丢弃这条通知，和其他生命周期通知一样。
 - **检查**每分钟一次，所以每一步最多晚一分钟。
 - 达到 64 个会话上限时的 **LRU 淘汰**不论 `notice.graceReclaim` 如何，总会发一条注明上限的 `reclaimed` 通知。
 - **完成的工作**立即回收全部已返回终端，读没读过都回收，不发通知。见[完成的工作](#finished-work)。
@@ -564,7 +585,7 @@ src/
 ├── completion.ts         # on_exit "wake" coordination (exactly-once), monitor ownership
 ├── notify.ts             # Notify / Gate / sleep primitives
 ├── pty.ts                # Bun.Terminal backend, host admission, spawn preflight, shell-exit events, process-group signals, Windows tree-kill
-├── shell.ts              # shell selection and argv (Windows-aware)
+├── shell.ts              # shell selection and argv (Windows-aware); omp's POSIX-shell test
 ├── output-safety.ts      # terminal-control stripping
 ├── terminal-screen.ts    # headless terminal: observations, styled screens, query answers
 ├── tool-result.ts        # bounded envelopes + model-visible text
@@ -584,6 +605,7 @@ fork-features/
 ├── terminal-lifecycle.ts # returned-terminal TTL, read/reclaim reminders, grace, reclaim, finished-work collection
 ├── stop-config.ts        # `omp-unified-exec` omomp section: stop mode, judge prompt, notice template
 ├── plugin-settings.ts    # native plugin settings (`omp.settings`): `notice.graceReclaim`, read via omp's getPluginSettings
+├── exec-init.ts          # `exec.initFile`: resolve the init file, source it before `cmd` in POSIX shells
 ├── stop-gate.ts          # judge / @smol / todo stop detectors over factory-loaded omp modules
 ├── stop-reasons.ts       # structured stop/config reasons; English/Chinese boundary rendering
 ├── exec-command-docs.ts  # six tools' lazy documentation providers and topic pointers

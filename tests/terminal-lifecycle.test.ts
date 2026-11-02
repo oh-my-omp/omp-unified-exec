@@ -299,12 +299,20 @@ describe("terminal lifecycle", { skip: process.platform === "win32" }, () => {
 			return { "notice.graceReclaim": value };
 		});
 		await h.emit("session_start");
+		// exec_command also reads the settings (for exec.initFile); count only each sweep's reads.
+		const sweepReads = async (sweep: () => Promise<void>): Promise<number> => {
+			const before = cwds.length;
+			await sweep();
+			return cwds.length - before;
+		};
 		const off = await startHeld(h, "off");
 		h.advance(30 * MINUTE);
 		assert.ok(await waitFor(() => h.notices("reclaim_due").length === 1));
-		h.advance(5 * MINUTE);
-		assert.ok(await waitFor(async () => await h.listed(off.sid) === undefined));
-		await settle();
+		assert.equal(await sweepReads(async () => {
+			h.advance(5 * MINUTE);
+			assert.ok(await waitFor(async () => await h.listed(off.sid) === undefined));
+			await settle();
+		}), 1, "read once per reclaiming sweep");
 		assert.equal(h.notices("reclaimed").length, 0, "off: reclaimed without a notice");
 
 		// Changed in /settings meanwhile: the next reclaiming sweep reads it, no restart.
@@ -314,22 +322,25 @@ describe("terminal lifecycle", { skip: process.platform === "win32" }, () => {
 		h.advance(30 * MINUTE);
 		assert.ok(await waitFor(() => h.notices("reclaim_due").length === 3));
 		const before = h.sent.length;
-		h.advance(5 * MINUTE);
-		assert.ok(await waitFor(() => h.notices("reclaimed").length === 2));
+		assert.equal(await sweepReads(async () => {
+			h.advance(5 * MINUTE);
+			assert.ok(await waitFor(() => h.notices("reclaimed").length === 2));
+		}), 1, "read once per reclaiming sweep");
 		const reclaimedMessages = h.sent.slice(before).filter((s) => s.message.details.notices.some((n) => n.kind === "reclaimed"));
 		assert.equal(reclaimedMessages.length, 1);
 		assert.deepEqual(reclaimedMessages[0]!.message.details.notices.map((n) => n.title).sort(), ["first", "second"]);
 		assert.match(reclaimedMessages[0]!.message.content, /reclaimed: returned normally; not read again during the grace period/);
 		assert.ok(await waitFor(() => !alive(a.bg) && !alive(b.bg)));
-		assert.deepEqual(cwds, [process.cwd(), process.cwd()], "read once per reclaiming sweep, with the session's cwd");
+		assert.ok(cwds.every((cwd) => cwd === process.cwd()), "every read uses the session's cwd");
 	});
 
 	it("an invalid or unreadable notice.graceReclaim falls back to no notice and warns once", async () => {
 		let stored: () => Promise<Readonly<Record<string, unknown>>> = async () => ({ "notice.graceReclaim": "yes" });
 		const h = makeHarness(() => stored());
 		await h.emit("session_start");
-		const reclaimOne = async (title: string, dueCount: number): Promise<void> => {
+		const reclaimOne = async (title: string, dueCount: number, afterStart?: () => void): Promise<void> => {
 			const { sid } = await startHeld(h, title);
+			afterStart?.();
 			h.advance(30 * MINUTE);
 			assert.ok(await waitFor(() => h.notices("reclaim_due").length === dueCount));
 			h.advance(5 * MINUTE);
@@ -338,8 +349,8 @@ describe("terminal lifecycle", { skip: process.platform === "win32" }, () => {
 		};
 		await reclaimOne("invalid one", 1);
 		await reclaimOne("invalid two", 2);
-		stored = async () => { throw new Error("broken overrides"); };
-		await reclaimOne("unreadable", 3);
+		// Unreadable only after the start: exec_command refuses to start without readable settings.
+		await reclaimOne("unreadable", 3, () => { stored = async () => { throw new Error("broken overrides"); }; });
 		assert.equal(h.notices("reclaimed").length, 0);
 		assert.equal(h.warnings.filter((w) => /notice\.graceReclaim must be true or false; using false/.test(w)).length, 1);
 		assert.equal(h.warnings.filter((w) => /could not read plugin settings, using defaults: broken overrides/.test(w)).length, 1);

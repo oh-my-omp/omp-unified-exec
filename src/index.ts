@@ -57,6 +57,7 @@ import {
 } from "../fork-features/exec-command-docs.ts";
 import { bindingContext, bindSession, type HostBindingState, recheckBinding } from "../fork-features/session-binding.ts";
 import { MonitorError } from "../fork-features/monitor-subscription.ts";
+import { loadInitFile, shellScript } from "../fork-features/exec-init.ts";
 import { parseGraceReclaim, type PluginSettingsReader } from "../fork-features/plugin-settings.ts";
 import { loadStopConfig } from "../fork-features/stop-config.ts";
 import { detectStop, type StopHost } from "../fork-features/stop-gate.ts";
@@ -220,6 +221,8 @@ interface ExtensionCtx extends ParkedRuntime {
 	shellPath?: () => string | undefined;
 	/** omp's shared GitHub view-cache invalidation for `gh` mutations, as the host bash calls it. */
 	invalidateGithubCache?: (command: string) => void;
+	/** omp's plugin settings, read per call for `exec.initFile`; undefined without omp's settings API. */
+	pluginSettings: PluginSettingsReader | undefined;
 	/** Where notices go now. */
 	host: RuntimeHost;
 	/** The agent these terminals belong to, from its session_start; undefined without omp's agent registry. */
@@ -362,27 +365,30 @@ async function runExecCommand(
 	shellBin = /[\\/]/.test(shellBin)
 		? resolve(effectiveCwd, shellBin)
 		: IS_WINDOWS ? resolveWindowsShell(shellBin) : resolveBinary(shellBin);
-	const shellCommand = buildShellCommand(shellBin, args.cmd);
 	const yieldTimeMs = clampYield(args.yield_time_ms, DEFAULT_EXEC_YIELD_MS);
 	const wantsWake = args.on_exit === "wake";
+	const setupFailure = (failure: string): ResponseShape => finalizeResponse({
+		wallTimeSec: 0,
+		collected: NO_OUTPUT,
+		sessionId: undefined,
+		exitCode: -1,
+		signal: null,
+		failure,
+		logPath: undefined,
+		cwd: effectiveCwd,
+		shell: shellBin,
+		command: args.cmd,
+		yieldTimeMs,
+	});
 
 	// Same wording as the host's bash; nothing is spawned for an unusable directory.
 	const workdirFailure = workdirProblem(effectiveCwd);
-	if (workdirFailure) {
-		return finalizeResponse({
-			wallTimeSec: 0,
-			collected: NO_OUTPUT,
-			sessionId: undefined,
-			exitCode: -1,
-			signal: null,
-			failure: workdirFailure,
-			logPath: undefined,
-			cwd: effectiveCwd,
-			shell: shellBin,
-			command: args.cmd,
-			yieldTimeMs,
-		});
-	}
+	if (workdirFailure) return setupFailure(workdirFailure);
+
+	// The project's settings belong to the calling session's cwd, not to `workdir`.
+	const script = shellScript(await loadInitFile(ctx.pluginSettings, cwd), shellBin, args.cmd);
+	if (script.kind === "unusable") return setupFailure(script.reason);
+	const shellCommand = buildShellCommand(shellBin, script.cmd);
 
 	// Like the host bash: a `gh` mutation clears issue:// / pr:// cache rows
 	// before it runs; a failed command still pays only one extra fetch.
@@ -989,6 +995,7 @@ interface RuntimeOptions {
 	readonly appearance: () => TerminalAppearance;
 	readonly shellPath: (() => string | undefined) | undefined;
 	readonly invalidateGithubCache: ((command: string) => void) | undefined;
+	readonly pluginSettings: PluginSettingsReader | undefined;
 }
 
 /** A new agent runtime, attached to the activation that creates it. */
@@ -1047,6 +1054,7 @@ function createRuntime(opts: RuntimeOptions): ExtensionCtx {
 		appearance: opts.appearance,
 		shellPath: opts.shellPath,
 		invalidateGithubCache: opts.invalidateGithubCache,
+		pluginSettings: opts.pluginSettings,
 		host: opts.attachment,
 		agent: undefined,
 		end: () => endRuntime(ctx),
@@ -1236,7 +1244,7 @@ export function activate(
 	};
 	const parked = parkedRuntimes<ExtensionCtx>();
 	// The runtime this activation serves; a revived agent's activation swaps in the one its park left behind.
-	let ctx = createRuntime({ attachment, agentHost, lifecycleClock, appearance, shellPath, invalidateGithubCache });
+	let ctx = createRuntime({ attachment, agentHost, lifecycleClock, appearance, shellPath, invalidateGithubCache, pluginSettings });
 	const registerMessageRenderer = (pi as ExtensionAPI & {
 		registerMessageRenderer?: (
 			customType: string,

@@ -3,8 +3,9 @@
  * packages/coding-agent/src/tools/bash.ts (approval helpers and BashTool.approval).
  * Differences: the command is exec_command's raw `cmd`; settings are parsed at
  * the bound-session adapter; host tokenizer/critical patterns are injected.
- * The unavailable utils/procmgr `isPosixShell` predicate is copied verbatim.
+ * The unavailable utils/procmgr `isPosixShell` predicate is copied verbatim into src/shell.ts.
  */
+import { isPosixShell } from "../src/shell.ts";
 import type { HostBindingState, HostSettings, SessionRegistry } from "./session-binding.ts";
 
 export type BashPatternApproval = "allow" | "deny" | "prompt";
@@ -113,12 +114,6 @@ function bashApprovalRuleMatches(command: string, rule: BashApprovalPatternRule,
 }
 function findBashApprovalPatternRule(command: string, rules: readonly BashApprovalPatternRule[], tokenize: Tokenize): BashApprovalPatternRule | undefined {
 	return rules.find((rule) => bashApprovalRuleMatches(command, rule, tokenize));
-}
-
-// Copied from packages/utils/src/procmgr.ts: isPosixShell.
-const POSIX_SHELL_PATTERN = /(?:^|[\\/])(?:sh|bash|dash|ash|ksh|zsh)(?:\.exe)?$/i;
-function isPosixShell(shell: string): boolean {
-	return POSIX_SHELL_PATTERN.test(shell);
 }
 
 /** Exactly the built-in BashTool approval precedence, with already-bound inputs. */

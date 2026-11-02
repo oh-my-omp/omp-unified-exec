@@ -48,9 +48,17 @@ export interface ShellCommand {
 }
 
 /** Basename without a Windows executable extension, lowercased. */
-function shellBase(shellBin: string): string {
+export function shellBase(shellBin: string): string {
 	const base = shellBin.split(/[\\/]/).pop() ?? shellBin;
 	return base.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
+}
+
+// The host's own test, copied from packages/utils/src/procmgr.ts: isPosixShell.
+const POSIX_SHELL_PATTERN = /(?:^|[\\/])(?:sh|bash|dash|ash|ksh|zsh)(?:\.exe)?$/i;
+
+/** Whether omp treats `shell` as a POSIX shell (sh, bash, dash, ash, ksh, zsh). */
+export function isPosixShell(shell: string): boolean {
+	return POSIX_SHELL_PATTERN.test(shell);
 }
 
 /**

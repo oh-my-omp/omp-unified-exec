@@ -41,6 +41,10 @@
 				"type": "boolean",
 				"default": false,
 				"description": "Send a reclaimed notice when a read terminal is reclaimed after its reclaim-due grace"
+			},
+			"exec.initFile": {
+				"type": "string",
+				"description": "POSIX shell script every exec_command shell sources before its command, e.g. export NAME=value or alias omp='omp --hide-thinking'. Use ~/ or an absolute path; a project's .omp/plugin-overrides.json value replaces it, relative paths there resolve against the session cwd"
 			}
 		}
 	},

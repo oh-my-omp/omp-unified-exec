@@ -300,6 +300,55 @@ results and `list_sessions` entries repeat the shell the session started
 with; they never select again. The shell is metadata only and is never added
 to `output`.
 
+#### Init file
+
+The plugin setting `exec.initFile` names a POSIX shell script that every
+`exec_command` shell sources before running `cmd`. Its exports and aliases
+reach `exec_command` terminals only, not omp's `bash` tool or omp itself:
+
+```sh
+# ~/.config/omp-unified-exec/init.sh
+export PIP_REQUIRE_VIRTUALENV=1
+alias omp='omp --hide-thinking'
+```
+
+- **User value:** omp's `/settings` → Plugins, or
+  `omp plugin config set omp-unified-exec exec.initFile ~/.config/omp-unified-exec/init.sh`.
+  Use an absolute or `~/` path: a relative one would name a different file
+  in every project.
+- **Project value:** `settings["omp-unified-exec"]["exec.initFile"]` in the
+  project's `.omp/plugin-overrides.json`, written by hand. omp merges settings
+  per key, so it replaces the user value; a project file that also wants the
+  user's presets sources that file itself. A relative path resolves against
+  the calling session's cwd, never against `workdir`. A blank value turns a
+  user value off for the project.
+- The setting is read when each call starts, so a change applies to the next
+  call.
+- The file must exist and be a regular file, the settings must be readable
+  and the value must be a string; otherwise the call fails with a
+  `failure_message` naming the problem and nothing runs. omp itself ignores a
+  malformed `.omp/plugin-overrides.json` with a log warning, and the user
+  value then applies.
+- Only POSIX shells (`sh`, `bash`, `dash`, `ash`, `ksh`, `zsh`, the names omp
+  treats as POSIX) can source it. While it is set, a call whose shell is
+  anything else, such as `fish`, `pwsh` or `cmd`, fails instead of running
+  without the file.
+- The shell sources the file, stops with its status if that is nonzero (a
+  `set -e` inside the file keeps its meaning), and then runs `cmd` through
+  `eval`, because zsh parses a whole `-c` string before running any of it
+  and would not expand aliases defined in the same string. Bash also gets
+  `shopt -s expand_aliases`. Errors in `cmd` may therefore be reported at
+  `(eval)` positions. Results, `list_sessions`, notices and approval still show
+  `cmd` as given; what the file prints appears in the terminal and the log.
+- An alias applies only where `cmd` names it as a command word, including
+  after `&&` or `;`. Nested shells, scripts and wrappers like `xargs` or
+  `timeout` do not see aliases; exported variables they do see. An `omp` started in a
+  terminal sources the same user file for its own `exec_command` calls, so
+  keep the file idempotent.
+- The file is trusted startup code. Command approval checks only `cmd`, not
+  the file or what its aliases expand to, so a project value runs whatever
+  that repository's file says.
+
 #### Terminal output
 
 Every session feeds every byte its child writes, in order, into a headless
@@ -609,8 +658,8 @@ background processes may still hold the terminal — or the terminal closes.
 - **Reclaim notice** after the grace: none by default, since the
   `reclaim_due` notice already announced the reclaim. The plugin setting
   `notice.graceReclaim` (boolean, default `false`; set it in omp's
-  `/settings` → Plugins or with `omp plugin config`, `--local` for a
-  project's `.omp/plugin-overrides.json`) turns on a
+  `/settings` → Plugins or with `omp plugin config`, which write the user
+  value, or by hand in a project's `.omp/plugin-overrides.json`) turns on a
   `reclaimed` notice; terminals reclaimed in the same check share one
   follow-up. The setting is read at each check that reclaims, so a change
   applies without a restart. A non-boolean value, or settings that cannot be
@@ -930,7 +979,7 @@ src/
 ├── completion.ts         # on_exit "wake" coordination (exactly-once), monitor ownership
 ├── notify.ts             # Notify / Gate / sleep primitives
 ├── pty.ts                # Bun.Terminal backend, host admission, spawn preflight, shell-exit events, process-group signals, Windows tree-kill
-├── shell.ts              # shell selection and argv (Windows-aware)
+├── shell.ts              # shell selection and argv (Windows-aware); omp's POSIX-shell test
 ├── output-safety.ts      # terminal-control stripping
 ├── terminal-screen.ts    # headless terminal: observations, styled screens, query answers
 ├── tool-result.ts        # bounded envelopes + model-visible text
@@ -950,6 +999,7 @@ fork-features/
 ├── terminal-lifecycle.ts # returned-terminal TTL, read/reclaim reminders, grace, reclaim, finished-work collection
 ├── stop-config.ts        # `omp-unified-exec` omomp section: stop mode, judge prompt, notice template
 ├── plugin-settings.ts    # native plugin settings (`omp.settings`): `notice.graceReclaim`, read via omp's getPluginSettings
+├── exec-init.ts          # `exec.initFile`: resolve the init file, source it before `cmd` in POSIX shells
 ├── stop-gate.ts          # judge / @smol / todo stop detectors over factory-loaded omp modules
 ├── stop-reasons.ts       # structured stop/config reasons; English/Chinese boundary rendering
 ├── exec-command-docs.ts  # six tools' lazy documentation providers and topic pointers
