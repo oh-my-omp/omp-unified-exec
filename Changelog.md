@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+- The grace reclaim notice that 0.14.24 removed outright is now the native plugin setting `notice.graceReclaim` (boolean, default `false`; `/settings` → Plugins or `omp plugin config`). By default a terminal reclaimed after its reclaim-due grace still sends no `reclaimed` notice; turning the setting on restores the merged per-sweep notice and its `grace_expired` cause, and the reclaim-due text no longer promises either way. The value is read at each reclaiming check through omp's `getPluginSettings` with the session's cwd, so a change applies without a restart, and an invalid or unreadable value falls back to `false` with one warning. Eviction at the 64-session cap always sends its notice, and `stop: off` still drops lifecycle notices (`fork-features/plugin-settings.ts`, `fork-features/terminal-lifecycle.ts`, `fork-features/terminal-notice.ts`, `fork-features/omp-presentation.ts`, `src/index.ts`, `package.json`).
+
 ## 0.14.24 - 2026-11-02
 
 - A terminal reclaimed after its reclaim-due grace no longer sends a `reclaimed` notice (`fork-features/terminal-lifecycle.ts`, `fork-features/terminal-notice.ts`). The `reclaim_due` notice already announced the reclaim, so the follow-up only woke the agent to end its turn; the `grace_expired` reclaim cause is gone and the reclaim-due text now says no further notice follows. Eviction at the 64-session cap still sends a `reclaimed` notice, since nothing announced it.

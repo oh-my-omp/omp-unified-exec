@@ -54,6 +54,7 @@ import {
 } from "../fork-features/exec-command-docs.ts";
 import { bindingContext, bindSession, type HostBindingState, recheckBinding } from "../fork-features/session-binding.ts";
 import { MonitorError } from "../fork-features/monitor-subscription.ts";
+import { parseGraceReclaim, type PluginSettingsReader } from "../fork-features/plugin-settings.ts";
 import { loadStopConfig } from "../fork-features/stop-config.ts";
 import { detectStop, type StopHost } from "../fork-features/stop-gate.ts";
 import { renderStopConfigReason, renderStopReason } from "../fork-features/stop-reasons.ts";
@@ -957,7 +958,8 @@ function finalResponseText(event: unknown): string | undefined {
 /**
  * Activate the tool core; the default factory supplies omp's appearance and
  * live shell setting. `lifecycleClock` replaces the host clock for terminal
- * TTLs and the minute sweep; `stopHost` enables stop decisions.
+ * TTLs and the minute sweep; `stopHost` enables stop decisions;
+ * `pluginSettings` reads the native plugin settings (absent: manifest defaults).
  */
 export function activate(
 	pi: ExtensionAPI,
@@ -967,6 +969,7 @@ export function activate(
 	invalidateGithubCache?: (command: string) => void,
 	lifecycleClock: LifecycleClock = {},
 	stopHost?: StopHost,
+	pluginSettings?: PluginSettingsReader,
 ): ActivatedExtension {
 	let binding: HostBindingState = { kind: "pending" };
 	// The conversation the stop gate reads its config and todo list for, from the latest session_start.
@@ -1048,6 +1051,33 @@ export function activate(
 	const lifecycle = new TerminalLifecycle({
 		...lifecycleClock,
 		notices,
+		graceReclaimNotice: async () => {
+			const warnOnce = (key: string, message: string): void => {
+				if (reportedConfigProblems.has(key)) return;
+				reportedConfigProblems.add(key);
+				ctx.ui?.notify(message, "warning");
+			};
+			let stored: Readonly<Record<string, unknown>> = {};
+			if (pluginSettings) {
+				try {
+					// Before any session_start only the global settings apply.
+					stored = await pluginSettings(hostCwd ?? "/");
+				} catch (error) {
+					const reason = error instanceof Error ? error.message : String(error);
+					warnOnce(`plugin-settings\n${reason}`, tr(
+						`unified-exec: could not read plugin settings, using defaults: ${reason}`,
+						`unified-exec：无法读取插件设置，改用默认值：${reason}`,
+					));
+				}
+			}
+			const read = parseGraceReclaim(stored);
+			if (read.kind === "ok") return read.value;
+			warnOnce(`plugin-setting\n${read.key}`, tr(
+				`unified-exec: plugin setting ${read.key} must be true or false; using ${read.fallback}`,
+				`unified-exec：插件设置 ${read.key} 必须为 true 或 false；改用 ${read.fallback}`,
+			));
+			return read.fallback;
+		},
 		reclaim: async (id): Promise<ReclaimResult> => {
 			const session = ctx.store.get(id);
 			if (!session) return { kind: "gone", killedProcesses: false };

@@ -9,6 +9,7 @@
 		"skipLibCheck": true,
 		"esModuleInterop": true,
 		"allowImportingTsExtensions": true,
+		"resolveJsonModule": true,
 		"types": ["node"]
 	},
 	"include": ["src/**/*.ts", "fork-features/**/*.ts", "tests/**/*.ts"]

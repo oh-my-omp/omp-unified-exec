@@ -35,7 +35,14 @@
 	"omp": {
 		"extensions": [
 			"./src/index.ts"
-		]
+		],
+		"settings": {
+			"notice.graceReclaim": {
+				"type": "boolean",
+				"default": false,
+				"description": "Send a reclaimed notice when a read terminal is reclaimed after its reclaim-due grace"
+			}
+		}
 	},
 	"publishConfig": {
 		"access": "public"

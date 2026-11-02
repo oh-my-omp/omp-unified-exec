@@ -1,14 +1,16 @@
 /**
  * Terminal lifecycle through the real tools and real PTYs: required titles,
  * abnormal-return notices, the 30-minute TTL with its read reminder or
- * reclaim-due notice, the 5-minute grace, and the silent reclaim (killing
- * processes that still hold the terminal). The lifecycle
- * clock is injected so a test steps through half an hour without waiting;
- * processes run on real time.
+ * reclaim-due notice, the 5-minute grace, reclaim (killing processes that
+ * still hold the terminal), and the `notice.graceReclaim` plugin setting
+ * that decides whether that reclaim sends a merged reclaimed notice. The
+ * lifecycle clock is injected so a test steps through half an hour without
+ * waiting; processes run on real time.
  */
 
 import { strict as assert } from "node:assert";
 import { afterEach, describe, it } from "node:test";
+import type { PluginSettingsReader } from "../fork-features/plugin-settings.ts";
 import { noteTerminalRead, readTerminal } from "../fork-features/terminal-resource.ts";
 import { activate } from "../src/index.ts";
 
@@ -49,6 +51,8 @@ type Handler = (event: object, ctx: object) => unknown;
 
 interface Harness {
 	readonly sent: Sent[];
+	/** UI warnings shown to the human. */
+	readonly warnings: string[];
 	emit(event: string, evt?: object): Promise<void>;
 	/** Call a tool and let the host finalize its result successfully. */
 	call(name: string, params: object): Promise<ToolResult>;
@@ -60,13 +64,18 @@ interface Harness {
 
 const live = new Set<Harness>();
 
-function makeHarness(): Harness {
+function makeHarness(pluginSettings?: PluginSettingsReader): Harness {
 	const tools: Record<string, ToolDef> = {};
 	const handlers: Record<string, Handler[]> = {};
 	const sent: Sent[] = [];
+	const warnings: string[] = [];
 	let now = Date.now();
 	let sweep: (() => void) | undefined;
-	const stubCtx = { cwd: process.cwd(), ui: { notify() {}, setStatus() {}, setWidget() {} }, hasUI: false };
+	const ui = {
+		notify(message: string, level: string) { if (level === "warning") warnings.push(message); },
+		setStatus() {}, setWidget() {},
+	};
+	const stubCtx = { cwd: process.cwd(), ui, hasUI: false };
 	const pi = {
 		registerTool: (def: ToolDef) => { tools[def.name] = def; },
 		on: (event: string, handler: Handler) => { (handlers[event] ??= []).push(handler); },
@@ -79,10 +88,11 @@ function makeHarness(): Harness {
 		nowFn: () => now,
 		setIntervalFn: (cb) => { sweep = cb; return 1; },
 		clearIntervalFn: () => { sweep = undefined; },
-	});
+	}, undefined, pluginSettings);
 	let nextCallId = 1;
 	const harness: Harness = {
 		sent,
+		warnings,
 		async emit(event, evt = {}) {
 			for (const h of handlers[event] ?? []) await h(evt, stubCtx);
 		},
@@ -178,7 +188,7 @@ describe("exec_command title", { skip: process.platform === "win32" }, () => {
 });
 
 describe("terminal lifecycle", { skip: process.platform === "win32" }, () => {
-	it("reclaims a read terminal after the TTL and an unread grace, killing what still holds it", async () => {
+	it("reclaims a read terminal after the TTL and an unread grace, killing what still holds it, silently by default", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		const { sid, bg, url } = await startHeld(h, "held job");
@@ -200,7 +210,7 @@ describe("terminal lifecycle", { skip: process.platform === "win32" }, () => {
 		assert.ok(await waitFor(async () => await h.listed(sid) === undefined), "reclaimed");
 		assert.ok(await waitFor(() => !alive(bg)), "the job holding the terminal is killed");
 		await settle();
-		assert.equal(h.sent.length, before, "the reclaim-due notice announced it; reclaim sends nothing");
+		assert.equal(h.sent.length, before, "notice.graceReclaim defaults to off: the reclaim sends nothing");
 		// The retained terminal stays readable.
 		assert.ok((await readTerminal(url.slice(7))).retainedLines.some((line) => line.startsWith("bg=")));
 	});
@@ -279,6 +289,60 @@ describe("terminal lifecycle", { skip: process.platform === "win32" }, () => {
 		assert.deepEqual(entry?.lifecycle, { returned: "normally", read: true, phase: "ttl" });
 		h.advance(30 * MINUTE);
 		assert.ok(await waitFor(() => h.notices("reclaim_due").length === 1));
+	});
+
+	it("with notice.graceReclaim on, one sweep's reclaims share one reclaimed follow-up; the setting is read live", async () => {
+		let value: unknown = false;
+		const cwds: string[] = [];
+		const h = makeHarness(async (cwd) => {
+			cwds.push(cwd);
+			return { "notice.graceReclaim": value };
+		});
+		await h.emit("session_start");
+		const off = await startHeld(h, "off");
+		h.advance(30 * MINUTE);
+		assert.ok(await waitFor(() => h.notices("reclaim_due").length === 1));
+		h.advance(5 * MINUTE);
+		assert.ok(await waitFor(async () => await h.listed(off.sid) === undefined));
+		await settle();
+		assert.equal(h.notices("reclaimed").length, 0, "off: reclaimed without a notice");
+
+		// Changed in /settings meanwhile: the next reclaiming sweep reads it, no restart.
+		value = true;
+		const a = await startHeld(h, "first");
+		const b = await startHeld(h, "second");
+		h.advance(30 * MINUTE);
+		assert.ok(await waitFor(() => h.notices("reclaim_due").length === 3));
+		const before = h.sent.length;
+		h.advance(5 * MINUTE);
+		assert.ok(await waitFor(() => h.notices("reclaimed").length === 2));
+		const reclaimedMessages = h.sent.slice(before).filter((s) => s.message.details.notices.some((n) => n.kind === "reclaimed"));
+		assert.equal(reclaimedMessages.length, 1);
+		assert.deepEqual(reclaimedMessages[0]!.message.details.notices.map((n) => n.title).sort(), ["first", "second"]);
+		assert.match(reclaimedMessages[0]!.message.content, /reclaimed: returned normally; not read again during the grace period/);
+		assert.ok(await waitFor(() => !alive(a.bg) && !alive(b.bg)));
+		assert.deepEqual(cwds, [process.cwd(), process.cwd()], "read once per reclaiming sweep, with the session's cwd");
+	});
+
+	it("an invalid or unreadable notice.graceReclaim falls back to no notice and warns once", async () => {
+		let stored: () => Promise<Readonly<Record<string, unknown>>> = async () => ({ "notice.graceReclaim": "yes" });
+		const h = makeHarness(() => stored());
+		await h.emit("session_start");
+		const reclaimOne = async (title: string, dueCount: number): Promise<void> => {
+			const { sid } = await startHeld(h, title);
+			h.advance(30 * MINUTE);
+			assert.ok(await waitFor(() => h.notices("reclaim_due").length === dueCount));
+			h.advance(5 * MINUTE);
+			assert.ok(await waitFor(async () => await h.listed(sid) === undefined), `${title} reclaimed`);
+			await settle();
+		};
+		await reclaimOne("invalid one", 1);
+		await reclaimOne("invalid two", 2);
+		stored = async () => { throw new Error("broken overrides"); };
+		await reclaimOne("unreadable", 3);
+		assert.equal(h.notices("reclaimed").length, 0);
+		assert.equal(h.warnings.filter((w) => /notice\.graceReclaim must be true or false; using false/.test(w)).length, 1);
+		assert.equal(h.warnings.filter((w) => /could not read plugin settings, using defaults: broken overrides/.test(w)).length, 1);
 	});
 
 	it("monitor notices go through the same notice abstraction", async () => {

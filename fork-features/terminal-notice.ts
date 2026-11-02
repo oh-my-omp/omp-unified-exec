@@ -41,8 +41,9 @@ export interface MonitorReturns {
 
 export type InputPromptLabel = "dialog" | "inline" | "pager";
 
-/** Why a terminal was reclaimed with a notice; a reclaim after the reclaim-due grace sends none. */
 export type ReclaimCause =
+	/** Read, then not read again through the TTL and the grace period; sent only when the `notice.graceReclaim` setting is on. */
+	| { readonly kind: "grace_expired"; readonly killed: boolean }
 	/** The session store reached its cap and evicted its least recently used entry. */
 	| { readonly kind: "capacity"; readonly cap: number; readonly signalled: boolean };
 
@@ -291,8 +292,8 @@ export function describeNotice(body: NoticeBody, localized = false): Described {
 				`约 ${elapsed(body.graceMs)} 后将被回收：${outcomeText(body.outcome, true)}，上次读取距今 ${elapsed(body.lastReadAgoMs)}`,
 			),
 			lines: [t(
-				`A read keeps it for another ${elapsed(body.ttlMs)}; otherwise its remaining processes are killed and it leaves list_sessions, with no further notice. The terminal stays readable.`,
-				`读取一次可再保留 ${elapsed(body.ttlMs)}；否则其剩余进程会被结束并从 list_sessions 移除，不再另发通知。终端仍可读取。`,
+				`A read keeps it for another ${elapsed(body.ttlMs)}; otherwise its remaining processes are killed and it leaves list_sessions. The terminal stays readable.`,
+				`读取一次可再保留 ${elapsed(body.ttlMs)}；否则其剩余进程会被结束并从 list_sessions 移除。终端仍可读取。`,
 			)],
 			actionable: false,
 		};
@@ -301,6 +302,17 @@ export function describeNotice(body: NoticeBody, localized = false): Described {
 				? t(`returned ${outcomeText(body.outcome)}; `, `${outcomeText(body.outcome, true)}；`)
 				: "";
 			switch (body.cause.kind) {
+				case "grace_expired": return {
+					reason: t(
+						`reclaimed: ${returned}not read again during the grace period`,
+						`已回收：${returned}反悔期内未再次读取`,
+					),
+					lines: [t(
+						`${body.cause.killed ? "Remaining processes killed. " : ""}session_id is gone; the terminal and log_path stay readable.`,
+						`${body.cause.killed ? "剩余进程已结束。 " : ""}session_id 已消失；终端和 log_path 仍可读取。`,
+					)],
+					actionable: false,
+				};
 				case "capacity": return {
 					reason: t(
 						`reclaimed: ${returned}the session cap (${body.cause.cap}) evicted it as least recently used`,

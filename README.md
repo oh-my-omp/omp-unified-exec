@@ -106,8 +106,8 @@ results remain in English.
   once; 30 minutes after the return or the last read, a never-read terminal
   gets one read reminder, and a read one gets a reclaim-due notice and a
   5-minute grace before its remaining processes are killed and it is
-  reclaimed without a further notice. See
-  [Terminal lifecycle](#terminal-lifecycle).
+  reclaimed, silently unless the `notice.graceReclaim` plugin setting is on.
+  See [Terminal lifecycle](#terminal-lifecycle).
 - **One notice channel.** Wakes, monitor returns and reminders, input-wait
   alerts and lifecycle notices are all terminal notices: each names the
   terminal by `session_id` and the title given to `exec_command`, with a short
@@ -600,14 +600,23 @@ background processes may still hold the terminal — or the terminal closes.
 - **Reclaim** kills whatever is left of the terminal's process group —
   background jobs holding the terminal on Linux, and jobs that outlived the
   closed terminal on macOS (SIGTERM, SIGKILL after 2 s) — and removes the
-  terminal from `list_sessions` and the HUD. It sends no notice: the
-  `reclaim_due` notice already announced it. The `term://` address and
+  terminal from `list_sessions` and the HUD. The `term://` address and
   `log_path` stay readable. A terminal whose processes cannot be ended stays
   and is retried at the next check (on Windows a tree whose root has exited
   cannot be reached).
+- **Reclaim notice** after the grace: none by default, since the
+  `reclaim_due` notice already announced the reclaim. The plugin setting
+  `notice.graceReclaim` (boolean, default `false`; set it in omp's
+  `/settings` → Plugins or with `omp plugin config`, `--local` for a
+  project's `.omp/plugin-overrides.json`) turns on a
+  `reclaimed` notice; terminals reclaimed in the same check share one
+  follow-up. The setting is read at each check that reclaims, so a change
+  applies without a restart. A non-boolean value, or settings that cannot be
+  read, fall back to `false` with one warning. `stop: off` still drops the
+  notice like every lifecycle notice.
 - **Checks** run once a minute, so each step can land up to a minute late.
-- **LRU eviction** at the 64-session cap is announced by nothing else, so it
-  sends a `reclaimed` notice naming the cap.
+- **LRU eviction** at the 64-session cap always sends a `reclaimed` notice
+  naming the cap, whatever `notice.graceReclaim` says.
 - **Finished work** reclaims every returned terminal at once, read or not,
   without notices. See [Finished work](#finished-work).
 - Session shutdown stops the lifecycle before ending terminals; its kills send
@@ -906,6 +915,7 @@ fork-features/
 ├── terminal-notice.ts    # terminal notice ADT, formatter and the one dispatcher: run-held, merged, stop-gated
 ├── terminal-lifecycle.ts # returned-terminal TTL, read/reclaim reminders, grace, reclaim, finished-work collection
 ├── stop-config.ts        # `omp-unified-exec` omomp section: stop mode, judge prompt, notice template
+├── plugin-settings.ts    # native plugin settings (`omp.settings`): `notice.graceReclaim`, read via omp's getPluginSettings
 ├── stop-gate.ts          # judge / @smol / todo stop detectors over factory-loaded omp modules
 ├── stop-reasons.ts       # structured stop/config reasons; English/Chinese boundary rendering
 ├── exec-command-docs.ts  # six tools' lazy documentation providers and topic pointers
