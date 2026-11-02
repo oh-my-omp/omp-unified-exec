@@ -1,8 +1,8 @@
 /**
  * Terminal lifecycle through the real tools and real PTYs: required titles,
  * abnormal-return notices, the 30-minute TTL with its read reminder or
- * reclaim-due notice, the 5-minute grace, reclaim (killing processes that
- * still hold the terminal) and the merged reclaimed notice. The lifecycle
+ * reclaim-due notice, the 5-minute grace, and the silent reclaim (killing
+ * processes that still hold the terminal). The lifecycle
  * clock is injected so a test steps through half an hour without waiting;
  * processes run on real time.
  */
@@ -195,13 +195,12 @@ describe("terminal lifecycle", { skip: process.platform === "win32" }, () => {
 		assert.deepEqual(h.sent.at(-1)!.options, { triggerTurn: true, deliverAs: "followUp" });
 		assert.equal((await h.listed(sid))?.lifecycle?.phase, "grace");
 
+		const before = h.sent.length;
 		h.advance(5 * MINUTE);
-		assert.ok(await waitFor(() => h.notices("reclaimed").length === 1), "reclaimed notice");
+		assert.ok(await waitFor(async () => await h.listed(sid) === undefined), "reclaimed");
 		assert.ok(await waitFor(() => !alive(bg)), "the job holding the terminal is killed");
-		assert.equal(await h.listed(sid), undefined);
-		const reclaimed = h.sent.at(-1)!;
-		assert.match(reclaimed.message.content, /reclaimed: returned normally; not read again during the grace period/);
-		assert.equal(reclaimed.options.triggerTurn, true);
+		await settle();
+		assert.equal(h.sent.length, before, "the reclaim-due notice announced it; reclaim sends nothing");
 		// The retained terminal stays readable.
 		assert.ok((await readTerminal(url.slice(7))).retainedLines.some((line) => line.startsWith("bg=")));
 	});
@@ -247,8 +246,9 @@ describe("terminal lifecycle", { skip: process.platform === "win32" }, () => {
 		h.advance(1);
 		assert.ok(await waitFor(() => h.notices("reclaim_due").length === 1));
 		h.advance(5 * MINUTE);
-		assert.ok(await waitFor(() => h.notices("reclaimed").length === 1));
-		assert.equal(await h.listed(sid), undefined);
+		assert.ok(await waitFor(async () => await h.listed(sid) === undefined));
+		await settle();
+		assert.equal(h.notices("reclaimed").length, 0);
 	});
 
 	it("an abnormal return is reported at once, then follows the same reclaim regime", async () => {
@@ -279,22 +279,6 @@ describe("terminal lifecycle", { skip: process.platform === "win32" }, () => {
 		assert.deepEqual(entry?.lifecycle, { returned: "normally", read: true, phase: "ttl" });
 		h.advance(30 * MINUTE);
 		assert.ok(await waitFor(() => h.notices("reclaim_due").length === 1));
-	});
-
-	it("terminals reclaimed in one sweep share one follow-up", async () => {
-		const h = makeHarness();
-		await h.emit("session_start");
-		const a = await startHeld(h, "first");
-		const b = await startHeld(h, "second");
-		h.advance(30 * MINUTE);
-		assert.ok(await waitFor(() => h.notices("reclaim_due").length === 2));
-		const before = h.sent.length;
-		h.advance(5 * MINUTE);
-		assert.ok(await waitFor(() => h.notices("reclaimed").length === 2));
-		const reclaimedMessages = h.sent.slice(before).filter((s) => s.message.details.notices.some((n) => n.kind === "reclaimed"));
-		assert.equal(reclaimedMessages.length, 1);
-		assert.deepEqual(reclaimedMessages[0]!.message.details.notices.map((n) => n.title).sort(), ["first", "second"]);
-		assert.ok(await waitFor(() => !alive(a.bg) && !alive(b.bg)));
 	});
 
 	it("monitor notices go through the same notice abstraction", async () => {

@@ -10,11 +10,12 @@
  *     agent: a terminal never read gets one read reminder and is kept until
  *     read; a read terminal gets a reclaim-due reminder and a grace period;
  *   - reading during the grace period starts a new TTL; otherwise the
- *     terminal's remaining processes are killed, it leaves the store, and one
- *     reclaimed notice per sweep names every terminal reclaimed in it.
+ *     terminal's remaining processes are killed and it leaves the store,
+ *     without a notice: the reclaim-due reminder already announced it.
  * The retained term:// and the log stay readable after reclaim. When the
  * agent's work is judged finished, `collectReturned` reclaims every returned
- * terminal at once, read or not, without notices.
+ * terminal at once, read or not, without notices. Only eviction at the
+ * store's cap, which no reminder announced, sends a reclaimed notice.
  *
  * Reads are term:// reads of the returned terminal, and tool results that
  * showed it after it returned, committed when the host finalizes them.
@@ -270,24 +271,16 @@ export class TerminalLifecycle {
 					break;
 			}
 		}
-		if (reclaims.length) void this.reclaimAll(reclaims);
+		for (const entry of reclaims) void this.reclaimExpired(entry);
 		// The sweep is also a retry point for a notice whose send failed while the agent was idle.
 		this.opts.notices.flush();
 	}
 
-	/** Reclaim a sweep's terminals together, so their notices share one follow-up. */
-	private async reclaimAll(entries: readonly Tracked[]): Promise<void> {
-		const results = await Promise.all(entries.map(async (entry): Promise<TerminalNotice | undefined> => {
-			const life = entry.life;
-			if (life.kind !== "returned") return undefined;
-			const identity = identityOf(entry.session);
-			// Still held (the kill did not land): try again at the next sweep.
-			const result = await this.reclaimEntry(entry, { ...life, phase: { kind: "grace", until: this.now() } });
-			if (result?.kind !== "gone") return undefined;
-			return { identity, body: { kind: "reclaimed", outcome: life.outcome, cause: { kind: "grace_expired", killed: result.killedProcesses } } };
-		}));
-		if (this.stopped) return;
-		for (const notice of results) if (notice) void this.opts.notices.submit(notice);
+	/** Reclaim a terminal whose grace expired; one still held is retried at the next sweep. */
+	private async reclaimExpired(entry: Tracked): Promise<void> {
+		const life = entry.life;
+		if (life.kind !== "returned") return;
+		await this.reclaimEntry(entry, { ...life, phase: { kind: "grace", until: this.now() } });
 	}
 
 	/**

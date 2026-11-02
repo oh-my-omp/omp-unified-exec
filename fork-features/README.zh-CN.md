@@ -97,8 +97,8 @@ omp 升级后，要重新验证 `@oh-my-pi/pi-coding-agent/internal-urls`：
 送达的匹配必须重新开始计时。没有任何 monitor 时，真实的 whiptail/debconf 对话框（在 Debian 容器里经
 `exec_command` 对改过的文件运行 `ucf --debconf-ok`）和 apt 的 `[Y/n]` 提示必须各排入一条触发轮次的
 `input_wait` 通知；挂着的调用正在展示提示时则一条都没有。对生命周期，真实的 `read term://` 读取已返回的终端
-必须把它标为已读（`list_sessions` 的 `lifecycle.read`），空闲的 agent 必须被即将回收通知和回收通知唤醒，
-且这些终端的后台任务之后都已结束。
+必须把它标为已读（`list_sessions` 的 `lifecycle.read`），空闲的 agent 必须被即将回收通知唤醒；反悔期过后该终端
+必须从 `list_sessions` 消失，其后台任务已结束，且不再另发通知。
 
 omp 升级后要重新验证判定门。`agent_end` 必须仍带 `willContinue` 和 `awaitingAsyncWork`，`session_stop` 必须仍在主 agent 最终停止时触发并带 `last_assistant_message`；`loadStopHost` 载入的函数必须存在且形状符合 `stop-gate.ts` 的解析；绑定的 AgentSession 必须仍暴露 `settings`、`modelRegistry.resolver`、`sessionId`、`sessionManager` 和 `agent.metadataForProvider`/`telemetry`。在真实 omp 中准备一个已返回、未读的后台终端：完成任务的最终答复不能触发任何通知轮次，并使该终端从 `list_sessions` 消失；留有未完成工作的答复必须送达一条合并的通知；长工具调用期间产生的通知只能在运行结束后到达；`stop: off` 必须丢弃生命周期通知而保留 monitor 通知；`judge`、`llm` 与 `todo` 在显式选择时都必须各自作出判定。
 

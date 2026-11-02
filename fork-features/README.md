@@ -185,8 +185,8 @@ must restart its clock. Without any monitor, a real whiptail/debconf dialog
 notice that triggers a turn, and none while an attached call shows the
 prompt. For the lifecycle, a real `read term://` of a returned terminal must
 mark it read (`list_sessions` `lifecycle.read`), and an idle agent must be
-woken by a reclaim-due and a reclaimed notice whose terminals' background
-jobs are gone afterwards.
+woken by a reclaim-due notice; after the grace its terminal must leave
+`list_sessions` with its background jobs gone and no further notice.
 
 On omp upgrades, requalify the stop gate. `agent_end` must still carry
 `willContinue` and `awaitingAsyncWork`, and `session_stop` must still fire for
