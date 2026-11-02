@@ -95,7 +95,7 @@ function makeHarness(): Harness {
 		nowFn: () => now,
 		setIntervalFn: (cb) => { sweep = cb; return 1; },
 		clearIntervalFn: () => { sweep = undefined; },
-	}, undefined, omp);
+	}, undefined, undefined, omp);
 	let nextCallId = 1;
 	const harness: Harness = {
 		sent,

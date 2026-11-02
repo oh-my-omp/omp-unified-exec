@@ -10,13 +10,17 @@
  *     agent: a terminal never read gets one read reminder and is kept until
  *     read; a read terminal gets a reclaim-due reminder and a grace period;
  *   - reading during the grace period starts a new TTL; otherwise the
- *     terminal's remaining processes are killed, it leaves the store, and one
- *     reclaimed notice per sweep names every terminal reclaimed in it.
+ *     terminal's remaining processes are killed and it leaves the store. A
+ *     reclaimed notice naming every terminal reclaimed in that sweep follows
+ *     only when `graceReclaimNotice` (the `notice.graceReclaim` plugin
+ *     setting) says so, read once per sweep while the reclaims run.
  * The retained term:// and the log stay readable after reclaim. When the
  * agent's work is judged finished, `collectReturned` reclaims every returned
  * terminal at once, read or not, without notices. When the dispatcher
  * withholds a read or reclaim-due reminder because the agent is finished
  * (an idle or parked subagent), the terminal is reclaimed at once, silently.
+ * Eviction at the store's cap, which no reminder announced, always sends a
+ * reclaimed notice.
  *
  * Reads are term:// reads of the returned terminal, and tool results that
  * showed it after it returned, committed when the host finalizes them.
@@ -93,6 +97,8 @@ export interface TerminalLifecycleOptions extends LifecycleClock {
 	readonly ttlMs?: number;
 	readonly graceMs?: number;
 	readonly sweepMs?: number;
+	/** Whether a grace-expired reclaim sends a notice; read at each reclaiming sweep and expected never to reject. Absent: never. */
+	readonly graceReclaimNotice?: () => Promise<boolean>;
 }
 
 export function identityOf(session: LifecycleSession): TerminalIdentity {
@@ -277,9 +283,15 @@ export class TerminalLifecycle {
 		this.opts.notices.flush();
 	}
 
-	/** Reclaim a sweep's terminals together, so their notices share one follow-up. */
+	/**
+	 * Reclaim a sweep's terminals together, so their notices share one
+	 * follow-up. The setting is read while the reclaims run: every entry turns
+	 * `reclaiming` before the first await, so a slow read never lets the next
+	 * sweep pick it again, and it never delays ending the processes.
+	 */
 	private async reclaimAll(entries: readonly Tracked[]): Promise<void> {
-		const results = await Promise.all(entries.map(async (entry): Promise<TerminalNotice | undefined> => {
+		const notify = this.opts.graceReclaimNotice?.() ?? Promise.resolve(false);
+		const reclaimed = Promise.all(entries.map(async (entry): Promise<TerminalNotice | undefined> => {
 			const life = entry.life;
 			if (life.kind !== "returned") return undefined;
 			const identity = identityOf(entry.session);
@@ -288,7 +300,8 @@ export class TerminalLifecycle {
 			if (result?.kind !== "gone") return undefined;
 			return { identity, body: { kind: "reclaimed", outcome: life.outcome, cause: { kind: "grace_expired", killed: result.killedProcesses } } };
 		}));
-		if (this.stopped) return;
+		const [send, results] = await Promise.all([notify, reclaimed]);
+		if (this.stopped || !send) return;
 		for (const notice of results) if (notice) void this.opts.notices.submit(notice);
 	}
 

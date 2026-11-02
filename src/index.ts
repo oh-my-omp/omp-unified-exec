@@ -57,6 +57,7 @@ import {
 } from "../fork-features/exec-command-docs.ts";
 import { bindingContext, bindSession, type HostBindingState, recheckBinding } from "../fork-features/session-binding.ts";
 import { MonitorError } from "../fork-features/monitor-subscription.ts";
+import { parseGraceReclaim, type PluginSettingsReader } from "../fork-features/plugin-settings.ts";
 import { loadStopConfig } from "../fork-features/stop-config.ts";
 import { detectStop, type StopHost } from "../fork-features/stop-gate.ts";
 import { renderStopConfigReason, renderStopReason } from "../fork-features/stop-reasons.ts";
@@ -173,11 +174,17 @@ function encode(str: string): Uint8Array {
 
 /**
  * Who delivers a runtime's notices: the activation it is attached to (its
- * `pi.sendMessage` and stop gate), nobody while omp has the agent parked, or
- * nobody ever again once its terminals ended.
+ * `pi.sendMessage`, stop gate and plugin settings), nobody while omp has the
+ * agent parked, or nobody ever again once its terminals ended.
  */
 type RuntimeHost =
-	| { readonly kind: "attached"; readonly send: (message: NoticeMessage) => void; readonly gate: NoticeGate | undefined }
+	| {
+		readonly kind: "attached";
+		readonly send: (message: NoticeMessage) => void;
+		readonly gate: NoticeGate | undefined;
+		/** The `notice.graceReclaim` plugin setting, read for each reclaiming sweep. */
+		readonly graceReclaimNotice: () => Promise<boolean>;
+	}
 	| { readonly kind: "parked" }
 	| { readonly kind: "ended" };
 
@@ -1006,6 +1013,8 @@ function createRuntime(opts: RuntimeOptions): ExtensionCtx {
 	const lifecycle = new TerminalLifecycle({
 		...opts.lifecycleClock,
 		notices,
+		// A parked agent's reclaimed notice could only be withheld: it is a routine notice to a finished agent.
+		graceReclaimNotice: () => (ctx.host.kind === "attached" ? ctx.host.graceReclaimNotice() : Promise.resolve(false)),
 		reclaim: async (id): Promise<ReclaimResult> => {
 			const session = ctx.store.get(id);
 			if (!session) return { kind: "gone", killedProcesses: false };
@@ -1114,9 +1123,10 @@ async function endRuntime(ctx: ExtensionCtx): Promise<void> {
 /**
  * Activate the tool core; the default factory supplies omp's appearance and
  * live shell setting. `lifecycleClock` replaces the host clock for terminal
- * TTLs and the minute sweep; `stopHost` enables stop decisions; `agentHost`
- * (omp's agent registry and lifecycle) lets a subagent's terminals outlive
- * its park.
+ * TTLs and the minute sweep; `stopHost` enables stop decisions;
+ * `pluginSettings` reads the native plugin settings (absent: manifest
+ * defaults); `agentHost` (omp's agent registry and lifecycle) lets a
+ * subagent's terminals outlive its park.
  */
 export function activate(
 	pi: ExtensionAPI,
@@ -1126,6 +1136,7 @@ export function activate(
 	invalidateGithubCache?: (command: string) => void,
 	lifecycleClock: LifecycleClock = {},
 	stopHost?: StopHost,
+	pluginSettings?: PluginSettingsReader,
 	agentHost?: AgentHost,
 ): ActivatedExtension {
 	let binding: HostBindingState = { kind: "pending" };
@@ -1195,6 +1206,33 @@ export function activate(
 			);
 		},
 		gate,
+		graceReclaimNotice: async () => {
+			const warnOnce = (key: string, message: string): void => {
+				if (reportedConfigProblems.has(key)) return;
+				reportedConfigProblems.add(key);
+				ctx.ui?.notify(message, "warning");
+			};
+			let stored: Readonly<Record<string, unknown>> = {};
+			if (pluginSettings) {
+				try {
+					// Before any session_start only the global settings apply.
+					stored = await pluginSettings(hostCwd ?? "/");
+				} catch (error) {
+					const reason = error instanceof Error ? error.message : String(error);
+					warnOnce(`plugin-settings\n${reason}`, tr(
+						`unified-exec: could not read plugin settings, using defaults: ${reason}`,
+						`unified-exec：无法读取插件设置，改用默认值：${reason}`,
+					));
+				}
+			}
+			const read = parseGraceReclaim(stored);
+			if (read.kind === "ok") return read.value;
+			warnOnce(`plugin-setting\n${read.key}`, tr(
+				`unified-exec: plugin setting ${read.key} must be true or false; using ${read.fallback}`,
+				`unified-exec：插件设置 ${read.key} 必须为 true 或 false；改用 ${read.fallback}`,
+			));
+			return read.fallback;
+		},
 	};
 	const parked = parkedRuntimes<ExtensionCtx>();
 	// The runtime this activation serves; a revived agent's activation swaps in the one its park left behind.

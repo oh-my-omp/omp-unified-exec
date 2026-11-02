@@ -42,7 +42,7 @@ export interface MonitorReturns {
 export type InputPromptLabel = "dialog" | "inline" | "pager";
 
 export type ReclaimCause =
-	/** Read, then not read again through the TTL and the grace period. */
+	/** Read, then not read again through the TTL and the grace period; sent only when the `notice.graceReclaim` setting is on. */
 	| { readonly kind: "grace_expired"; readonly killed: boolean }
 	/** The session store reached its cap and evicted its least recently used entry. */
 	| { readonly kind: "capacity"; readonly cap: number; readonly signalled: boolean };
