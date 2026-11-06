@@ -50,11 +50,12 @@ class FakeSession implements CompletionSessionLike {
 	}
 }
 
-function makeCoordinator(opts: { failSends?: number } = {}) {
+function makeCoordinator(opts: { failSends?: number; finished?: () => boolean } = {}) {
 	const sent: NoticeMessage[] = [];
 	const errors: unknown[] = [];
 	let remainingFailures = opts.failSends ?? 0;
 	const notices = new NoticeDispatcher({
+		finished: opts.finished,
 		send: (message) => {
 			if (remainingFailures > 0) {
 				remainingFailures--;
@@ -95,6 +96,19 @@ describe("CompletionCoordinator", () => {
 		assert.match(sent[0].content, /session_id=1/);
 		assert.match(sent[0].content, /exit_code=0/);
 		assert.equal(coordinator.recordCount, 0, "record resolved after send");
+	});
+
+	it("a finished agent's wake is withheld and consumed, never sent at a later flush", async () => {
+		const { coordinator, sent } = makeCoordinator({ finished: () => true });
+		const s = new FakeSession(1);
+		coordinator.register(s);
+		s.exit(0);
+		await settle();
+		assert.equal(sent.length, 0, "finished work is not woken by a normal exit");
+		assert.equal(coordinator.recordCount, 0, "the withheld wake resolved its record");
+		coordinator.flushPending();
+		await settle();
+		assert.equal(sent.length, 0, "no later resubmission");
 	});
 
 	it("register handles the boundary race: session already exited when registered", async () => {

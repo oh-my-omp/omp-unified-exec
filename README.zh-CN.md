@@ -50,7 +50,7 @@ omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
 - **输出有上限，完整内容可找回。** 模型看到的每个结果都从尾部截取，最多 50 KiB / 2000 行，并去掉终端控制序列；每个会话的完整原始输出都写入 `log_path`。
 - **终端生命周期。** 后台终端的命令返回后，终端仍保留在列表里，直到被回收。异常返回立即提醒；返回或最近一次读取 30 分钟后，从未读过的终端收到一条读取提醒，读过的终端收到一条即将回收提醒，并有 5 分钟反悔期，期满仍未再读就结束其剩余进程并回收；除非打开插件设置 `notice.graceReclaim`，回收不另发通知。见[终端生命周期](#terminal-lifecycle)。
 - **统一的通知通道。** 完成唤醒、monitor 的返回与提醒、等待输入提醒和生命周期通知都是终端通知：每条用 `session_id` 和传给 `exec_command` 的标题指明终端，并附一句简短原因。agent 运行期间通知只等待，停下时合并成一条后续消息送达。
-- **工作完成后保持安静。** 主 agent 停下时，任何通知发出之前先判定它的最终回复（OMP 的 judge，否则 `@smol`，否则 Todo 列表）；工作已完成时，已返回的终端被回收、其通知被丢弃，不再触发新的轮次。见[完成的工作](#finished-work)。
+- **工作完成后保持安静。** 主 agent 停下时，任何通知发出之前先判定它的最终回复（OMP 的 judge，否则 `@smol`，否则 Todo 列表）；工作已完成时，已返回的终端被回收，并且直到下一次运行开始，只有终端出问题（`abnormal_return`）才触发新的轮次。已完成的子 agent 遵循同一规则。见[完成的工作](#finished-work)。
 - **可选的完成唤醒。** `on_exit: "wake"` 让后台进程在无人观察时退出后唤醒一次 agent；`set_on_exit` 可以取消。
 - **等待匹配输出。** `monitor` 不消费输出地观察已有会话，在匹配批次、judge 模型判定满足所述意图的新屏幕或结束时唤醒模型；默认最多成功返回十次。monitor 20 分钟没有返回时，会提醒 agent 一次去检查会话。
 - **等待输入提醒。** 无论有没有 monitor，会话屏幕停在 agent 还没看过的提示上（`apt upgrade` 询问 sshd_config 这类 debconf/whiptail 对话框、`[Y/n]`、密码、分页器）时，都会唤醒 agent。
@@ -392,7 +392,7 @@ whiptail/dialog 前端到了 PTY 上只是普通的绘制（备用屏、隐藏�
 - **异常返回**（非零退出、信号、启动/运行时失败）立即发送一条 `abnormal_return` 通知，读没读过都发。`kill_session`、HUD 或 `/unified-exec-sessions` 的 kill 算正常结束。
 - **读取**从返回起计：一次完整的 `read term://…`（文本或 `/screen.png`），或一次已定稿、展示了已返回终端的 `write_stdin`/`kill_session` 结果（shell 已退出时的 `exec_command` 结果也算）。出错或取消的结果不算。`list_sessions`、`monitor` 的 End 和唤醒只报告状态，不算读取。
 - 返回或最近一次读取**30 分钟**后：
-  - 从未读过：发一条 `unread` 通知；检查会一直保留终端到被读（只有[完成的工作](#finished-work)会回收未读终端；[已完成的子 agent](#finished-subagents-and-omps-idle-park) 的终端不发提醒，直接回收）；
+  - 从未读过：发一条 `unread` 通知；检查会一直保留终端到被读（只有[完成的工作](#finished-work)会回收未读终端；已完成的 agent 的终端不发提醒，直接回收）；
   - 读过：发一条 `reclaim_due` 通知，进入 **5 分钟反悔期**。反悔期内读取会重新开始 30 分钟；否则回收。
 - **回收**结束终端进程组里剩下的一切——Linux 上仍持有终端的后台任务，以及 macOS 上终端关闭后仍在运行的任务（SIGTERM，2 秒后 SIGKILL）——并把终端从 `list_sessions` 和 HUD 中移除。`term://` 地址和 `log_path` 仍可读。进程结束不了的终端保留，下次检查再试（Windows 上根进程已退出的进程树无法触及）。
 - **反悔期满后的回收通知**默认不发，因为 `reclaim_due` 通知已经预告过。插件设置 `notice.graceReclaim`（布尔值，默认 `false`；在 omp 的 `/settings` → Plugins 或用 `omp plugin config` 设置，二者都写用户值；也可以手写进项目的 `.omp/plugin-overrides.json`）打开后发送 `reclaimed` 通知，同一次检查回收的终端共用一条后续消息。每次有回收的检查都重新读取该设置，改动无需重启即生效。值不是布尔值或设置读不出来时按 `false` 处理，并警告一次。`stop: off` 照样丢弃这条通知，和其他生命周期通知一样。
@@ -429,10 +429,19 @@ Do not reply to the user about this notice: act on it with tools, then continue 
 
 omp 用 `session_stop` 报告主 agent 的最终停止，并带上它的最后一条回复。这次停止之后的第一批通知发出之前，分发器判定一次这条回复是否表示任务已完全完成：
 
-- **已完成：**立即回收全部已返回的终端，读没读过都回收，不发 `reclaimed` 通知；待发通知中关于已消失终端的那些被丢弃。运行中的终端及其通知保持原样，同一次停止中之后到达的通知照常送达。
+- **已完成：**立即回收全部已返回的终端，读没读过都回收，不发 `reclaimed` 通知；待发通知中关于已消失终端的那些被丢弃。运行中的终端保留，agent 在下一次运行开始（或会话切换、分支）之前都算已完成。
 - **未完成，或无法判定：**全部通知照常送达。
 
-判定期间开始的运行会作废这次判定，通知等到那次运行停下。子 agent、被中止的运行和等待后台工作的运行没有最终回复，从不判定；任务已完成的子 agent 按[已完成的子 agent](#finished-subagents-and-omps-idle-park)处理。
+已完成的 agent 只会被终端问题唤醒，即 `abnormal_return` 通知（非零退出、被信号终止、启动或运行失败）；含这种通知的一批整批送达。不含的一批被扣下不发，其中的通知静默收尾：
+
+| 被扣下的通知 | 代替送达的处理 |
+|---|---|
+| `exit_wake` | 已设置的唤醒被消耗 |
+| `monitor_match`、`monitor_judge_match`、`monitor_judge_failed`、`monitor_end`、`monitor_silent` | monitor 结束，同时消耗该终端已设置的唤醒 |
+| `unread`、`reclaim_due` | 终端立即回收 |
+| `input_wait`、`reclaimed` | 无 |
+
+判定期间开始的运行会作废这次判定，通知等到那次运行停下。子 agent、被中止的运行和等待后台工作的运行没有最终回复，从不判定；子 agent 在 omp 收养它的任务后即算已完成，见[已完成的子 agent](#finished-subagents-and-omps-idle-park)。
 
 omomp 中 `omp-unified-exec` 段的 `stop` 选择判定方式：
 
@@ -473,9 +482,8 @@ omp-unified-exec:
 
 omp 的任务执行器收养（adopt）子 agent 时，它的任务已经完成，结果已交回父 agent。此后子 agent 空闲满 `task.agentIdleTtlMs`（默认七分钟），omp 就停放（park）它：释放它的会话，等有消息送达时再以新会话唤醒（revive）它。插件为此不设自己的计时器，只读取 omp 的 agent 注册表和生命周期。
 
-- **常规通知从不为已完成的子 agent 启动轮次**，无论它空闲还是已停放：只含 `abnormal_return`、`unread`、`reclaim_due` 或 `reclaimed` 通知的一批被扣下不发。通知本来要 agent 做的事静默完成：`unread` 或 `reclaim_due` 的终端立即回收。与 agent 必须处理的通知同批时，它们随之一起送达。
-- **停放保留终端。** 停放引发的 `session_shutdown` 只结束这次激活，不结束终端：运行中的命令、monitor、`on_exit` 唤醒、等待输入提醒和 30 分钟生命周期都照常继续。
-- **agent 必须处理的通知会唤醒它。** 已停放子 agent 的 `exit_wake`、`monitor_match`、`monitor_judge_match`、`monitor_judge_failed`、`monitor_end`、`monitor_silent` 或 `input_wait` 通知会请 omp 唤醒它（`ensureLive`），然后送达唤醒后的会话。因其他原因（父 agent 发来消息）被唤醒时，它同样接回原来的终端：`session_id`、`term://` 地址和日志都不变。
+- **只有终端问题会为已完成的子 agent 启动轮次**，无论它空闲还是已停放：适用[完成的工作](#finished-work)中的规则。`abnormal_return` 通知会请 omp 唤醒已停放的子 agent（`ensureLive`），再连同其他待发通知送达唤醒后的会话。其余通知一律扣下并静默收尾，子 agent 因此保持空闲，按时被 omp 停放。
+- **停放保留终端。** 停放引发的 `session_shutdown` 只结束这次激活，不结束终端：运行中的命令、monitor、`on_exit` 唤醒、等待输入提醒和 30 分钟生命周期都照常继续。无论因何被唤醒（父 agent 发来消息、`abnormal_return`），它都接回原来的终端：`session_id`、`term://` 地址和日志都不变。
 - **终端随 agent 结束：** omp 释放或结束已停放的子 agent 时（包括主会话结束时），它的终端按关闭处理（SIGTERM，1 秒后 SIGKILL），主会话的关闭会等这一步完成。
 
 ## 命令

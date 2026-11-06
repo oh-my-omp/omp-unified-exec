@@ -486,8 +486,8 @@ export function buildNoticeDisplayMessage(value: unknown): string {
 
 /**
  * `withheld`: not sent because the agent's work is finished and the batch held
- * only lifecycle reminders, which must not start a turn; the lifecycle then
- * does silently what the reminder asked of the agent.
+ * no terminal problem, so it must not start a turn; the notice's source then
+ * finishes silently what the notice asked of the agent.
  */
 export type NoticeOutcome = "delivered" | "dropped" | "withheld";
 
@@ -503,6 +503,29 @@ export function isLifecycleNotice(kind: NoticeKind): boolean {
 		case "reclaim_due":
 		case "reclaimed":
 			return true;
+		case "exit_wake":
+		case "monitor_match":
+		case "monitor_end":
+		case "monitor_silent":
+		case "monitor_judge_match":
+		case "monitor_judge_failed":
+		case "input_wait":
+			return false;
+	}
+}
+
+/**
+ * Whether the notice reports a terminal problem: the one kind that still wakes
+ * an agent whose work is finished. Everything else a finished agent would only
+ * read and set aside.
+ */
+export function isTerminalProblem(kind: NoticeKind): boolean {
+	switch (kind) {
+		case "abnormal_return":
+			return true;
+		case "unread":
+		case "reclaim_due":
+		case "reclaimed":
 		case "exit_wake":
 		case "monitor_match":
 		case "monitor_end":
@@ -558,8 +581,7 @@ export interface NoticeDispatcherOptions {
 	gate?: () => NoticeGate | undefined;
 	/**
 	 * Whether the agent's host considers its work finished (an adopted
-	 * subagent, idle or parked): lifecycle reminders alone then never start a
-	 * turn and are withheld; with another notice they go out together.
+	 * subagent, idle or parked): it is then woken only by a terminal problem.
 	 */
 	finished?: () => boolean;
 	/** Notices submitted within this window share one follow-up. */
@@ -571,10 +593,15 @@ export interface NoticeDispatcherOptions {
 
 const DEFAULT_DEBOUNCE_MS = 250;
 
-/** A stop's decision: still to be made about this response, being made, or made (or nothing to decide). */
+/**
+ * A stop's decision: still to be made about this response, being made, made
+ * done (the work is finished until the next run), or made otherwise (or
+ * nothing to decide).
+ */
 type StopState =
 	| { readonly kind: "open"; readonly response: string }
 	| { readonly kind: "deciding" }
+	| { readonly kind: "done" }
 	| { readonly kind: "settled" };
 
 /** The host as the dispatcher sees it: a run in progress (with its final response once omp reports it), or stopped. */
@@ -588,12 +615,12 @@ type HostPhase =
  * mid-run would let each start its own turn after the stop. When the run
  * settles, whatever is pending goes out as one follow-up. Before the first
  * delivery after a stop with a final response, the gate decides whether that
- * response finished the work; if so, every returned terminal is reclaimed and
- * the notices about terminals the lifecycle no longer owns are dropped, once,
- * and the rest are delivered. For an agent whose host considers it finished
- * (an adopted subagent), a batch of lifecycle reminders alone is withheld
- * instead, so routine housekeeping never wakes it. A failed send keeps
- * notices pending for the next flush, which safe boundaries (tool end, a
+ * response finished the work; if so, every returned terminal is reclaimed, the
+ * notices about terminals the lifecycle no longer owns are dropped, and the
+ * agent counts as finished until its next run starts. A finished agent (done
+ * so, or an adopted subagent) is woken only by a terminal problem: a batch
+ * without one is withheld, and a batch with one goes out whole. A failed send
+ * keeps notices pending for the next flush, which safe boundaries (tool end, a
  * settled run, the lifecycle's minute sweep) trigger — never a
  * self-rescheduling loop.
  */
@@ -697,12 +724,6 @@ export class NoticeDispatcher {
 		const config = gate?.config() ?? DEFAULT_STOP_CONFIG;
 		this.dropWhere((entry) => !entry.current() || (config.mode === "off" && isLifecycleNotice(entry.notice.body.kind)));
 		if (this.pending.size === 0) return;
-		if (this.opts.finished?.() && [...this.pending.values()].every((entry) => isLifecycleNotice(entry.notice.body.kind))) {
-			const withheld = [...this.pending.values()];
-			this.pending = new Map();
-			for (const entry of withheld) for (const settle of entry.settle) settle("withheld");
-			return;
-		}
 		const stop = this.phase.stop;
 		switch (stop.kind) {
 			case "deciding":
@@ -714,8 +735,17 @@ export class NoticeDispatcher {
 				}
 				this.phase = { kind: "stopped", stop: { kind: "settled" } };
 				break;
+			case "done":
 			case "settled":
 				break;
+		}
+		// Finished: decided done at this stop, or the host adopted the agent's result.
+		const finished = stop.kind === "done" || this.opts.finished?.() === true;
+		if (finished && ![...this.pending.values()].some((entry) => isTerminalProblem(entry.notice.body.kind))) {
+			const withheld = [...this.pending.values()];
+			this.pending = new Map();
+			for (const entry of withheld) for (const settle of entry.settle) settle("withheld");
+			return;
 		}
 		this.send(config.noticeTemplate);
 	}
@@ -743,7 +773,7 @@ export class NoticeDispatcher {
 			}
 			// A run that started meanwhile delivers the rest at its own stop.
 			if (generation !== this.generation) return;
-			this.phase = { kind: "stopped", stop: { kind: "settled" } };
+			this.phase = { kind: "stopped", stop: verdict.kind === "done" ? { kind: "done" } : { kind: "settled" } };
 			this.flush();
 		})();
 	}

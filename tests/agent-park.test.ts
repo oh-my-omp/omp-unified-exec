@@ -184,10 +184,10 @@ describe("a subagent's terminals across omp's park", { skip: process.platform ==
 		assert.equal(first.sent.length + revived.sent.length, 0);
 	});
 
-	it("routine notices never revive a parked agent; an unread terminal is reclaimed silently at its TTL", async () => {
+	it("a normal exit never revives a parked agent, even with on_exit wake; an unread terminal is reclaimed silently at its TTL", async () => {
 		const first = makeHarness();
 		await first.emit("session_start");
-		const { sid } = await startBackground(first, "sleep 0.5; exit 3");
+		const { sid } = await startBackground(first, "sleep 0.5", { on_exit: "wake" });
 		await park(first);
 		await waitFor(async () => (await first.listed(sid))?.running === false);
 		await settle();
@@ -195,19 +195,19 @@ describe("a subagent's terminals across omp's park", { skip: process.platform ==
 		assert.ok(await waitFor(async () => (await first.listed(sid)) === undefined), "reclaimed at its TTL");
 		await settle();
 		assert.equal(omp.revives, 0);
-		assert.equal(first.sent.length, 0, "neither abnormal_return, unread nor reclaimed went out");
+		assert.equal(first.sent.length, 0, "neither exit_wake, unread nor reclaimed went out");
 	});
 
-	it("an on_exit wake revives the parked agent and reaches it through the revived activation", async () => {
+	it("an abnormal return revives the parked agent and reaches it through the revived activation", async () => {
 		const first = makeHarness();
 		await first.emit("session_start");
-		const { sid } = await startBackground(first, "sleep 1; echo done", { on_exit: "wake" });
+		const { sid } = await startBackground(first, "sleep 1; exit 3");
 		await park(first);
 		let revived: Harness | undefined;
 		omp.reviver = async () => { revived = await revive(); };
-		assert.ok(await waitFor(() => (revived?.sent.length ?? 0) > 0), "the wake reached the revived agent");
+		assert.ok(await waitFor(() => (revived?.sent.length ?? 0) > 0), "the problem reached the revived agent");
 		assert.equal(omp.revives, 1);
-		assert.deepEqual(revived!.sent[0].message.details.notices.map((n) => [n.session_id, n.kind]), [[sid, "exit_wake"]]);
+		assert.deepEqual(revived!.sent[0].message.details.notices.map((n) => [n.session_id, n.kind]), [[sid, "abnormal_return"]]);
 		assert.equal(first.sent.length, 0, "nothing went to the parked activation");
 	});
 
@@ -223,14 +223,17 @@ describe("a subagent's terminals across omp's park", { skip: process.platform ==
 		assert.equal(parkedRuntimes().size, 0);
 	});
 
-	it("an idle adopted agent gets no turn from a routine notice alone", async () => {
+	it("an idle adopted agent gets no turn from a normal exit wake, and one from an abnormal return", async () => {
 		const first = makeHarness();
 		await first.emit("session_start");
 		omp.adopted = true;
-		const { sid } = await startBackground(first, "sleep 0.5; exit 3");
-		await waitFor(async () => (await first.listed(sid))?.running === false);
+		const quiet = await startBackground(first, "sleep 0.3", { on_exit: "wake" });
+		await waitFor(async () => (await first.listed(quiet.sid))?.running === false);
 		await settle();
 		assert.equal(first.sent.length, 0);
+		const problem = await startBackground(first, "sleep 0.3; exit 3");
+		assert.ok(await waitFor(() => first.sent.length > 0), "the abnormal return woke the agent");
+		assert.deepEqual(first.sent[0].message.details.notices.map((n) => [n.session_id, n.kind]), [[problem.sid, "abnormal_return"]]);
 	});
 });
 

@@ -507,8 +507,16 @@ export class CompletionCoordinator {
 			body: { kind: "exit_wake", command: s.command, cwd: s.cwd, elapsedMs: s.elapsedMs, exitCode: s.exitCode, signal: s.signal, failure: s.failureMessage },
 		}, live).then((outcome) => {
 			if (this.records.get(record.sessionId) !== record) return;
-			if (outcome === "delivered") this.resolveRecord(record);
-			else record.wakeQueued = false;
+			switch (outcome) {
+				case "delivered":
+				// A finished agent will not act on the wake: it is consumed unsent.
+				case "withheld":
+					this.resolveRecord(record);
+					break;
+				case "dropped":
+					record.wakeQueued = false;
+					break;
+			}
 		});
 	}
 }
