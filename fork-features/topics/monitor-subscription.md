@@ -5,6 +5,7 @@
 - Starting establishes or replaces the subscription; cancelling removes it silently. Reaching `max_returns` ends the monitor, not the process. End does not count toward the limit.
 - A no-return reminder quotes the current screen. Read the terminal, then answer a prompt with `write_stdin`, call `monitor` again, or cancel. A return restarts the reminder clock; a reminder neither counts toward `max_returns` nor ends the monitor.
 - A session settling on an unseen input prompt raises an input-wait alert with or without a monitor.
+- A wake needs an unfinished task: once your final response shows the task finished, a monitor ends at its next return without waking you. To wait on it, say so in your response instead of reporting the task done; see `xd://exec_command/lifecycle`.
 
 ## Judge monitors
 

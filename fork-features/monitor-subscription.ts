@@ -351,6 +351,8 @@ export class MonitorSubscription implements MonitorListener {
 		void this.send({ identity, body }, () => this.active && this.isCurrent(this)).then((outcome) => {
 			this.sending = false;
 			if (outcome === "dropped" || !this.active || !this.isCurrent(this)) return;
+			// A finished agent will not act on this monitor: end it and consume its ordinary wake.
+			if (outcome === "withheld") { this.finish(this, true); return; }
 			switch (body.kind) {
 				case "monitor_end": this.finish(this, true); return;
 				case "monitor_judge_failed": this.finish(this, false); return;

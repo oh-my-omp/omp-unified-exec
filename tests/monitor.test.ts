@@ -240,6 +240,23 @@ describe("monitor source and delivery", () => {
 		assert.deepEqual(finished, [true]);
 		subscription.cancel();
 	});
+
+	it("a withheld return ends the monitor and consumes its terminal's wake", async () => {
+		const fake: MonitorSession = {
+			id: 1, title: "Finished monitor", hasExited: false, exitCode: null, signal: null, terminalUrl: "term://fake", logPath: "/tmp/fake.log",
+			lastOutputAt: Date.now(), liveSnapshot: () => undefined, subscribeMonitor: async () => "accepted",
+		};
+		const sent: string[] = [];
+		const ended = Promise.withResolvers<boolean>();
+		const subscription = new MonitorSubscription(fake, { kind: "regex", source: "M", regex: /M/ }, 10, 1_200_000, () => undefined,
+			(notice) => { sent.push(notice.body.kind); return Promise.resolve("withheld"); },
+			(sub, completed) => { sub.cancel(); ended.resolve(completed); }, () => true);
+		subscription.lines(["M first"]);
+		assert.equal(await ended.promise, true, "ended, consuming the ordinary wake");
+		subscription.lines(["M second"]);
+		await delay(400);
+		assert.deepEqual(sent, ["monitor_match"], "nothing more is submitted after the monitor ended");
+	});
 });
 
 describe("judge monitor", () => {

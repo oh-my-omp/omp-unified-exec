@@ -115,9 +115,9 @@ results remain in English.
   when it stops.
 - **Quiet after finished work.** When the main agent stops, its final response
   is judged (OMP's judge, else `@smol`, else the todo list) before any notice
-  goes out; if the work is done, returned terminals are reclaimed and their
-  notices dropped instead of starting turns. See
-  [Finished work](#finished-work).
+  goes out; if the work is done, returned terminals are reclaimed and, until
+  the next run, only a terminal problem (`abnormal_return`) starts a turn. A
+  finished subagent follows the same rule. See [Finished work](#finished-work).
 - **Opt-in completion wake.** `on_exit: "wake"` resumes the agent once when a
   backgrounded process exits unobserved; `set_on_exit` disarms it.
 - **Await matching output.** `monitor` watches an existing session without
@@ -666,9 +666,8 @@ background processes may still hold the terminal — or the terminal closes.
   `monitor` End and wakes report status only and do not count.
 - **30 minutes** after the return or the latest read:
   - never read: one `unread` notice; the checks keep the terminal until it is
-    read (only [finished work](#finished-work) reclaims it unread; a
-    [finished subagent's](#finished-subagents-and-omps-idle-park) is reclaimed
-    instead of reminded);
+    read (only [finished work](#finished-work) reclaims it unread; a finished
+    agent's is reclaimed instead of reminded);
   - read: a `reclaim_due` notice and a **5-minute grace**. A read during the
     grace starts a new 30 minutes; otherwise the terminal is reclaimed.
 - **Reclaim** kills whatever is left of the terminal's process group —
@@ -743,14 +742,28 @@ decides once whether that response means the task is completely finished:
 
 - **Done:** every returned terminal is reclaimed at once, read or not, without
   a `reclaimed` notice, and the pending notices about terminals that are gone
-  are dropped. Running terminals and their notices stay as they are, and
-  notices that arrive later in the same stop are delivered.
+  are dropped, except a terminal problem. Running terminals stay, and the
+  agent counts as finished until its next run starts (or a session switch or
+  branch).
 - **Not done, or no decision:** every notice is delivered.
+
+A finished agent is woken only by a terminal problem, an `abnormal_return`
+notice (non-zero exit, signal, spawn/runtime failure); a batch holding one goes
+out whole. A batch without one is withheld and its notices are settled
+silently:
+
+| Withheld notice | What happens instead |
+|---|---|
+| `exit_wake` | The armed wake is consumed |
+| `monitor_match`, `monitor_judge_match`, `monitor_judge_failed`, `monitor_end`, `monitor_silent` | The monitor ends, consuming its terminal's armed wake |
+| `unread`, `reclaim_due` | The terminal is reclaimed at once |
+| `input_wait`, `reclaimed` | Nothing |
 
 A run that starts during the decision discards it, and the notices wait for
 that run's stop. Subagents, aborted runs and runs awaiting background work
-have no final response and are never decided; a subagent whose task is
-finished follows [Finished subagents](#finished-subagents-and-omps-idle-park).
+have no final response and are never decided; a subagent counts as finished
+once omp adopts its task, see
+[Finished subagents](#finished-subagents-and-omps-idle-park).
 
 `stop` in the `omp-unified-exec` section of omomp picks the detector:
 
@@ -810,21 +823,18 @@ of idleness (seven minutes by default): it disposes the subagent's session
 and revives it, as a new session, when a message reaches it. The plugin keeps
 no timer of its own for this; it reads omp's agent registry and lifecycle.
 
-- **Routine notices never start a turn** in a finished subagent, idle or
-  parked: a batch holding only `abnormal_return`, `unread`, `reclaim_due` or
-  `reclaimed` notices is withheld. What it asked of the agent happens
-  silently: an `unread` or `reclaim_due` terminal is reclaimed at once.
-  Together with a notice the agent must handle, they are delivered with it.
+- **Only a terminal problem starts a turn** in a finished subagent, idle or
+  parked: the [Finished work](#finished-work) rule applies. An
+  `abnormal_return` notice asks omp to revive a parked subagent
+  (`ensureLive`), then goes to the revived session with whatever was pending.
+  Every other notice is withheld and settled silently, so the subagent stays
+  idle and omp parks it on schedule.
 - **The park keeps the terminals.** Its `session_shutdown` ends the
   activation, not the terminals: running commands, monitors, `on_exit`
-  wakes, input-wait alerts and the 30-minute lifecycle carry on.
-- **Notices the agent must handle revive it.** An `exit_wake`,
-  `monitor_match`, `monitor_judge_match`, `monitor_judge_failed`,
-  `monitor_end`, `monitor_silent` or `input_wait` notice for
-  a parked subagent asks omp to revive it (`ensureLive`), then goes to the
-  revived session. A revive for any other reason (a message from its parent)
-  resumes the same terminals as well: their `session_id`s, `term://`
-  addresses and logs are unchanged.
+  wakes, input-wait alerts and the 30-minute lifecycle carry on. A revive for
+  any reason (a message from its parent, an `abnormal_return`) resumes the
+  same terminals: their `session_id`s, `term://` addresses and logs are
+  unchanged.
 - **The terminals end with the agent:** when omp releases or kills the
   parked subagent (including when the main session ends), its terminals get
   the shutdown treatment (SIGTERM, SIGKILL after 1 s), and the main session's

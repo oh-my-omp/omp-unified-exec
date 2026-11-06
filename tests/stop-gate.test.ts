@@ -19,6 +19,8 @@ const unread = (sessionId: number) => notice(sessionId, { kind: "unread", outcom
 const match = (sessionId: number) => notice(sessionId, {
 	kind: "monitor_match", monitor: { watch: { kind: "regex", condition: "x" }, returns: 1, maxReturns: 10, remindAfterMs: 1_200_000 }, lines: ["x"], omitted: 0, recentMatches: 1,
 });
+const abnormal = (sessionId: number) => notice(sessionId, { kind: "abnormal_return", command: "sh -c 'exit 3'", reason: "exit code 3" });
+const exitWake = (sessionId: number) => notice(sessionId, { kind: "exit_wake", command: "sleep 1", cwd: "/tmp", elapsedMs: 1000, exitCode: 0, signal: null, failure: null });
 
 interface Harness {
 	readonly notices: NoticeDispatcher;
@@ -84,30 +86,55 @@ describe("notice delivery around runs", () => {
 		assert.equal(h.sent.length, 1);
 	});
 
-	it("a done verdict reclaims returned terminals once and drops only their notices", async () => {
+	it("a done verdict reclaims returned terminals, then only a terminal problem wakes the agent until its next run", async () => {
 		const h = harness();
-		h.tracked.add(1).add(2);
+		h.tracked.add(1).add(2).add(3);
 		h.returned.add(1);
 		h.notices.agentStarted();
 		h.notices.recordResponse("All done and pushed.");
 		const dropped = h.notices.submit(unread(1));
-		const delivered = h.notices.submit(match(2));
+		const quiet = h.notices.submit(match(2));
 		h.notices.agentStopped("final");
 		assert.equal(h.sent.length, 0, "nothing is sent before the decision");
 		assert.equal(h.inputs[0].lastResponse, "All done and pushed.");
 		h.resolveDetect({ kind: "done", detector: "judge" });
 		assert.equal(await dropped, "dropped" satisfies NoticeOutcome);
-		assert.equal(await delivered, "delivered");
+		assert.equal(await quiet, "withheld", "a running terminal's notice does not wake finished work");
 		assert.equal(h.collects, 1);
-		assert.equal(h.sent.length, 1);
-		assert.deepEqual(h.sent[0].details.notices.map((n) => n.session_id), [2]);
-		// One decision per stop: a later notice in the same stop is delivered without another.
-		h.returned.add(2);
-		void h.notices.submit(unread(2));
+		assert.equal(h.sent.length, 0);
+		// Later in the same stop: still finished, so a normal exit wake stays quiet...
+		const wake = h.notices.submit(exitWake(2));
 		h.notices.flush();
+		assert.equal(await wake, "withheld");
+		assert.equal(h.sent.length, 0);
+		// ...and a terminal problem goes out with whatever else is pending, without another decision.
+		const reminder = h.notices.submit(match(2));
+		const problem = h.notices.submit(abnormal(3));
+		h.notices.flush();
+		assert.deepEqual([await reminder, await problem], ["delivered", "delivered"]);
+		assert.deepEqual(h.sent[0].details.notices.map((n) => n.kind), ["monitor_match", "abnormal_return"]);
 		assert.equal(h.inputs.length, 1);
 		assert.equal(h.collects, 1);
-		assert.equal(h.sent.length, 2);
+		// The next run ends the finished state: without a new decision its notices are delivered.
+		h.notices.agentStarted();
+		const after = h.notices.submit(exitWake(2));
+		h.notices.agentStopped("final");
+		assert.equal(await after, "delivered");
+	});
+
+	it("a done verdict keeps the terminal problem that prompted it, though its terminal was collected", async () => {
+		const h = harness();
+		h.tracked.add(1);
+		h.returned.add(1);
+		h.notices.agentStarted();
+		h.notices.recordResponse("All done.");
+		h.notices.agentStopped("final");
+		const problem = h.notices.submit(abnormal(1));
+		h.notices.flush();
+		h.resolveDetect({ kind: "done", detector: "judge" });
+		assert.equal(await problem, "delivered");
+		assert.equal(h.collects, 1);
+		assert.deepEqual(h.sent[0].details.notices.map((n) => n.kind), ["abnormal_return"]);
 	});
 
 	it("not_done and undecided deliver everything without reclaiming", async () => {
@@ -163,18 +190,18 @@ describe("notice delivery around runs", () => {
 		assert.match(h.sent[0].content, /^1 for 1: Do not reply to the user/);
 	});
 
-	it("a finished agent gets lifecycle reminders only together with a notice it must handle", async () => {
+	it("a finished (adopted) agent is woken only by a terminal problem, which carries the rest of the batch", async () => {
 		const sent: NoticeMessage[] = [];
 		const notices = new NoticeDispatcher({ send: (message) => { sent.push(message); }, finished: () => true, setTimeoutFn: () => 1, clearTimeoutFn: () => {} });
-		const alone = notices.submit(unread(1));
+		const quiet = [notices.submit(unread(1)), notices.submit(match(2)), notices.submit(exitWake(3))];
 		notices.flush();
-		assert.equal(await alone, "withheld" satisfies NoticeOutcome);
-		assert.equal(sent.length, 0, "no turn for routine housekeeping");
-		const reminder = notices.submit(unread(2));
-		const wake = notices.submit(match(3));
+		assert.deepEqual(await Promise.all(quiet), ["withheld", "withheld", "withheld"] satisfies NoticeOutcome[]);
+		assert.equal(sent.length, 0, "no turn without a terminal problem");
+		const reminder = notices.submit(unread(4));
+		const problem = notices.submit(abnormal(5));
 		notices.flush();
-		assert.deepEqual([await reminder, await wake], ["delivered", "delivered"]);
-		assert.deepEqual(sent[0].details.notices.map((n) => n.kind), ["unread", "monitor_match"]);
+		assert.deepEqual([await reminder, await problem], ["delivered", "delivered"]);
+		assert.deepEqual(sent[0].details.notices.map((n) => n.kind), ["unread", "abnormal_return"]);
 	});
 });
 
