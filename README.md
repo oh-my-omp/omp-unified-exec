@@ -742,8 +742,9 @@ decides once whether that response means the task is completely finished:
 
 - **Done:** every returned terminal is reclaimed at once, read or not, without
   a `reclaimed` notice, and the pending notices about terminals that are gone
-  are dropped. Running terminals stay, and the agent counts as finished until
-  its next run starts (or a session switch or branch).
+  are dropped, except a terminal problem. Running terminals stay, and the
+  agent counts as finished until its next run starts (or a session switch or
+  branch).
 - **Not done, or no decision:** every notice is delivered.
 
 A finished agent is woken only by a terminal problem, an `abnormal_return`

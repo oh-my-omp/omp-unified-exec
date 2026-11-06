@@ -231,10 +231,11 @@ export class TerminalLifecycle {
 		const life: Life = { kind: "returned", outcome, returnedAt: now, read: { kind: "unread" }, phase: { kind: "ttl", due: now + this.ttlMs } };
 		entry.life = life;
 		if (outcome.kind === "abnormal") {
-			this.submit(entry, {
+			// A fault stays news after the terminal is collected, so the notice does not depend on tracking.
+			void this.opts.notices.submit({
 				identity: identityOf(session),
 				body: { kind: "abnormal_return", command: session.displayCommand, reason: outcome.reason },
-			}, () => true);
+			}, () => !this.stopped);
 		}
 	}
 

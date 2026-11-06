@@ -122,6 +122,21 @@ describe("notice delivery around runs", () => {
 		assert.equal(await after, "delivered");
 	});
 
+	it("a done verdict keeps the terminal problem that prompted it, though its terminal was collected", async () => {
+		const h = harness();
+		h.tracked.add(1);
+		h.returned.add(1);
+		h.notices.agentStarted();
+		h.notices.recordResponse("All done.");
+		h.notices.agentStopped("final");
+		const problem = h.notices.submit(abnormal(1));
+		h.notices.flush();
+		h.resolveDetect({ kind: "done", detector: "judge" });
+		assert.equal(await problem, "delivered");
+		assert.equal(h.collects, 1);
+		assert.deepEqual(h.sent[0].details.notices.map((n) => n.kind), ["abnormal_return"]);
+	});
+
 	it("not_done and undecided deliver everything without reclaiming", async () => {
 		for (const verdict of [{ kind: "not_done", detector: "llm" }, { kind: "undecided", cause: "failed", reason: { kind: "external_error", detail: "x" } }] as const) {
 			const h = harness();

@@ -769,7 +769,8 @@ export class NoticeDispatcher {
 			if (verdict.kind === "done") {
 				try { await gate.collect(); } catch { /* a terminal that could not be reclaimed keeps its notices */ }
 				if (this.stopped) return;
-				this.dropWhere((entry) => !gate.tracked(entry.notice.identity.sessionId));
+				// A terminal problem still wakes the agent after its terminal was collected.
+				this.dropWhere((entry) => !gate.tracked(entry.notice.identity.sessionId) && !isTerminalProblem(entry.notice.body.kind));
 			}
 			// A run that started meanwhile delivers the rest at its own stop.
 			if (generation !== this.generation) return;
