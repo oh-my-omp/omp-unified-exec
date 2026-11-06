@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+## 0.14.31 - 2026-11-06
+
 - A finished agent is woken only by a terminal problem (#96). A done verdict now holds until the agent's next run (or a session switch or branch) instead of covering only the notices pending at its stop, and an adopted subagent counts as finished. While finished, only `abnormal_return` starts a turn, and a batch holding one goes out whole; any other batch is withheld and settled silently: an exit wake is consumed, a monitor ends with its terminal's wake, `unread` and `reclaim_due` terminals are reclaimed at once, `input_wait` and `reclaimed` need nothing. An `abnormal_return` no longer depends on its terminal still being tracked, so the done verdict's collection no longer drops the fault that prompted the decision. `abnormal_return` used to be withheld from finished subagents while exit wakes, monitor returns and reminders and input-wait alerts revived them, each revive restarting omp's idle TTL, so a subagent with a live terminal was rarely parked.
 
 ## 0.14.30 - 2026-11-02
