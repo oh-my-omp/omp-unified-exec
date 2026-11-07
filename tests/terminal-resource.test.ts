@@ -21,7 +21,7 @@ describe("non-consuming terminal resources", () => {
 		if (observation.kind === "rendered") assert.equal(observation.text, "abcdefghij\nnext\nlast");
 	});
 
-	it("keeps normal history separate from the alternate screen and deep-copies styled cells", async (t) => {
+	it("keeps normal history separate from the alternate screen and copies the styled grid", async (t) => {
 		const screen = new TerminalScreen(10, 2, () => {});
 		t.after(() => screen.release());
 		screen.write(encoder.encode("normal\x1b[?1049h\x1b[H\x1b[31m中文AB"));
@@ -29,13 +29,13 @@ describe("non-consuming terminal resources", () => {
 		assert.deepEqual(projection.retainedLines, ["normal"]);
 		assert.deepEqual(projection.screenLines, ["中文AB"]);
 		assert.equal(projection.view.screen, "alternate");
-		assert.deepEqual(projection.cells[0]![0]!.foreground, { kind: "palette", value: 1 });
-		assert.equal(projection.cells[0]![0]!.width, 2);
-		assert.equal(projection.cells[0]![1]!.width, 0);
+		assert.deepEqual(projection.grid.cell(0, 0)!.foreground, { kind: "palette", value: 1 });
+		assert.equal(projection.grid.cell(0, 0)!.width, 2);
+		assert.equal(projection.grid.cell(0, 1)!.width, 0);
 		screen.write(encoder.encode("\r\x1b[2Kchanged"));
 		await screen.project();
 		assert.deepEqual(projection.screenLines, ["中文AB"]);
-		assert.equal(projection.cells[0]![0]!.chars, "中");
+		assert.equal(projection.grid.cell(0, 0)!.chars, "中");
 	});
 
 	it("reads what a human sees: the alternate screen while it is active, normal history after it", async (t) => {

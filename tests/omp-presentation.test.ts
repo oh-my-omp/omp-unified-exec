@@ -1,4 +1,5 @@
 import type { FinalScreenOutput } from "../src/collect.ts";
+import { TerminalGrid } from "../src/terminal-screen.ts";
 
 
 import assert from "node:assert/strict";
@@ -40,7 +41,7 @@ function finalScreen(text: string): FinalScreenOutput {
 		terminalUrl: "term://test",
 		projection: {
 			view: { screen: "normal", cols: 120, rows: lines.length, cursor: { row: 1, col: 1 } },
-			retainedLines: lines, screenLines: lines, cells: [], appearance: "dark", historyMayBeTruncated: false,
+			retainedLines: lines, screenLines: lines, grid: new TerminalGrid(0, 0, new Uint32Array(0), []), appearance: "dark", historyMayBeTruncated: false,
 		},
 	};
 }

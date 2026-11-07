@@ -10,11 +10,10 @@
  * to the subset we need for the pi extension.
  */
 
-import { closeSync, createWriteStream, openSync, type WriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { sessionLogName, trackOpenLog } from "../fork-features/log-archive.ts";
+import { SessionLog, sessionLogName } from "../fork-features/log-archive.ts";
 import { detachTerminalReader, discardLiveTerminal, freezeTerminal, readTerminal, registerTerminal } from "../fork-features/terminal-resource.ts";
 import { detectInputPrompt, inputWaitNotice, type InputWaitAlert } from "../fork-features/input-wait.ts";
 import type { MonitorListener, MonitorSourceHandle, MonitorStart } from "../fork-features/monitor-subscription.ts";
@@ -69,7 +68,7 @@ export class ExecSession {
 	readonly pid: number | undefined;
 	/** Path to a log file that receives the full stdout+stderr stream. */
 	readonly logPath: string;
-	private logStream: WriteStream | undefined;
+	private log: SessionLog | undefined;
 
 	/** Rendered terminal; created once the PTY child exists (absent after a spawn failure). */
 	private screen: TerminalScreen | undefined;
@@ -118,21 +117,15 @@ export class ExecSession {
 	static spawn(id: number, opts: SessionSpawnOptions): ExecSession {
 		const self = new ExecSession(id, opts);
 
-		// Touch-create the file synchronously so it exists on disk from t=0
-		// even before the child writes anything (and before the lazy stream
-		// opens the fd on its first buffered write). Then open a stream in
-		// append mode for the actual writes.
+		// The log file exists on disk from t=0, before the child writes anything.
 		try {
-			closeSync(openSync(self.logPath, "w"));
-			self.logStream = createWriteStream(self.logPath, { flags: "a" });
-			trackOpenLog(self.logPath, self.logStream);
-			self.logStream.on("error", (err) => {
-				// Log-stream error (disk full, permissions, etc.). The child is
+			self.log = SessionLog.open(self.logPath, (err) => {
+				// Log write error (disk full, permissions, etc.). The child is
 				// still running: record the failure and stop mirroring writes, but
 				// do NOT mark the session exited — that would make it unkillable
 				// (kill() no-ops once hasExited) and orphan the process.
 				self.recordFailure(`log stream error: ${err?.message ?? err}`);
-				self.logStream = undefined;
+				self.log = undefined;
 			});
 		} catch (err: any) {
 			self.markFailure(`failed to open log file ${self.logPath}: ${err?.message ?? err}`);
@@ -154,8 +147,8 @@ export class ExecSession {
 			});
 		} catch (err: any) {
 			self.markFailure(err?.message ?? String(err));
-			self.logStream?.end();
-			self.logStream = undefined;
+			void self.log?.end();
+			self.log = undefined;
 			self.exitedAc.abort();
 			self.outputClosed.close();
 			return self;
@@ -180,10 +173,11 @@ export class ExecSession {
 		self.child.onData((chunk) => {
 			self.totalOutputBytes += chunk.length;
 			self.lastOutputAtMs = Date.now();
+			// Mirror every byte to the log file first: it is the authority. The
+			// chunk itself is queued (never reused by the PTY); a write error
+			// stops the mirror (see SessionLog).
+			self.log?.write(chunk);
 			screen.write(chunk);
-			// Mirror every byte to the log file. Errors are handled by the
-			// 'error' listener on the stream, which nulls `logStream` out.
-			self.logStream?.write(Buffer.from(chunk));
 			self.outputNotify.notifyAll();
 		});
 
@@ -199,27 +193,20 @@ export class ExecSession {
 			self.notifyExitListeners();
 			// Fire a notify so any parked waiters wake up and see the exit.
 			self.outputNotify.notifyAll();
-			// A short tick later, flush the log stream to disk, then close the
-			// output gate. The tick lets any pending data-handler chunks land
-			// in the screen+log before we declare the session fully done.
+			// A short tick later, flush the log to disk, then close the output
+			// gate. The tick lets any pending data-handler chunks land in the
+			// screen+log before we declare the session fully done.
 			setImmediate(() => {
 				self.outputNotify.notifyAll();
-				const stream = self.logStream;
-				self.logStream = undefined;
-				if (!stream) {
-					self.outputClosed.close();
-					self.outputNotify.notifyAll();
-					return;
-				}
+				const log = self.log;
+				self.log = undefined;
 				const finalize = () => {
 					self.outputClosed.close();
 					self.outputNotify.notifyAll();
 				};
-				// Wait for the stream to finish flushing before declaring
-				// `outputClosed` so consumers that await the drain see a
-				// fully-flushed log file on disk.
-				stream.once("close", finalize);
-				stream.end();
+				// Consumers that await the drain see a fully written, closed log file.
+				if (log) void log.end().then(finalize);
+				else finalize();
 			});
 		});
 
@@ -253,9 +240,17 @@ export class ExecSession {
 				current: () => !this.hasExited && this.screen === screen && screen.unseen(probe.revision),
 			});
 		};
+		// One timer per quiet period: a parsed change only records its time, and
+		// a timer that fires before `quietMs` of silence waits out the rest.
+		let changedAt = 0;
+		const settle = () => {
+			const silent = performance.now() - changedAt;
+			if (silent < quietMs) quiet = setTimeout(settle, quietMs - silent);
+			else evaluate();
+		};
 		const unsubscribe = screen.onChange(() => {
-			clearTimeout(quiet);
-			quiet = setTimeout(evaluate, quietMs);
+			changedAt = performance.now();
+			quiet ??= setTimeout(settle, quietMs);
 		});
 		this.onExit(() => {
 			clearTimeout(quiet);
@@ -533,6 +528,6 @@ export class ExecSession {
 	/** Terminate + mark closed. Used by session-store LRU eviction / shutdown. */
 	terminate(signal: NodeJS.Signals = "SIGTERM"): void {
 		this.kill(signal);
-		// onExit closes logStream; terminate() is idempotent so this is fine.
+		// onExit closes the log; terminate() is idempotent so this is fine.
 	}
 }

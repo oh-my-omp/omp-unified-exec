@@ -410,6 +410,8 @@ An out-of-range page reports the total page count; an unknown key reports
 
 After output closes and every accepted byte is parsed, the session freezes its
 physical rows, active styled cells, geometry, cursor and current appearance.
+The styled cells are kept compact, three 32-bit words and the characters per
+cell; a screenshot builds each cell from them when it draws.
 The same URL remains readable after short-command completion, normal exit,
 confirmed kill, LRU removal or reclaim, until the omp process ends. Frozen resources
 are not deleted; unfinished live projections need not survive plugin shutdown.
@@ -1025,7 +1027,7 @@ Every session runs in ConPTY through Bun's native `Bun.Terminal`.
 ```
 src/
 ├── index.ts              # tool registration, event handlers
-├── session.ts            # ExecSession: spawn, read, write, kill, log stream, state
+├── session.ts            # ExecSession: spawn, read, write, kill, log file, state
 ├── session-store.ts      # SessionStore + LRU eviction
 ├── collect.ts            # CollectResult: screen, final screen or none
 ├── long-wait.ts          # event-driven waits (collection, shutdown, kill)

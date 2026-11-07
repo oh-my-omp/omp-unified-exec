@@ -93,12 +93,69 @@ export interface TerminalCell {
 	readonly strikethrough: boolean;
 }
 
+const BOLD = 1;
+const DIM = 2;
+const ITALIC = 4;
+const UNDERLINE = 8;
+const INVERSE = 16;
+const INVISIBLE = 32;
+const STRIKETHROUGH = 64;
+/** The cell exists in its row (xterm returned it). */
+const PRESENT = 128;
+const WIDTH_SHIFT = 8;
+const PALETTE = 1 << 24;
+const RGB = 2 << 24;
+const COLOR_VALUE = 0xffffff;
+
+function unpackColor(word: number): TerminalColor {
+	switch (word & ~COLOR_VALUE) {
+		case PALETTE: return { kind: "palette", value: word & COLOR_VALUE };
+		case RGB: return { kind: "rgb", value: word & COLOR_VALUE };
+		default: return { kind: "default" };
+	}
+}
+
+/**
+ * A copy of the active grid's cells: three 32-bit words per cell (foreground,
+ * background, attribute flags with the width) and its characters. A frozen
+ * projection keeps this for the life of the process, so it holds no object
+ * per cell; a screenshot builds each `TerminalCell` as it reads it.
+ */
+export class TerminalGrid {
+	constructor(
+		readonly rows: number,
+		readonly cols: number,
+		private readonly words: Uint32Array,
+		private readonly chars: readonly string[],
+	) {}
+
+	/** The cell at a 0-based position; undefined where xterm had no cell. */
+	cell(row: number, col: number): TerminalCell | undefined {
+		const index = row * this.cols + col;
+		const flags = this.words[index * 3 + 2]!;
+		if ((flags & PRESENT) === 0) return undefined;
+		return {
+			chars: this.chars[index]!,
+			width: ((flags >> WIDTH_SHIFT) & 3) as 0 | 1 | 2,
+			foreground: unpackColor(this.words[index * 3]!),
+			background: unpackColor(this.words[index * 3 + 1]!),
+			bold: (flags & BOLD) !== 0,
+			dim: (flags & DIM) !== 0,
+			italic: (flags & ITALIC) !== 0,
+			underline: (flags & UNDERLINE) !== 0,
+			inverse: (flags & INVERSE) !== 0,
+			invisible: (flags & INVISIBLE) !== 0,
+			strikethrough: (flags & STRIKETHROUGH) !== 0,
+		};
+	}
+}
+
 /** Non-consuming, immutable physical-row projection; only the active grid has styled cells. */
 export interface TerminalProjection {
 	readonly view: TerminalView;
 	readonly retainedLines: readonly string[];
 	readonly screenLines: readonly string[];
-	readonly cells: readonly (readonly TerminalCell[])[];
+	readonly grid: TerminalGrid;
 	readonly appearance: TerminalAppearance;
 	readonly historyMayBeTruncated: boolean;
 }
@@ -405,42 +462,30 @@ export class TerminalScreen {
 				return Object.freeze(lines);
 			};
 			const cell = active.getNullCell();
-			const cells: TerminalCell[][] = [];
+			const words = new Uint32Array(this.rows * this.cols * 3);
+			const chars: string[] = new Array(this.rows * this.cols).fill("");
 			for (let y = 0; y < this.rows; y++) {
 				const line = active.getLine(active.baseY + y);
-				const row: TerminalCell[] = [];
 				for (let x = 0; x < this.cols; x++) {
 					if (!line?.getCell(x, cell)) continue;
-					const foreground: TerminalColor = cell.isFgPalette()
-						? { kind: "palette", value: cell.getFgColor() }
-						: cell.isFgRGB() ? { kind: "rgb", value: cell.getFgColor() } : { kind: "default" };
-					const background: TerminalColor = cell.isBgPalette()
-						? { kind: "palette", value: cell.getBgColor() }
-						: cell.isBgRGB() ? { kind: "rgb", value: cell.getBgColor() } : { kind: "default" };
 					const width = cell.getWidth();
 					if (width !== 0 && width !== 1 && width !== 2) throw new Error(`unexpected terminal cell width: ${width}`);
-					row.push(Object.freeze({
-						chars: cell.getChars(),
-						width,
-						foreground: Object.freeze(foreground),
-						background: Object.freeze(background),
-						bold: Boolean(cell.isBold()),
-						dim: Boolean(cell.isDim()),
-						italic: Boolean(cell.isItalic()),
-						underline: Boolean(cell.isUnderline()),
-						inverse: Boolean(cell.isInverse()),
-						invisible: Boolean(cell.isInvisible()),
-						strikethrough: Boolean(cell.isStrikethrough()),
-					}));
+					const index = y * this.cols + x;
+					chars[index] = cell.getChars();
+					words[index * 3] = cell.isFgPalette() ? PALETTE | cell.getFgColor() : cell.isFgRGB() ? RGB | cell.getFgColor() : 0;
+					words[index * 3 + 1] = cell.isBgPalette() ? PALETTE | cell.getBgColor() : cell.isBgRGB() ? RGB | cell.getBgColor() : 0;
+					words[index * 3 + 2] = PRESENT | (width << WIDTH_SHIFT) |
+						(cell.isBold() ? BOLD : 0) | (cell.isDim() ? DIM : 0) | (cell.isItalic() ? ITALIC : 0) |
+						(cell.isUnderline() ? UNDERLINE : 0) | (cell.isInverse() ? INVERSE : 0) |
+						(cell.isInvisible() ? INVISIBLE : 0) | (cell.isStrikethrough() ? STRIKETHROUGH : 0);
 				}
-				cells.push(row);
 			}
 			const view = this.view();
 			return Object.freeze({
 				view: Object.freeze({ ...view, cursor: Object.freeze(view.cursor) }),
 				retainedLines: physicalLines("normal", 0, normal.baseY + this.rows),
 				screenLines: physicalLines(active.type, active.baseY, active.baseY + this.rows),
-				cells: Object.freeze(cells.map((row) => Object.freeze(row))),
+				grid: new TerminalGrid(this.rows, this.cols, words, chars),
 				appearance: this.appearance(),
 				historyMayBeTruncated: normal.baseY >= this.scrollback,
 			});
@@ -618,9 +663,18 @@ export class TerminalScreen {
 				clearTimers();
 				void drain();
 			};
+			// Drain after 50 ms of silence, or 250 ms after the first change at
+			// the latest. A parsed change only records its time: one quiet timer
+			// that fires early waits out the rest of the silence.
+			let changedAt = 0;
+			const settle = () => {
+				const silent = performance.now() - changedAt;
+				if (silent < 50) quiet = setTimeout(settle, 50 - silent);
+				else evaluate();
+			};
 			const unsubscribe = this.onChange(() => {
-				clearTimeout(quiet);
-				quiet = setTimeout(evaluate, 50);
+				changedAt = performance.now();
+				quiet ??= setTimeout(settle, 50);
 				maximum ??= setTimeout(evaluate, 250);
 			});
 			// A full-screen program (tmux, a remote shell inside it) may draw a

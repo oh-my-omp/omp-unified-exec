@@ -52,7 +52,7 @@ export function terminalSvg(projection: TerminalProjection, live: boolean): stri
 	const glyphs: string[] = [];
 	for (let row = 0; row < rows; row++) {
 		for (let col = 0; col < cols; col++) {
-			const cell = projection.cells[row]![col]!;
+			const cell = projection.grid.cell(row, col)!;
 			const x = col * CELL_WIDTH;
 			const y = row * CELL_HEIGHT;
 			let fg = color(cell.foreground, foreground);

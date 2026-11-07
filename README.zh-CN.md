@@ -222,7 +222,8 @@ alias omp='omp --hide-thinking'
 页码越界时报告总页数；未知键返回 `unknown_terminal`。启动失败的会话没有终端资源。
 
 输出关闭且全部已接收字节解析完毕后，会话冻结物理行、活动屏的样式单元格、
-尺寸、光标与当时的外观。同一 URL 在短命令结束、自然退出、确认终止、LRU
+尺寸、光标与当时的外观。样式单元格以紧凑形式保留，每格三个 32 位字加上字符；
+截图绘制时才从中逐格构建单元格。同一 URL 在短命令结束、自然退出、确认终止、LRU
 移除或回收之后仍可读取，直到 omp 进程结束。冻结资源不会删除；插件关闭时不保证
 保留尚未冻结的活动投影。子 agent 与扩展重载后的键互不混淆。
 
@@ -612,7 +613,7 @@ completion_notification: armed
 ```
 src/
 ├── index.ts              # tool registration, event handlers
-├── session.ts            # ExecSession: spawn, read, write, kill, log stream, state
+├── session.ts            # ExecSession: spawn, read, write, kill, log file, state
 ├── session-store.ts      # SessionStore + LRU eviction
 ├── collect.ts            # CollectResult: screen, final screen or none
 ├── long-wait.ts          # event-driven waits (collection, shutdown, kill)
