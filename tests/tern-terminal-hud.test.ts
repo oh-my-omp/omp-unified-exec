@@ -224,7 +224,7 @@ describe("terminal HUD view description", () => {
 	it("lists sessions in id order with state tones and elapsed times frozen at exit, over a running/stored summary and Close", () => {
 		const entries = [entry(3, { kind: "running" }), entry(11, exited(0, 2500)), entry(19, exited(1, 65_000))];
 		const now = entries[0]!.startedAt + 4500;
-		const view = describeTerminalsSheet(entries, undefined, now);
+		const view = describeTerminalsSheet(entries, entries[0], now);
 		const split = onlyRole(view, "omp.jobs.split");
 		assert.deepEqual(split.c?.map((child) => child.p?.role), ["omp.jobs.master", "omp.jobs.detail"]);
 		assert.equal(selectedOf(view), "s3", "the first session is selected by default");
@@ -251,7 +251,8 @@ describe("terminal HUD view description", () => {
 			[{ ...exited(0), signal: "SIGTERM" }, "SIGTERM", "error", { t: "✕" }],
 			[{ ...exited(0), failure: "spawn failed" }, "Failed", "error", { t: "✕" }],
 		] satisfies [TerminalState, string, string, object][]) {
-			const view = describeTerminalsSheet([entry(7, state)], 7, now);
+			const selected = entry(7, state);
+			const view = describeTerminalsSheet([selected], selected, now);
 			const status = onlyRole(view, "omp.jobs.status");
 			const chip = onlyRole(status, "omp.jobs.state");
 			assert.deepEqual(chip.p?.spans, [glyph, { t: ` ${label}` }]);
@@ -270,15 +271,6 @@ describe("terminal HUD view description", () => {
 				...(state.kind === "running" ? [{ click: KILL_ACTION }] : []),
 				{ click: OPEN_TERMINAL_ACTION },
 			]);
-		}
-	});
-
-	it("selects the first session when the requested one is absent", () => {
-		const entries = [entry(7, exited(0)), entry(12, { kind: "running" })];
-		for (const selectedId of [undefined, 999]) {
-			const view = describeTerminalsSheet(entries, selectedId);
-			assert.equal(selectedOf(view), "s7");
-			assert.equal(onlyRole(view, "omp.jobs.detail").key, "s7");
 		}
 	});
 
@@ -301,7 +293,7 @@ describe("terminal HUD view description", () => {
 			["/tmp/terminal", "/tmp/terminal"],
 		] as const) {
 			const selected = { ...entry(7, { kind: "running" }), cwd, logPath: "/tmp/logs/terminal 7.log" };
-			const view = describeTerminalsSheet([selected], selected.id);
+			const view = describeTerminalsSheet([selected], selected);
 			const command = onlyRole(view, "omp.jobs.command");
 			assert.equal(command.k, "code");
 			assert.equal(command.p?.text, selected.script);
@@ -314,14 +306,15 @@ describe("terminal HUD view description", () => {
 				{ k: "Log", v: [{ t: "/tmp/logs/terminal 7.log", s: "path", href: "file:///tmp/logs/terminal 7.log" }] },
 			]);
 		}
-		const unknownPid = describeTerminalsSheet([{ ...entry(7, { kind: "running" }), pid: undefined }], 7);
+		const unknown = { ...entry(7, { kind: "running" }), pid: undefined };
+		const unknownPid = describeTerminalsSheet([unknown], unknown);
 		assert.equal(factsOf(unknownPid).some((fact) => fact.k === "PID"), false, "an unknown process id is left out, not invented");
 	});
 
 	it("shows the session's colored screen as Output, following it only while running, and a placeholder for a blank screen", () => {
 		for (const state of [{ kind: "running" }, exited(0)] satisfies TerminalState[]) {
 			const selected = { ...styledEntry(7, 40, 30), state };
-			const output = outputOf(describeTerminalsSheet([selected], 7));
+			const output = outputOf(describeTerminalsSheet([selected], selected));
 			assert.equal(output.kind, "ansi");
 			assert.equal(output.text, selected.screen.text, "the whole retained screen, colors kept");
 			assert.equal(output.node.k, "ansi");
@@ -331,7 +324,8 @@ describe("terminal HUD view description", () => {
 		for (const text of ["", "\x1b[31m \x1b[0m\n\t\n"]) {
 			for (const [state, placeholder] of [[{ kind: "running" }, "No output yet"], [exited(0), "No output"]] as const) {
 				const value = entry(7, state);
-				const output = outputOf(describeTerminalsSheet([{ ...value, screen: { ...value.screen, text } }], 7));
+				const blank = { ...value, screen: { ...value.screen, text } };
+				const output = outputOf(describeTerminalsSheet([blank], blank));
 				assert.deepEqual({ kind: output.kind, text: output.text }, { kind: "none", text: placeholder });
 			}
 		}
@@ -816,6 +810,34 @@ describe("terminal HUD lifecycle with real sessions", () => {
 		assert.deepEqual(page.p?.min, { h: 1 });
 		assert.equal(onlyNode(page, "ansi").p?.grow, 1);
 		assert.deepEqual(onlyNode(page, "ansi").p?.max, { h: 1 });
+	});
+
+	it("reads only the selected session's screen, and reads it again only after a parsed write", async (t) => {
+		const h = makeHarness(t, true);
+		await h.emit("session_start");
+		const sessions = [h.spawn(), h.spawn(), h.spawn()];
+		h.segment.handleNativeEvent({ type: "action", act: OPEN_ACTION });
+		const sheet = h.sheet;
+		sheet.handleNativeEvent({ type: "select", item: `s${sessions[1]!.id}` });
+		const reads = sessions.map((session) => t.mock.method(session, "styledScreen"));
+		const counts = () => reads.map((read) => read.mock.callCount());
+		const view = sheet.describe();
+		assert.deepEqual(listItems(view).map((item) => item.key), sessions.map((session) => `s${session.id}`), "every session is listed");
+		assert.deepEqual(counts(), [0, 1, 0], "only the shown screen is read");
+		sheet.invalidate();
+		sheet.describe();
+		assert.deepEqual(counts(), [0, 1, 0], "a re-describe without a parsed write keeps the screen read at that revision");
+		const revision = sessions[1]!.screenRevision();
+		const changed = waitFor(() => sessions[1]!.screenRevision() !== revision,
+			(listener) => sessions[1]!.onScreenChange(listener), "the echoed input is parsed");
+		sessions[1]!.write(new TextEncoder().encode("typed"));
+		await changed;
+		assert.match(String(outputOf(sheet.describe()).text), /typed/);
+		assert.deepEqual(counts(), [0, 2, 0], "a parsed write is read once more");
+		sheet.handleNativeEvent({ type: "action", act: OPEN_TERMINAL_ACTION });
+		await h.waitForCustom(2);
+		assert.ok(h.page.nativeOverlay, "the page frame names the session");
+		assert.deepEqual(counts(), [0, 2, 0], "the page frame reads no screen");
 	});
 
 	it("re-describes a stored terminal's status dot when its real child exits", async (t) => {

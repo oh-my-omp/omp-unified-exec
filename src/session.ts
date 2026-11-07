@@ -328,6 +328,11 @@ export class ExecSession {
 		return this.screen?.styledScreen();
 	}
 
+	/** The screen's parsed-write revision (undefined after a spawn failure or once the screen was released); consumes nothing. */
+	screenRevision(): number | undefined {
+		return this.screen?.parsedRevision();
+	}
+
 	/** Call `listener` whenever new output has been parsed into the screen; returns the unsubscribe. */
 	onScreenChange(listener: () => void): () => void {
 		return this.screen?.onChange(listener) ?? (() => {});
