@@ -815,7 +815,13 @@ describe("terminal HUD lifecycle with real sessions", () => {
 	it("reads only the selected session's screen, and reads it again only after a parsed write", async (t) => {
 		const h = makeHarness(t, true);
 		await h.emit("session_start");
-		const sessions = [h.spawn(), h.spawn(), h.spawn()];
+		// The child echoes its input itself: ConPTY does not echo for a non-console reader.
+		const echo = [process.execPath, "-e", "process.stdout.write('ready\\n'); process.stdin.on('data', (data) => process.stdout.write(data))"];
+		const sessions = [h.spawn(echo), h.spawn(echo), h.spawn(echo)];
+		for (const session of sessions) {
+			await waitFor(() => session.styledScreen()?.text.includes("ready") === true,
+				(listener) => session.onScreenChange(listener), "real child is ready for stdin");
+		}
 		h.segment.handleNativeEvent({ type: "action", act: OPEN_ACTION });
 		const sheet = h.sheet;
 		sheet.handleNativeEvent({ type: "select", item: `s${sessions[1]!.id}` });
