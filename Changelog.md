@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+- Streaming updates of `exec_command` and `write_stdin` are sent only when something they carry changed (#102). Every 250 ms tick used to copy the whole screen and send it again, also while the command printed nothing: a silent 5-second call sent 19 updates, 18 of them repeats. A tick now compares the screen's parsed-write revision, the exit state and the byte count with the update it last sent and skips the copy when none changed; updates during output are unchanged.
+
 ## 0.14.32 - 2026-11-07
 
 - The Terminals view reads only the selected session's styled screen (#99). It used to rebuild every stored session's retained history with colours on each re-describe, every second while a session ran and on each parsed write of the selected one, though the list shows no output; on 32 sessions with full history one re-describe built 3 MB of text in 110 ms. Now the list is built from the sessions' facts, the detail reads the selected screen, and the one-second tick reuses that screen until a parsed write advances its revision (`TerminalScreen.parsedRevision`, `ExecSession.screenRevision`). The page frame reads no screen. What the view and page show is unchanged.
