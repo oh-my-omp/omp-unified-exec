@@ -139,7 +139,8 @@ export type TerminalState =
 			readonly exitedAt: number;
 	  };
 
-export interface TerminalEntry {
+/** What the list, the page frame and the detail's facts show of a session: everything but its screen. */
+export interface TerminalSummary {
 	readonly id: number;
 	/** The start title exec_command was given, sanitized, for list labels and the page head. */
 	readonly title: string;
@@ -148,7 +149,6 @@ export interface TerminalEntry {
 	/** The whole command, sanitized, for the view's command block. */
 	readonly script: string;
 	readonly state: TerminalState;
-	readonly screen: StyledScreen;
 	readonly cwd: string;
 	readonly pid: number | undefined;
 	/** Epoch ms the session started. */
@@ -156,12 +156,17 @@ export interface TerminalEntry {
 	readonly logPath: string;
 }
 
+/** A session shown with its output: the selected detail or the terminal page. */
+export interface TerminalEntry extends TerminalSummary {
+	readonly screen: StyledScreen;
+}
+
 function oneLine(command: string): string {
 	const line = sanitizeOutputText(command).replace(/\s+/g, " ").trim();
 	return line.length <= COMMAND_MAX ? line : `${line.slice(0, COMMAND_MAX - 1)}…`;
 }
 
-function terminalEntry(session: ExecSession, screen: StyledScreen): TerminalEntry {
+function terminalSummary(session: ExecSession): TerminalSummary {
 	const exitedAt = session.exitedAt;
 	const state: TerminalState = exitedAt === null
 		? { kind: "running" }
@@ -172,7 +177,6 @@ function terminalEntry(session: ExecSession, screen: StyledScreen): TerminalEntr
 		command: oneLine(session.displayCommand),
 		script: sanitizeOutputText(session.displayCommand),
 		state,
-		screen,
 		cwd: sanitizeOutputText(session.cwd),
 		pid: session.pid,
 		startedAt: session.startedAt,
@@ -215,7 +219,7 @@ function stateLook(state: TerminalState): StateLook {
 }
 
 /** How long the session has run, or ran: frozen at its exit. */
-function elapsedMs(entry: TerminalEntry, now: number): number {
+function elapsedMs(entry: TerminalSummary, now: number): number {
 	const end = entry.state.kind === "running" ? now : entry.state.exitedAt;
 	return Math.max(0, Math.round(end - entry.startedAt));
 }
@@ -314,7 +318,7 @@ function actionsRow(children: readonly HudNode[]): HudNode {
 const SPACER: HudNode = { k: "spacer", p: { grow: 1 } };
 
 /** A master-list row, as the Background jobs view lists a job: icon, command, elapsed. */
-function describeListItem(entry: TerminalEntry, now: number): HudNode {
+function describeListItem(entry: TerminalSummary, now: number): HudNode {
 	const look = stateLook(entry.state);
 	const elapsed = formatElapsedUi(elapsedMs(entry, now));
 	return {
@@ -391,15 +395,15 @@ function describeDetail(entry: TerminalEntry, now: number): HudNode {
  * Pure: the Terminals view's body, built like omp's Background jobs view: a
  * master/detail split (the sessions in id order, the selected one's detail)
  * over a footer with the running/stored summary and Close; with no session,
- * an empty state and Close. The frame is VIEW_FRAME.
+ * an empty state and Close. The frame is VIEW_FRAME. Only `selected`, one of
+ * `entries`, carries a screen: the list shows none.
  */
 export function describeTerminalsSheet(
-	entries: readonly TerminalEntry[],
-	selectedId: number | undefined,
+	entries: readonly TerminalSummary[],
+	selected: TerminalEntry | undefined,
 	now = Date.now(),
 ): HudNode {
 	const close = actionButton(tr("Close", "关闭"), CLOSE_ACTION, "esc");
-	const selected = entries.find((entry) => entry.id === selectedId) ?? entries[0];
 	if (!selected) {
 		return {
 			k: "col",
@@ -451,7 +455,7 @@ export function describeTerminalsSheet(
 }
 
 /** The full-pane terminal page's frame: omp's PTY Console role, titled with the path back to the list. */
-export function terminalPageFrame(entry: TerminalEntry | undefined, id: number): Readonly<Record<string, unknown>> {
+export function terminalPageFrame(entry: TerminalSummary | undefined, id: number): Readonly<Record<string, unknown>> {
 	return {
 		role: "omp.overlay.console",
 		size: "full",
@@ -519,9 +523,14 @@ function sortedSessions(store: SessionStore): ExecSession[] {
 	return store.values().sort((a, b) => a.id - b.id);
 }
 
+/** A session with a screen, or undefined after a spawn failure or once its screen was released. */
+function summaryOf(session: ExecSession | undefined): TerminalSummary | undefined {
+	return session?.screenRevision() === undefined ? undefined : terminalSummary(session);
+}
+
 function entryOf(session: ExecSession | undefined): TerminalEntry | undefined {
 	const screen = session?.styledScreen();
-	return session && screen ? terminalEntry(session, screen) : undefined;
+	return session && screen ? { ...terminalSummary(session), screen } : undefined;
 }
 
 /** What a native event asks of the HUD's components. */
@@ -740,6 +749,12 @@ class TerminalsSheet implements Component {
 		return viewFrame();
 	}
 	private described: HudNode | undefined;
+	/**
+	 * The selected session's styled screen at the parse revision it was read:
+	 * the tick re-describes for the list's ages, and an unchanged screen is
+	 * not read again (a parse advances the revision and also re-describes).
+	 */
+	private shown: { readonly id: number; readonly revision: number; readonly screen: StyledScreen } | undefined;
 	private readonly watch: SessionWatch;
 	private readonly tick: NodeJS.Timeout;
 
@@ -794,10 +809,21 @@ class TerminalsSheet implements Component {
 
 	describe(): HudNode {
 		if (!this.described) {
-			const entries = sortedSessions(this.store).flatMap((session) => entryOf(session) ?? []);
-			this.described = describeTerminalsSheet(entries, this.selectedId);
+			// Only the selected session's screen is shown, so only it is read.
+			const sessions = sortedSessions(this.store).filter((session) => session.screenRevision() !== undefined);
+			const selected = sessions.find((session) => session.id === this.selectedId) ?? sessions[0];
+			this.described = describeTerminalsSheet(sessions.map(terminalSummary), selected && this.entry(selected));
 		}
 		return this.described;
+	}
+
+	private entry(session: ExecSession): TerminalEntry | undefined {
+		const revision = session.screenRevision();
+		const shown = this.shown;
+		const screen = shown?.id === session.id && shown.revision === revision ? shown.screen : session.styledScreen();
+		if (revision === undefined || !screen) return undefined;
+		this.shown = { id: session.id, revision, screen };
+		return { ...terminalSummary(session), screen };
 	}
 
 	handleNativeEvent(event: unknown): void {
@@ -866,7 +892,7 @@ class TerminalPage implements Component {
 	}
 
 	get nativeOverlay(): Readonly<Record<string, unknown>> {
-		return terminalPageFrame(entryOf(this.session()), this.id);
+		return terminalPageFrame(summaryOf(this.session()), this.id);
 	}
 
 	describe(): HudNode {

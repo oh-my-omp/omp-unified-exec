@@ -161,7 +161,9 @@ When omp renders natively in Tern and a session exists:
   model sees their effect); Esc / Back returns to the view; Kill ends the
   session.
 
-The HUD reads the sessions in place and keeps no copy of them. It only exists
+The HUD reads the sessions in place. The Terminals view reads only the
+selected session's screen, and reads it again only after new output was
+parsed; the page reads its one session's screen. It only exists
 while omp renders natively, so omp's ANSI TUI gains no row. Tool results stay
 plain text; explicit `read term://…/screen.png` requests return images.
 

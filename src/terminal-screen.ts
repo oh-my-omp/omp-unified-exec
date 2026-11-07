@@ -310,6 +310,11 @@ export class TerminalScreen {
 		for (const listener of this.carriageReturnListeners) listener();
 	};
 
+	/** Parsed child writes so far: unchanged means no completed write changed the screen since it was last read. */
+	parsedRevision(): number {
+		return this.revision;
+	}
+
 	private enqueue(data: Uint8Array | string, parsed?: () => void): void {
 		this.pendingWrites++;
 		this.term.write(data, () => {
