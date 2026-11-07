@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+## 0.14.32 - 2026-11-07
+
 - The Terminals view reads only the selected session's styled screen (#99). It used to rebuild every stored session's retained history with colours on each re-describe, every second while a session ran and on each parsed write of the selected one, though the list shows no output; on 32 sessions with full history one re-describe built 3 MB of text in 110 ms. Now the list is built from the sessions' facts, the detail reads the selected screen, and the one-second tick reuses that screen until a parsed write advances its revision (`TerminalScreen.parsedRevision`, `ExecSession.screenRevision`). The page frame reads no screen. What the view and page show is unchanged.
 
 ## 0.14.31 - 2026-11-06
