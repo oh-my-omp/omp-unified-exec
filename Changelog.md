@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+## 0.14.34 - 2026-11-07
+
 - Finished sessions keep their terminal and log at a fraction of the memory (#100). A frozen `term://` projection kept one frozen object per cell, with two colour objects each, for every finished session until omp exits: 50 sessions of 1 MB coloured output retained 134 MB and 1.68 million objects. The active grid is now a compact `TerminalGrid` (three 32-bit words and the characters per cell) from which a screenshot builds its cells, and the same load retains 42 MB and 0.23 million objects; text reads, screenshots and logs are byte-identical. The session log no longer copies each chunk into a `fs.WriteStream`: `SessionLog` queues the delivered chunks and writes them with one `writev` at a time, so `yes | head -c 100000000` no longer piles up a log backlog of about 90 MB. The input-wait and monitor quiet timers are armed once per quiet period instead of being replaced on every parsed write.
 
 ## 0.14.33 - 2026-11-07
