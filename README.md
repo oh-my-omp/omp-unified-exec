@@ -918,8 +918,10 @@ LIFECYCLE_SWEEP_MS           = 60_000 (lifecycle check interval)
   exited sessions; the 8 most recent are never evicted. A tracked terminal
   evicted this way gets a `reclaimed` notice naming the cap.
 - **Observations** are serialized per session; streaming updates, `read term://`,
-  monitor and the Tern HUD never consume ordinary observations. Frozen terminal
-  resources outlive session-store membership.
+  monitor and the Tern HUD never consume ordinary observations. A streaming
+  update is sent every 250 ms only when the parsed screen, the exit state or
+  the byte count changed since the last one. Frozen terminal resources outlive
+  session-store membership.
 - **Logs** live in the temp directory (`/tmp` or `%TEMP%`) as
   `pi-unified-exec-<omp pid>-<session id>-<random>.log`. The package never
   deletes their content. A log last written more than seven days ago is

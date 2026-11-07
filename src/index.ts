@@ -968,12 +968,21 @@ function startStreaming(
 	if (!onUpdate) return { stop: () => {} };
 	let stopped = false;
 	let timer: NodeJS.Timeout | undefined;
+	// An update is a function of the parsed screen, the exit state and the
+	// bytes seen: a tick where none of them changed would repeat the last one.
+	let sent: { readonly revision: number | undefined; readonly running: boolean; readonly bytes: number } | undefined;
 	const tick = () => {
 		if (stopped) return;
-		try {
-			onUpdate(buildStreamUpdate(session));
-		} catch {
-			// ignore transient errors
+		const revision = session.screenRevision();
+		const running = !session.hasExited;
+		const bytes = session.totalBytesSeen;
+		if (sent === undefined || sent.revision !== revision || sent.running !== running || sent.bytes !== bytes) {
+			sent = { revision, running, bytes };
+			try {
+				onUpdate(buildStreamUpdate(session));
+			} catch {
+				// ignore transient errors
+			}
 		}
 		if (stopped) return;
 		if (Date.now() >= deadlineMs) return;

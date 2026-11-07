@@ -528,7 +528,7 @@ LIFECYCLE_SWEEP_MS           = 60_000 (lifecycle check interval)
 - **Esc** 中断当前等待，但会话继续运行。
 - **关闭**时向每个会话发送 SIGTERM，1 秒后对仍存活的发送 SIGKILL。omp 停放空闲子 agent 不算关闭；它的终端一直保留到 omp 释放该 agent（见[已完成的子 agent](#finished-subagents-and-omps-idle-park)）。仍处于 150 ms 启动宽限期内的 `exec_command` 不会拿到 `session_id`：它等关闭结束进程后报告这次退出（进程撑过 SIGKILL 等待时报告 `running: true` 与 `exit not confirmed`），因此下一次 `session_start` 之后不会再看到该会话。其余终端已被关闭释放的进行中调用返回空输出，进程状态按实际报告：已退出，或在 SIGKILL 生效前仍在运行。
 - **LRU 淘汰**在达到 64 个会话时进行，淘汰最旧的非保护会话，优先选已退出的；最近使用的 8 个永不淘汰。被这样淘汰的受管终端会收到一条注明上限的 `reclaimed` 通知。
-- **观察**按会话串行执行；流式更新、`read term://`、monitor 与 Tern HUD 不消费普通观察。冻结终端资源的生命周期不受会话存储成员关系限制。
+- **观察**按会话串行执行；流式更新、`read term://`、monitor 与 Tern HUD 不消费普通观察。流式更新每 250 ms 检查一次，只在已解析屏幕、退出状态或字节计数自上一次更新后有变化时才发送。冻结终端资源的生命周期不受会话存储成员关系限制。
 - **日志**放在临时目录（`/tmp` 或 `%TEMP%`），文件名为 `pi-unified-exec-<omp pid>-<会话 id>-<随机>.log`。本包从不删除日志内容。最后写入超过七天的日志，在确认写入方已不存在后，会被替换为标准 gzip 文件 `<log_path>.gz`，修改时间保持不变；写入方不存在指：本进程已关闭它，文件名中的 omp pid 已不存在，或它最后写入于本次开机之前（不带 pid 的旧文件名只按最后一条判断）。omp 在扩展加载时检查一次，之后每天检查一次。在 Linux 上用 `zcat <文件>` 查看归档；在 macOS 上用 `gzcat <文件>` 或 `zcat < <文件>`，因为 macOS 的 `zcat` 接收路径参数时会去找 `<文件>.Z`。请用不会执行控制序列的查看器查看原始 PTY 日志，不要用 `cat`。
 
 ## 示例

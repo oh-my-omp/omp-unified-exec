@@ -1027,6 +1027,23 @@ describe("unified-exec e2e", () => {
 		await h.emit("session_shutdown");
 	});
 
+	it("onUpdate sends no repeat while the screen, exit state and byte count stay unchanged", async () => {
+		const h = makeHarness();
+		await h.emit("session_start");
+		const updates: any[] = [];
+		const r = await h.call("exec_command", { title: "Test command", cmd: "echo quiet-start; sleep 30", yield_time_ms: 2000 }, undefined,
+			(partial: any) => updates.push(partial));
+		// About eight 250 ms ticks of silence after the first line; each repeat would equal its predecessor.
+		assert.ok(updates.length >= 1, "the first tick still streams the screen");
+		assert.ok(updates.at(-1).details.output.includes("quiet-start"), updates.at(-1).details.output);
+		for (let i = 1; i < updates.length; i++) {
+			assert.notDeepEqual(updates[i], updates[i - 1], `update ${i} repeats update ${i - 1}`);
+		}
+		assert.ok(updates.length <= 3, `silence streams no repeats; got ${updates.length} updates`);
+		await h.call("kill_session", { session_id: r.details.session_id });
+		await h.emit("session_shutdown");
+	});
+
 	it("/unified-exec-sessions command kills a selected session", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
