@@ -1,14 +1,12 @@
 import { strict as assert } from "node:assert";
 import { randomBytes } from "node:crypto";
-import { once } from "node:events";
-import { createWriteStream } from "node:fs";
 import { lstat, mkdtemp, readdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { gunzipSync } from "node:zlib";
 
-import { type ArchivePolicy, type ArchiveResult, archiveLogs, LOG_ARCHIVE_AGE_MS, openSessionLogs, pidExists, trackOpenLog } from "../fork-features/log-archive.ts";
+import { type ArchivePolicy, type ArchiveResult, archiveLogs, LOG_ARCHIVE_AGE_MS, openSessionLogs, pidExists, SessionLog } from "../fork-features/log-archive.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 9, 24, 12);
@@ -142,26 +140,31 @@ describe("log archive", () => {
 		assert.equal(await exists(`${link}.gz`), false);
 	});
 
-	it("tracks a real log stream as open until it closes", async () => {
+	it("tracks a session log as open until it ends, writing every chunk in order", async () => {
 		const path = join(dir, `pi-unified-exec-${process.pid}-1-00000012.log`);
-		const stream = createWriteStream(path, { flags: "a" });
-		trackOpenLog(path, stream);
-		const written = Promise.withResolvers<void>();
-		stream.write("first\n", () => written.resolve());
-		await written.promise;
+		const errors: Error[] = [];
+		const log = SessionLog.open(path, (error) => errors.push(error));
+		const encoder = new TextEncoder();
+		// More chunks than one writev takes, written while earlier batches are in flight.
+		const lines = Array.from({ length: 3000 }, (_, index) => `line ${index}\n`);
+		for (const line of lines) log.write(encoder.encode(line));
 		const old = new Date(Date.now() - 10 * DAY);
-		await utimes(path, old, old);
 		const live: ArchivePolicy = { now: Date.now(), bootTime: old.getTime() - DAY, selfPid: process.pid, openLogs: openSessionLogs, pidExists };
-
+		assert.equal(openSessionLogs.has(path), true);
+		await utimes(path, old, old);
 		const [whileOpen] = await archiveLogs(dir, live);
 		assert.equal(whileOpen.kind === "skipped" && whileOpen.reason, "writer_alive");
 
-		const closed = once(stream, "close");
-		stream.end();
-		await closed;
+		await log.end();
+		assert.equal(openSessionLogs.has(path), false);
+		assert.equal(log.backlogBytes, 0);
+		log.write(encoder.encode("after end\n"));
+		assert.equal(await readFile(path, "utf8"), lines.join(""), "every chunk, in order, nothing after end");
+		await utimes(path, old, old);
 		const [afterClose] = await archiveLogs(dir, live);
 
 		assert.equal(afterClose.kind, "archived");
-		assert.equal(gunzipSync(await readFile(`${path}.gz`)).toString(), "first\n");
+		assert.equal(gunzipSync(await readFile(`${path}.gz`)).toString(), lines.join(""));
+		assert.deepEqual(errors, []);
 	});
 });

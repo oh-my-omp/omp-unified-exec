@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { constants, createReadStream, createWriteStream, type Stats, type WriteStream } from "node:fs";
+import { closeSync, constants, createReadStream, createWriteStream, openSync, type Stats, writev } from "node:fs";
 import { link, lstat, open, readdir, unlink, utimes, type FileHandle } from "node:fs/promises";
 import { tmpdir, uptime } from "node:os";
 import { join } from "node:path";
@@ -9,8 +9,8 @@ import { createGzip } from "node:zlib";
 // Session logs whose last write is more than seven days old are replaced by a
 // standard gzip `<name>.log.gz` (readable with zcat); their content is never
 // dropped. A log is archived only once its writer is provably gone:
-// - this process's logs: the stream has closed (`openLogs` is the record of
-//   every log stream this process still holds, across activations/reloads);
+// - this process's logs: its `SessionLog` has closed (`openLogs` is the record
+//   of every log file this process still holds, across activations/reloads);
 // - another process's logs: the owner pid in the name no longer exists, or
 //   the log was last written before the machine's last boot;
 // - legacy names without an owner pid: last written before the last boot.
@@ -26,11 +26,11 @@ interface LogArchiveRegistry {
 }
 
 // A child agent and an extension reload may load another copy of this module;
-// open log streams outlive the activation that created them.
+// open session logs outlive the activation that created them.
 const registrySymbol = Symbol.for("omp-unified-exec.log-archive");
 const processGlobal = globalThis as typeof globalThis & { [registrySymbol]?: LogArchiveRegistry };
 const registry: LogArchiveRegistry = processGlobal[registrySymbol] ??= { openLogs: new Set(), timer: undefined, scan: undefined };
-/** Log paths whose stream this process still holds open. */
+/** Log paths whose file this process still holds open. */
 export const openSessionLogs: ReadonlySet<string> = registry.openLogs;
 
 export type LogName =
@@ -71,10 +71,88 @@ export function parseLogName(name: string): LogName | undefined {
 	return undefined;
 }
 
-/** Record an open log stream until it closes; its fd is the writer this module must never orphan. */
-export function trackOpenLog(path: string, stream: WriteStream): void {
-	registry.openLogs.add(path);
-	stream.once("close", () => registry.openLogs.delete(path));
+/** Most buffers one `writev` takes (IOV_MAX on Linux and macOS). */
+const WRITEV_MAX_BUFFERS = 1024;
+
+/**
+ * A session's raw log, every child chunk appended in arrival order. Chunks
+ * stay the views the PTY delivered (Bun passes each callback a buffer of its
+ * own and never reuses it) and go to disk in one `writev` at a time: what
+ * waits is what arrived during the write in flight, instead of a copy and a
+ * queued stream write per chunk. Open from creation until `end` settles, as
+ * `openSessionLogs` records; the first failed write stops the mirror.
+ */
+export class SessionLog {
+	private pending: Uint8Array[] = [];
+	private pendingBytes = 0;
+	private writing = false;
+	private ending: PromiseWithResolvers<void> | undefined;
+	private closed = false;
+
+	private constructor(readonly path: string, private readonly fd: number, private readonly onError: (error: Error) => void) {
+		registry.openLogs.add(path);
+	}
+
+	/** Create (or truncate) the file now, so it exists before the child writes. */
+	static open(path: string, onError: (error: Error) => void): SessionLog {
+		closeSync(openSync(path, "w"));
+		return new SessionLog(path, openSync(path, "a"), onError);
+	}
+
+	/** Bytes accepted and not yet written. */
+	get backlogBytes(): number {
+		return this.pendingBytes;
+	}
+
+	write(chunk: Uint8Array): void {
+		if (this.closed || this.ending) return;
+		this.pending.push(chunk);
+		this.pendingBytes += chunk.length;
+		this.flush();
+	}
+
+	/** Write what is pending, then close; resolves once the file is closed (at once after a failed write). */
+	end(): Promise<void> {
+		if (!this.ending) {
+			this.ending = Promise.withResolvers<void>();
+			if (this.closed) this.ending.resolve();
+			else this.flush();
+		}
+		return this.ending.promise;
+	}
+
+	private flush(): void {
+		if (this.writing || this.closed) return;
+		if (this.pending.length === 0) {
+			if (this.ending) this.close();
+			return;
+		}
+		const batch = this.pending.length <= WRITEV_MAX_BUFFERS ? this.pending : this.pending.slice(0, WRITEV_MAX_BUFFERS);
+		this.pending = batch === this.pending ? [] : this.pending.slice(WRITEV_MAX_BUFFERS);
+		this.writing = true;
+		writev(this.fd, batch, (error) => {
+			this.writing = false;
+			for (const chunk of batch) this.pendingBytes -= chunk.length;
+			if (error) {
+				this.pending = [];
+				this.pendingBytes = 0;
+				this.close();
+				this.onError(error);
+				return;
+			}
+			this.flush();
+		});
+	}
+
+	private close(): void {
+		this.closed = true;
+		try {
+			closeSync(this.fd);
+		} finally {
+			registry.openLogs.delete(this.path);
+			this.ending?.resolve();
+		}
+	}
 }
 
 /** POSIX existence probe: only ESRCH proves the pid is gone; anything else counts as alive. */
