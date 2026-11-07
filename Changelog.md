@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+## 0.14.33 - 2026-11-07
+
 - Streaming updates of `exec_command` and `write_stdin` are sent only when something they carry changed (#102). Every 250 ms tick used to copy the whole screen and send it again, also while the command printed nothing: a silent 5-second call sent 19 updates, 18 of them repeats. A tick now compares the screen's parsed-write revision, the exit state and the byte count with the update it last sent and skips the copy when none changed; updates during output are unchanged.
 
 ## 0.14.32 - 2026-11-07
