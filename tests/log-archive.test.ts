@@ -148,6 +148,9 @@ describe("log archive", () => {
 		// More chunks than one writev takes, written while earlier batches are in flight.
 		const lines = Array.from({ length: 3000 }, (_, index) => `line ${index}\n`);
 		for (const line of lines) log.write(encoder.encode(line));
+		assert.ok(log.backlogBytes > 0, "chunks wait while a write is in flight");
+		// Every accepted chunk is written while the log stays open; only then age the file.
+		while (log.backlogBytes > 0) await new Promise((resolve) => setTimeout(resolve, 1));
 		const old = new Date(Date.now() - 10 * DAY);
 		const live: ArchivePolicy = { now: Date.now(), bootTime: old.getTime() - DAY, selfPid: process.pid, openLogs: openSessionLogs, pidExists };
 		assert.equal(openSessionLogs.has(path), true);
