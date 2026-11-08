@@ -1,9 +1,11 @@
 import { strict as assert } from "node:assert";
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { lstat, mkdtemp, readdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 
 import { type ArchivePolicy, type ArchiveResult, archiveLogs, LOG_ARCHIVE_AGE_MS, openSessionLogs, pidExists, SessionLog } from "../fork-features/log-archive.ts";
@@ -169,5 +171,43 @@ describe("log archive", () => {
 		assert.equal(afterClose.kind, "archived");
 		assert.equal(gunzipSync(await readFile(`${path}.gz`)).toString(), lines.join(""));
 		assert.deepEqual(errors, []);
+	});
+
+	it("counts only the bytes a short write wrote, then reports the failure once", { skip: process.platform === "win32" }, async () => {
+		// A short `writev` — here at RLIMIT_FSIZE — used to count as a whole batch:
+		// the file stopped growing and no error was reported for the lost bytes.
+		const logPath = join(dir, "short.log");
+		const driver = join(dir, "driver.ts");
+		const modulePath = fileURLToPath(new URL("../fork-features/log-archive.ts", import.meta.url));
+		await writeFile(driver, [
+			`import { readFileSync } from "node:fs";`,
+			`import { SessionLog } from ${JSON.stringify(modulePath)};`,
+			`const chunks = Array.from({ length: 300 }, (_, index) => new Uint8Array(1000).fill(65 + (index % 26)));`,
+			`const queued = Buffer.concat(chunks);`,
+			`const errors: string[] = [];`,
+			`const log = SessionLog.open(${JSON.stringify(logPath)}, (error: Error & { code?: string }) => errors.push(error.code ?? error.message));`,
+			`for (const chunk of chunks) log.write(chunk);`,
+			`await log.end();`,
+			`const file = readFileSync(${JSON.stringify(logPath)});`,
+			`console.log(JSON.stringify({ fileBytes: file.length, queuedBytes: queued.length, prefixOfQueued: queued.subarray(0, file.length).equals(file), errors, backlog: log.backlogBytes }));`,
+		].join("\n"));
+		const result = spawnSync("bash", ["-c", `trap '' XFSZ; ulimit -f 100; exec "$0" "$1"`, process.execPath, driver], { encoding: "utf8", timeout: 60_000 });
+		assert.equal(result.status, 0, result.stderr);
+		const reading = JSON.parse(result.stdout) as { fileBytes: number; queuedBytes: number; prefixOfQueued: boolean; errors: string[]; backlog: number };
+		assert.ok(reading.fileBytes > 0 && reading.fileBytes < reading.queuedBytes, `truncated at the limit: ${reading.fileBytes}/${reading.queuedBytes}`);
+		assert.equal(reading.prefixOfQueued, true, "the file holds the first bytes received");
+		assert.deepEqual(reading.errors, ["EFBIG"], "the bytes the file could not take are reported once");
+		assert.equal(reading.backlog, 0);
+	});
+
+	it("treats a chunk with no bytes as written instead of stalled", async () => {
+		const path = join(dir, `pi-unified-exec-${process.pid}-2-00000013.log`);
+		const errors: Error[] = [];
+		const log = SessionLog.open(path, (error) => errors.push(error));
+		log.write(new Uint8Array(0));
+		await log.end();
+		assert.deepEqual(errors, []);
+		assert.equal(log.backlogBytes, 0);
+		assert.equal((await stat(path)).size, 0);
 	});
 });
