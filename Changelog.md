@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+## 0.14.35 - 2026-11-08
+
 - A session log reports the bytes its file could not take instead of dropping them silently (#108). `SessionLog` counted a `writev` as writing the whole batch, so a short write — the file reaching `RLIMIT_FSIZE`, among others — left the file holding a prefix of what the child produced while no `log stream error` was recorded: 300000 bytes queued under `ulimit -f 100` left 51200 bytes and an empty error list. It now advances by the byte count `writev` reports, keeps the rest of the batch queued until it is written or fails, and reports a write that makes no progress once, after which the mirror stops as before; the same load reports `EFBIG`.
 
 - A background terminal whose command returned normally and has no process left is reclaimed silently 5 minutes later, read or not, instead of waiting for an `unread` reminder or a `reclaim_due` notice and its grace. In one long omp session, normal returns produced 54 `unread` and 67 `reclaim_due` notices; their `term://` and log stay readable after reclaim, which is all a later look needs. The lifecycle enters the new `linger` phase (`RECLAIM_LINGER_MS`) when the terminal closes and its process group is empty; background jobs that outlive the shell keep the old reminders until a minute check finds them gone, since reclaiming them kills them. Reads do not extend the linger. Abnormal returns keep the immediate notice and the 30-minute reminders. The lifecycle now remembers the terminals it reclaimed, and `write_stdin`, `monitor`, `set_on_exit` and `kill_session` given such a `session_id` say how it returned and where its `term://` and `log_path` are.
