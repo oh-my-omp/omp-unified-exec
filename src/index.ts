@@ -602,6 +602,15 @@ async function runExecCommand(
 	}
 }
 
+/** A model-facing "no such session" text; for a terminal the lifecycle let go, it says where its output stays readable. */
+function missingSessionText(ctx: ExtensionCtx, sid: number, text: string): string {
+	const gone = ctx.lifecycle.reclaimed(sid);
+	if (!gone) return text;
+	const returned = gone.outcome ? `returned ${outcomeText(gone.outcome)} and ` : "";
+	const where = gone.identity.terminalUrl ? `read ${gone.identity.terminalUrl} or log_path ${gone.identity.logPath}` : `read log_path ${gone.identity.logPath}`;
+	return `${text}; it ${returned}was reclaimed: ${where}`;
+}
+
 async function runWriteStdin(
 	ctx: ExtensionCtx,
 	args: WriteStdinArgs,
@@ -614,7 +623,7 @@ async function runWriteStdin(
 	const writeBytes = resolveWriteInput(args);
 	const session = ctx.store.get(args.session_id);
 	if (!writeBytes?.length) throw new EmptyPollRemovedError(session?.terminalUrl);
-	if (!session) throw new Error(`unknown session_id: ${args.session_id}`);
+	if (!session) throw new Error(missingSessionText(ctx, args.session_id, `unknown session_id: ${args.session_id}`));
 
 	const yieldTimeMs = clampYield(args.yield_time_ms, DEFAULT_WRITE_STDIN_YIELD_MS);
 
@@ -1532,7 +1541,7 @@ export function activate(
 			const session = ctx.store.get(sid);
 			if (policy === "wake" && !session) {
 				return {
-					content: [{ type: "text", text: `No such session: ${sid}` }],
+					content: [{ type: "text", text: missingSessionText(ctx, sid, `No such session: ${sid}`) }],
 					details: { session_id: sid, found: false },
 					structuredContent: setOnExitScriptResult({ session_id: sid, found: false }),
 				};
@@ -1541,7 +1550,7 @@ export function activate(
 			// unknown id: no store session and nothing to disarm
 			if (!session && status === "already_none") {
 				return {
-					content: [{ type: "text", text: `No such session: ${sid}` }],
+					content: [{ type: "text", text: missingSessionText(ctx, sid, `No such session: ${sid}`) }],
 					details: { session_id: sid, found: false },
 					structuredContent: setOnExitScriptResult({ session_id: sid, found: false }),
 				};
@@ -1602,7 +1611,7 @@ export function activate(
 					details = { session_id: params.session_id, status: ctx.coordinator.cancelMonitor(params.session_id) ? "cancelled" : "not_monitored" };
 				} else {
 					const session = ctx.store.get(params.session_id);
-					if (!session) throw new MonitorError("unknown_session", `No such session: ${params.session_id}`);
+					if (!session) throw new MonitorError("unknown_session", missingSessionText(ctx, params.session_id, `No such session: ${params.session_id}`));
 					const monitor = await ctx.coordinator.startMonitor(session, {
 						condition: params.condition, judge: params.judge, judgeIntervalMs: params.judge_interval_ms,
 						maxReturns: params.max_returns, remindAfterMs: params.remind_after_ms,
@@ -1644,7 +1653,7 @@ export function activate(
 			const outcome = await terminateSessionById(ctx, sid, initial, { kind: "model", toolCallId });
 			if (!outcome) {
 				return {
-					content: [{ type: "text", text: `No such session: ${sid}` }],
+					content: [{ type: "text", text: missingSessionText(ctx, sid, `No such session: ${sid}`) }],
 					details: {
 						operation: "kill_session",
 						status: "kill_failed",

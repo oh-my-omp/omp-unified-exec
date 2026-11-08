@@ -102,12 +102,14 @@ results remain in English.
   tail-capped at 50 KiB / 2000 lines and stripped of terminal controls; the
   complete raw stream of every session is written to `log_path`.
 - **Terminal lifecycle.** A background terminal stays listed after its
-  command returns until it is reclaimed. An abnormal return is reported at
-  once; 30 minutes after the return or the last read, a never-read terminal
-  gets one read reminder, and a read one gets a reclaim-due notice and a
-  5-minute grace before its remaining processes are killed and it is
-  reclaimed, silently unless the `notice.graceReclaim` plugin setting is on.
-  See [Terminal lifecycle](#terminal-lifecycle).
+  command returns until it is reclaimed. A normal return with no process left
+  lingers 5 minutes and is reclaimed silently, read or not; its `term://` and
+  log stay readable. An abnormal return is reported at once; 30 minutes after
+  the return or the last read, a never-read terminal of an abnormal return, or
+  of one whose processes remain, gets one read reminder, and a read one gets a
+  reclaim-due notice and a 5-minute grace before its remaining processes are
+  killed and it is reclaimed, silently unless the `notice.graceReclaim` plugin
+  setting is on. See [Terminal lifecycle](#terminal-lifecycle).
 - **One notice channel.** Wakes, monitor returns and reminders, input-wait
   alerts and lifecycle notices are all terminal notices: each names the
   terminal by `session_id` and the title given to `exec_command`, with a short
@@ -636,9 +638,9 @@ rejected. The result uses the same bounded envelope as the other tools, with
 `killed`, `escalated`, requested/actual signal and `running`. A failed kill
 stays registered and reports `running: true`. A confirmed kill is a normal
 ending: the terminal stays listed (`running: false`) and its
-[lifecycle](#terminal-lifecycle) reclaims it; the kill result shows its final
-screen, which counts as reading it. The Tern HUD's Kill uses the same path and
-counts as read as well.
+[lifecycle](#terminal-lifecycle) reclaims it, after the 5-minute linger once
+nothing of it runs; the kill result shows its final screen, which counts as
+reading it. The Tern HUD's Kill uses the same path and counts as read as well.
 
 ### `list_sessions`
 
@@ -649,7 +651,7 @@ closed, `wake_armed`, an active monitor's `watch` (`end`, `regex` with its
 condition, or `judge` with its intent and interval), returns/limit/reminder
 interval and, once the command returned, `lifecycle`: how it returned
 (`normally` or `abnormally (<reason>)`), whether it has been read, and its
-phase (`ttl`, `unread_reminded`, `grace`, `reclaiming`). The response carries
+phase (`ttl`, `unread_reminded`, `grace`, `linger`, `reclaiming`). The response carries
 `running_count`, `returned_count` and the current host `tool_time_utc`.
 Reporting an exit here suppresses a not-yet-sent `on_exit` wake; it is not a
 read of the terminal's output.
@@ -660,6 +662,14 @@ From the result that hands out a `session_id` until reclaim, the terminal
 lifecycle owns the terminal. Its command **returns** when the shell exits —
 background processes may still hold the terminal — or the terminal closes.
 
+- **Normal return with no process left** (the terminal closed and its process
+  group is empty): the terminal **lingers 5 minutes**, then is reclaimed
+  silently, read or not, with no `unread`, `reclaim_due` or `reclaimed`
+  notice; reads do not extend the linger. When background jobs outlive the
+  shell, the linger starts at the check that finds them gone. A tool call that
+  names a reclaimed terminal's `session_id` (`write_stdin`, `monitor`,
+  `set_on_exit`, `kill_session`) answers that it was reclaimed, how it
+  returned, and its `term://` address and `log_path`.
 - **Abnormal return** (non-zero exit, signal, spawn/runtime failure) sends an
   `abnormal_return` notice at once, read or not. A kill by `kill_session`, the
   HUD or `/unified-exec-sessions` is a normal ending.
@@ -668,7 +678,8 @@ background processes may still hold the terminal — or the terminal closes.
   `exec_command` result for a shell that already exited) that shows the
   returned terminal. Errored or cancelled results do not count. `list_sessions`,
   `monitor` End and wakes report status only and do not count.
-- **30 minutes** after the return or the latest read:
+- **30 minutes** after the return or the latest read of an abnormal return, or
+  of a normal one whose processes remain:
   - never read: one `unread` notice; the checks keep the terminal until it is
     read (only [finished work](#finished-work) reclaims it unread; a finished
     agent's is reclaimed instead of reminded);
@@ -692,6 +703,7 @@ background processes may still hold the terminal — or the terminal closes.
   read, fall back to `false` with one warning. `stop: off` still drops the
   notice like every lifecycle notice.
 - **Checks** run once a minute, so each step can land up to a minute late.
+  No event reports that a process group emptied; each check probes it.
 - **LRU eviction** at the 64-session cap always sends a `reclaimed` notice
   naming the cap, whatever `notice.graceReclaim` says.
 - **Finished work** reclaims every returned terminal at once, read or not,
@@ -881,6 +893,7 @@ JUDGE_DEADLINE_MS            = 30_000 (judge monitor: one judgment's deadline)
 INPUT_WAIT_QUIET_MS          = 5_000 (output silence before the screen is examined for a prompt)
 RECLAIM_TTL_MS               = 1_800_000 (after a return or read: read reminder or reclaim-due notice)
 RECLAIM_GRACE_MS             = 300_000 (reclaim-due notice to reclaim, unless read)
+RECLAIM_LINGER_MS            = 300_000 (normal return with no process left to its silent reclaim)
 LIFECYCLE_SWEEP_MS           = 60_000 (lifecycle check interval)
 ```
 
@@ -1052,7 +1065,7 @@ fork-features/
 ├── terminal-url.ts       # omp `term://` read handler; reports reads to the terminal's owner
 ├── terminal-image.ts     # terminal screenshots (SVG → PNG)
 ├── terminal-notice.ts    # terminal notice ADT, formatter and the one dispatcher: run-held, merged, stop-gated
-├── terminal-lifecycle.ts # returned-terminal TTL, read/reclaim reminders, grace, reclaim, finished-work collection
+├── terminal-lifecycle.ts # returned-terminal silent linger, TTL, read/reclaim reminders, grace, reclaim, reclaimed record, finished-work collection
 ├── stop-config.ts        # `omp-unified-exec` omomp section: stop mode, judge prompt, notice template
 ├── plugin-settings.ts    # native plugin settings (`omp.settings`): `notice.graceReclaim`, read via omp's getPluginSettings
 ├── exec-init.ts          # `exec.initFile`: resolve the init file, source it before `cmd` in POSIX shells

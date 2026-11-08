@@ -74,7 +74,7 @@ A sibling view, indexed by concern:
 | Terminal notices: ADT, formatter, the dispatcher that holds notices during a run and merges them at its stop (`unified-exec-notice`) | `fork-features/terminal-notice.ts`; run events (`agent_start`, `agent_end`, `session_stop`) in `src/index.ts` |
 | Finished-work stop gate: `omp-unified-exec` omomp section, judge / `@smol` / todo detectors, silent collection of returned terminals; a finished agent woken only by a terminal problem (`isTerminalProblem`, the `done` stop state) | `fork-features/stop-config.ts`, `fork-features/stop-gate.ts` (omp modules loaded by `loadStopHost`), `TerminalLifecycle.collectReturned`, `NoticeDispatcher.flush` in `fork-features/terminal-notice.ts`; withheld settlement in `src/completion.ts` (`submitWake`) and `fork-features/monitor-subscription.ts`; `tests/stop-gate.test.ts` |
 | Structured stop/config diagnostics and boundary-only English/Chinese rendering | `fork-features/stop-reasons.ts`; producers in `stop-config.ts`, `stop-gate.ts` and `terminal-notice.ts`, human notifications in `src/index.ts` |
-| Terminal lifecycle: return, reads, TTL, grace, reclaim, minute sweep; the `notice.graceReclaim` plugin setting gating the grace reclaim notice | `fork-features/terminal-lifecycle.ts`; `fork-features/plugin-settings.ts` (omp's `getPluginSettings`, loaded by `loadPluginSettingsReader`); reclaim, leftover-group kill and setting parsing/warnings in `src/index.ts`; `onShellExit`/`onTerminalRead`/`signalProcessGroup` in `src/session.ts` |
+| Terminal lifecycle: return, reads, silent linger of a normal return with no process left, TTL, grace, reclaim, reclaimed-terminal record, minute sweep; the `notice.graceReclaim` plugin setting gating the grace reclaim notice | `fork-features/terminal-lifecycle.ts`; `fork-features/plugin-settings.ts` (omp's `getPluginSettings`, loaded by `loadPluginSettingsReader`); reclaim, leftover-group kill and setting parsing/warnings in `src/index.ts`; `onShellExit`/`onTerminalRead`/`signalProcessGroup` in `src/session.ts` |
 | A subagent's terminals across omp's idle park: agent registry/lifecycle reader, parked runtimes, revive-then-deliver | `fork-features/agent-park.ts`; `createRuntime`, `deliverNotice`, `endRuntime` and the `session_start`/`session_shutdown` handlers in `src/index.ts`; `finished` in `fork-features/terminal-notice.ts`; `tests/agent-park.test.ts` |
 | Rendered terminal screen: emulator, history + screen observations, snapshots | `src/terminal-screen.ts` (owned by `ExecSession`) |
 | On-disk raw log file mirroring | `src/session.ts` (`logStream`) |
@@ -213,7 +213,7 @@ owns them: yield limits, early-exit grace, session-store limits and
 in `src/terminal-screen.ts`, `DEFAULT_REMIND_AFTER_MS` and
 `DEFAULT_JUDGE_INTERVAL_MS` in `fork-features/monitor-subscription.ts`,
 `JUDGE_DEADLINE_MS` in `fork-features/screen-judge.ts`, `RECLAIM_TTL_MS`,
-`RECLAIM_GRACE_MS` and `LIFECYCLE_SWEEP_MS` in
+`RECLAIM_GRACE_MS`, `RECLAIM_LINGER_MS` and `LIFECYCLE_SWEEP_MS` in
 `fork-features/terminal-lifecycle.ts`, the output caps in the host's
 `DEFAULT_MAX_BYTES` / `DEFAULT_MAX_LINES`. When you touch one:
 

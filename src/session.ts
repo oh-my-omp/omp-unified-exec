@@ -486,6 +486,11 @@ export class ExecSession {
 		return this.child?.signalGroup(signal) ?? false;
 	}
 
+	/** Whether any of its processes remain: the terminal is open, or its process group still has members. */
+	processesRemain(): boolean {
+		return !this.hasExited || this.signalProcessGroup(0);
+	}
+
 	/** The shell's own exit status once it has exited, even while the terminal is held open. */
 	get shellExit(): ProcessExit | undefined {
 		return this.child?.processExit;

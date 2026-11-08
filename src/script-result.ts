@@ -188,7 +188,7 @@ export type MonitorScriptResult = Static<typeof monitorScriptResultSchema>;
 const lifecycleSchema = Type.Object({
 	returned: Type.String({ description: "How the command returned: normally, or abnormally with the reason." }),
 	read: Type.Boolean({ description: "Whether the returned terminal has been read (term:// or a tool result showing it)." }),
-	phase: Type.Union([Type.Literal("ttl"), Type.Literal("unread_reminded"), Type.Literal("grace"), Type.Literal("reclaiming")]),
+	phase: Type.Union([Type.Literal("ttl"), Type.Literal("unread_reminded"), Type.Literal("grace"), Type.Literal("linger"), Type.Literal("reclaiming")]),
 });
 
 export const listSessionsScriptResultSchema = Type.Object({
@@ -229,7 +229,7 @@ export function listSessionsScriptResult(value: {
 		running: boolean;
 		wake_armed: boolean;
 		monitor?: MonitorStatus;
-		lifecycle?: { returned: string; read: boolean; phase: "ttl" | "unread_reminded" | "grace" | "reclaiming" };
+		lifecycle?: { returned: string; read: boolean; phase: "ttl" | "unread_reminded" | "grace" | "linger" | "reclaiming" };
 		exit_code?: number | null;
 		signal?: string;
 		log_path?: string;

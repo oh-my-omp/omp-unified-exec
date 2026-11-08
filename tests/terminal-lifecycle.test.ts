@@ -1,11 +1,12 @@
 /**
  * Terminal lifecycle through the real tools and real PTYs: required titles,
- * abnormal-return notices, the 30-minute TTL with its read reminder or
- * reclaim-due notice, the 5-minute grace, reclaim (killing processes that
- * still hold the terminal), and the `notice.graceReclaim` plugin setting
- * that decides whether that reclaim sends a merged reclaimed notice. The
- * lifecycle clock is injected so a test steps through half an hour without
- * waiting; processes run on real time.
+ * the silent linger of a normal return with no process left, abnormal-return
+ * notices, the 30-minute TTL with its read reminder or reclaim-due notice,
+ * the 5-minute grace, reclaim (killing processes that still hold the
+ * terminal), and the `notice.graceReclaim` plugin setting that decides
+ * whether that reclaim sends a merged reclaimed notice. The lifecycle clock
+ * is injected so a test steps through half an hour without waiting;
+ * processes run on real time.
  */
 
 import { strict as assert } from "node:assert";
@@ -33,7 +34,7 @@ interface ToolDetails {
 	sessions?: ListedSession[];
 }
 
-interface ToolResult { details: ToolDetails }
+interface ToolResult { details: ToolDetails; content: ReadonlyArray<{ readonly text: string }> }
 
 interface ToolDef {
 	name: string;
@@ -233,14 +234,55 @@ describe("terminal lifecycle", { skip: process.platform === "win32" }, () => {
 		assert.ok(await waitFor(() => h.notices("reclaim_due").length === 2), "a new TTL counted from the read");
 	});
 
-	it("a never-read terminal gets one read reminder and is kept until read", async () => {
+	it("a normal return with no process left lingers 5 minutes, read or not, and goes silently", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const { sid, url } = await startBackground(h, "sleep 0.5; echo done", "unread");
+		const { sid, url } = await startBackground(h, "sleep 0.5; echo finished-line", "quiet job");
+		assert.ok(await waitFor(async () => (await h.listed(sid))?.lifecycle?.phase === "linger"));
+		assert.equal((await h.listed(sid))?.lifecycle?.read, false);
+		h.advance(4 * MINUTE);
+		// A read does not extend the linger.
+		await readTerm(url);
+		h.advance(MINUTE - 1);
+		await settle();
+		assert.equal((await h.listed(sid))?.lifecycle?.phase, "linger", "not before the linger ends");
+		h.advance(1);
+		assert.ok(await waitFor(async () => await h.listed(sid) === undefined), "reclaimed");
+		h.advance(40 * MINUTE);
+		await settle();
+		assert.deepEqual(h.sent, [], "no unread, reclaim-due or reclaimed notice");
+		assert.ok((await readTerminal(url.slice(7))).retainedLines.includes("finished-line"), "the terminal stays readable");
+		await assert.rejects(
+			h.call("write_stdin", { session_id: sid, chars: "x" }),
+			(error: Error) => error.message.includes(`unknown session_id: ${sid}; it returned normally and was reclaimed: read ${url} or log_path `),
+		);
+		const killed = await h.call("kill_session", { session_id: sid });
+		assert.ok(killed.content[0]!.text.startsWith(`No such session: ${sid}; it returned normally and was reclaimed: read ${url}`), killed.content[0]!.text);
+	});
+
+	it("a normal return lingers from the sweep that finds its last process gone", async () => {
+		const h = makeHarness();
+		await h.emit("session_start");
+		const { sid, bg } = await startHeld(h, "job ends later");
+		assert.notEqual((await h.listed(sid))?.lifecycle?.phase, "linger", "a process still remains");
+		process.kill(bg, "SIGKILL");
+		assert.ok(await waitFor(() => !alive(bg)));
+		h.advance(MINUTE);
+		assert.ok(await waitFor(async () => (await h.listed(sid))?.lifecycle?.phase === "linger"));
+		h.advance(5 * MINUTE);
+		assert.ok(await waitFor(async () => await h.listed(sid) === undefined));
+		await settle();
+		assert.deepEqual(h.sent, []);
+	});
+
+	it("a never-read abnormal terminal gets one read reminder and is kept until read", async () => {
+		const h = makeHarness();
+		await h.emit("session_start");
+		const { sid, url } = await startBackground(h, "sleep 0.5; echo done; exit 4", "unread");
 		assert.ok(await waitFor(async () => (await h.listed(sid))?.running === false));
 		h.advance(30 * MINUTE);
 		assert.ok(await waitFor(() => h.notices("unread").length === 1));
-		assert.match(h.notices("unread")[0]!.reason, /returned normally .* has not been read/);
+		assert.match(h.notices("unread")[0]!.reason, /returned abnormally \(exit_code=4\) .* has not been read/);
 		h.advance(35 * MINUTE);
 		h.advance(35 * MINUTE);
 		await settle();
@@ -276,7 +318,7 @@ describe("terminal lifecycle", { skip: process.platform === "win32" }, () => {
 		assert.match(h.notices("reclaim_due")[0]!.reason, /abnormally \(exit_code=3\)/);
 	});
 
-	it("kills are normal endings; the killed terminal stays listed until reclaimed", async () => {
+	it("kills are normal endings; the killed terminal lingers and goes silently", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		const { sid } = await startBackground(h, "sleep 300", "killed");
@@ -286,9 +328,11 @@ describe("terminal lifecycle", { skip: process.platform === "win32" }, () => {
 		assert.equal(h.notices("abnormal_return").length, 0);
 		const entry = await h.listed(sid);
 		assert.equal(entry?.running, false);
-		assert.deepEqual(entry?.lifecycle, { returned: "normally", read: true, phase: "ttl" });
-		h.advance(30 * MINUTE);
-		assert.ok(await waitFor(() => h.notices("reclaim_due").length === 1));
+		assert.deepEqual(entry?.lifecycle, { returned: "normally", read: true, phase: "linger" });
+		h.advance(5 * MINUTE);
+		assert.ok(await waitFor(async () => await h.listed(sid) === undefined));
+		await settle();
+		assert.deepEqual(h.sent, []);
 	});
 
 	it("with notice.graceReclaim on, one sweep's reclaims share one reclaimed follow-up; the setting is read live", async () => {
@@ -375,7 +419,7 @@ describe("terminal lifecycle", { skip: process.platform === "win32" }, () => {
 		const { sid } = await startBackground(h, "read line; echo got=$line", "answered");
 		const answered = await h.call("write_stdin", { session_id: sid, chars: "yes\r", yield_time_ms: 2000 });
 		assert.equal(answered.details.session_id, undefined, "the result reports the exit");
-		assert.deepEqual((await h.listed(sid))?.lifecycle, { returned: "normally", read: true, phase: "ttl" });
+		assert.deepEqual((await h.listed(sid))?.lifecycle, { returned: "normally", read: true, phase: "linger" });
 	});
 
 	it("session shutdown ends the lifecycle without notices", async () => {

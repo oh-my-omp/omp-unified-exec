@@ -4,7 +4,8 @@
 - With a `session_id`, send input with `write_stdin`, wait for output or completion with `monitor`, and read `terminal_url` (`term://`) for state.
 - Notices name a terminal by `session_id` and `title`; they wait while you work and arrive when you stop.
 - A returned terminal stays in `list_sessions` until reclaimed. An abnormal return is reported at once; a normal one is not.
-- Reclaim timers start at the return or at the last read: 30 minutes later, a never-read terminal gets one read reminder and a read one gets a reclaim notice. Then it is killed with its background jobs and unlisted unless you read it within 5 minutes. A notice after that reclaim comes only if the human enabled it; do not wait for one.
+- A normal return with nothing left running is reclaimed silently 5 minutes later, read or not; reading does not extend it. A tool call that names its `session_id` afterwards answers with its `term://` and `log_path`.
+- For an abnormal return, or a normal one whose background jobs still run, reclaim timers start at the return or at the last read: 30 minutes later, a never-read terminal gets one read reminder and a read one gets a reclaim notice. Then it is killed with its background jobs and unlisted unless you read it within 5 minutes. A notice after that reclaim comes only if the human enabled it; do not wait for one.
 - When your final response shows the task finished, returned terminals are reclaimed silently — no notice — and until your next run only an abnormal return wakes you: armed wakes, monitors and input prompts are settled without a notice. Do not rely on a finished terminal staying alive across turns.
 - `term://` stays readable after reclaim, so read the retained history or `log_path` instead of starting the command again.
 - `on_exit: wake` resumes you once when the process exits unobserved. Set it only when the human asked for that; never for servers or watchers. A tool result that observes the exit consumes the wake.
