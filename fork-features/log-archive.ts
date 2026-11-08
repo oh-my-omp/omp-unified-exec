@@ -74,13 +74,30 @@ export function parseLogName(name: string): LogName | undefined {
 /** Most buffers one `writev` takes (IOV_MAX on Linux and macOS). */
 const WRITEV_MAX_BUFFERS = 1024;
 
+/** The part of `batch` after its first `written` bytes, as views into the same chunks. */
+function unwrittenTail(batch: readonly Uint8Array[], written: number): Uint8Array[] {
+	const tail: Uint8Array[] = [];
+	let offset = written;
+	for (const chunk of batch) {
+		if (offset >= chunk.length) {
+			offset -= chunk.length;
+			continue;
+		}
+		tail.push(offset === 0 ? chunk : chunk.subarray(offset));
+		offset = 0;
+	}
+	return tail;
+}
+
 /**
  * A session's raw log, every child chunk appended in arrival order. Chunks
  * stay the views the PTY delivered (Bun passes each callback a buffer of its
  * own and never reuses it) and go to disk in one `writev` at a time: what
  * waits is what arrived during the write in flight, instead of a copy and a
- * queued stream write per chunk. Open from creation until `end` settles, as
- * `openSessionLogs` records; the first failed write stops the mirror.
+ * queued stream write per chunk. A short `writev` keeps its unwritten
+ * remainder queued for the next write. Open from creation until `end`
+ * settles, as `openSessionLogs` records; the first failed write — including
+ * one that reports no progress without an error — stops the mirror.
  */
 export class SessionLog {
 	private pending: Uint8Array[] = [];
@@ -129,16 +146,33 @@ export class SessionLog {
 		}
 		const batch = this.pending.length <= WRITEV_MAX_BUFFERS ? this.pending : this.pending.slice(0, WRITEV_MAX_BUFFERS);
 		this.pending = batch === this.pending ? [] : this.pending.slice(WRITEV_MAX_BUFFERS);
+		const batchBytes = batch.reduce((bytes, chunk) => bytes + chunk.length, 0);
 		this.writing = true;
-		writev(this.fd, batch, (error) => {
+		// `writev` may write fewer bytes than the batch holds — a short write at the
+		// file-size limit, among others — and report no error for it. Only the bytes
+		// it wrote leave the queue; the rest stays at the head and goes out next.
+		writev(this.fd, batch, (error, bytesWritten) => {
 			this.writing = false;
-			for (const chunk of batch) this.pendingBytes -= chunk.length;
 			if (error) {
 				this.pending = [];
 				this.pendingBytes = 0;
 				this.close();
 				this.onError(error);
 				return;
+			}
+			const written = Math.min(bytesWritten, batchBytes);
+			this.pendingBytes -= written;
+			if (written < batchBytes) {
+				// A write that reports no progress would retry forever and never let
+				// `end` settle: report it once, like any other failed write.
+				if (written === 0) {
+					this.pending = [];
+					this.pendingBytes = 0;
+					this.close();
+					this.onError(new Error(`writev wrote 0 of ${batchBytes} log bytes to ${this.path}`));
+					return;
+				}
+				this.pending = unwrittenTail(batch, written).concat(this.pending);
 			}
 			this.flush();
 		});
