@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+- `tests/e2e-pty.test.ts` no longer expects the child's `tty` to end its line (#113). On Ubuntu 26.04 (`ubuntu-latest`) `tty` is uutils coreutils 0.10.0, which prints the device path without a trailing newline, so `tty && echo seen=$TERM` rendered `/dev/pts/16seen=xterm-256color` and the `seen=` line assertion failed on every Linux CI run. The product was right: the session log of the same call held the child's bytes `/dev/pts/0seen=xterm-256color\r\n`, so only the test changed. Its command is now `t=$(tty) && echo "tty=$t" && echo "seen=$TERM"`, asserting a `tty=/dev/` line and `seen=xterm-256color` on a line of its own.
+
 ## 0.14.35 - 2026-11-08
 
 - A session log reports the bytes its file could not take instead of dropping them silently (#108). `SessionLog` counted a `writev` as writing the whole batch, so a short write — the file reaching `RLIMIT_FSIZE`, among others — left the file holding a prefix of what the child produced while no `log stream error` was recorded: 300000 bytes queued under `ulimit -f 100` left 51200 bytes and an empty error list. It now advances by the byte count `writev` reports, keeps the rest of the batch queued until it is written or fails, and reports a write that makes no progress once, after which the mirror stops as before; the same load reports `EFBIG`.
