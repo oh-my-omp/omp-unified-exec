@@ -30,8 +30,12 @@
 		"fork-features/*.ts",
 		"fork-features/topics/*.md",
 		"README.md",
-		"LICENSE"
+		"LICENSE",
+		"CHANGELOG.md"
 	],
+	"omomp": {
+		"changelog": "CHANGELOG.md"
+	},
 	"omp": {
 		"extensions": [
 			"./src/index.ts"

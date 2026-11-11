@@ -4,7 +4,7 @@
 
 本仓库是 [iamwrm/pi-unified-exec](https://github.com/iamwrm/pi-unified-exec) 面向 [oh-my-pi](https://github.com/can1357/oh-my-pi)（omp）的 fork。omp 在 2026 年初从 Pi 分叉，通过一个只覆盖 Pi 部分新 API 的兼容层加载 Pi 包，所以上游的新版本可能在 omp 上无法加载。
 
-安装：`omp install https://github.com/oh-my-omp/omp-unified-exec`。请先卸载已有的 `pi-unified-exec`（`omp plugin uninstall pi-unified-exec`）：两者都注册 `exec_command` 和其他 unified-exec 工具。
+安装：`omp install https://github.com/oh-my-omp/omp-unified-exec#release`。请先卸载已有的 `pi-unified-exec`（`omp plugin uninstall pi-unified-exec`）：两者都注册 `exec_command` 和其他 unified-exec 工具。
 
 ## 定制
 
@@ -40,6 +40,7 @@
 | 子 agent 的终端跨过 omp 的空闲停放继续存在（[#90](https://github.com/oh-my-omp/omp-unified-exec/issues/90)）：已完成（已被收养）的子 agent 只会被终端问题唤醒（[#96](https://github.com/oh-my-omp/omp-unified-exec/issues/96)），这种通知经 omp 唤醒已停放的子 agent 并送达唤醒后的会话，该会话接回同样的 `session_id`；omp 释放或中止已停放的 agent 时结束其终端 | `fork-features/agent-park.ts`、`fork-features/terminal-notice.ts`（`finished`、`withheld`）、`fork-features/terminal-lifecycle.ts`（`reclaimWithheld`）、`fork-features/omp-presentation.ts`（`loadAgentHost`、`ActivatedExtension.store`）、`fork-features/tern-terminal-hud.ts`、`fork-features/omp-tools.d.ts`；`src/index.ts` 中的 `createRuntime`、`deliverNotice`、`endRuntime`、`session_start` 与 `session_shutdown`；`tests/agent-park.test.ts` | omp 在 `task.agentIdleTtlMs`（默认 420000 ms）之后通过释放 AgentSession 停放已被收养的子 agent，由此触发的 `session_shutdown` 不带原因；处理器原先会杀掉全部终端、丢弃全部通知，于是 monitor 和 `on_exit` 唤醒随停放消失，唤醒后的激活从空存储开始。停放之前子 agent 没有判定门，常规通知会为已完成的子 agent 启动轮次并让它的空闲计时重新开始。现在 agent 的终端运行时按 omp 注册表代际（`AgentRef`）而不是按激活归属：`AgentLifecycleManager.isParking` 标出停放引发的关闭，进程级映射保存运行时，唤醒后激活的 `session_start` 把它取回，一个注册表监听器在 `removed` 或 `aborted` 时结束它。旧激活的 `pi.sendMessage` 仍绑定在已释放的会话上且不会唤醒 agent，所以已停放的运行时先 `ensureLive`，再经唤醒后的激活送达。 | 仅 fork |
 | 已完成的 agent 只会被终端问题唤醒（[#96](https://github.com/oh-my-omp/omp-unified-exec/issues/96)）：“已完成”判定持续到下一次 `agent_start`、会话切换或分支，已被收养的子 agent 算作已完成；已完成期间只有 `abnormal_return` 启动轮次，含它的一批整批送达，其余批次扣下并静默收尾（完成唤醒被消耗，monitor 连同其终端的唤醒一起结束，`unread`/`reclaim_due` 立即回收） | `fork-features/terminal-notice.ts`（`isTerminalProblem`、`StopState` 的 `done`、`NoticeDispatcher.flush`）、`fork-features/monitor-subscription.ts`（`withheld`）、`src/completion.ts`（`submitWake`）、`fork-features/topics/lifecycle.md`、`fork-features/topics/monitor-subscription.md`；`tests/stop-gate.test.ts`、`tests/monitor.test.ts` | “已完成”判定原先只作用于判定那次停止时待发的通知：之后的完成唤醒、monitor 返回与提醒、等待输入提醒都会启动轮次；已被收养的子 agent 被其中每一种唤醒，每次唤醒都把 omp 的 agent 状态改回 `running` 并重新开始空闲计时，留着活终端的子 agent 因而很难被停放。唯一报告终端故障的 `abnormal_return` 却对已完成的子 agent 扣下不发。操作员裁定：工作完成后只有终端问题才唤醒，等待输入与 judge 失败都不算问题。被扣下的完成唤醒和 monitor 都被消耗，已完成的 agent 之后不会再收到过期的通知。 | 仅 fork |
 | 原生插件设置 `exec.initFile`（字符串）：一个 POSIX shell 脚本，每个 `exec_command` 的 shell 在 `cmd` 之前 source 它，使 export 和别名（例如 `alias omp='omp --hide-thinking'`）只作用于 `exec_command` 终端；项目 `.omp/plugin-overrides.json` 中的值取代用户值 | `package.json` 的 `omp.settings`、`fork-features/exec-init.ts`、`src/shell.ts`（`isPosixShell`、`shellBase`）、`fork-features/command-approval.ts`；`src/index.ts` 中的 `runExecCommand`、`createRuntime`；`tests/exec-init.test.ts`、`tests/terminal-lifecycle.test.ts` | omp 的插件设置只能保存 string/number/boolean/enum，且按键合并用户值与项目值，所以配置面是一个路径设置；环境变量映射或别名映射无法在 `/settings` 中编辑，还需要按 shell 生成代码。每次调用用会话 cwd 读取设置；值、文件不可用或 shell 不是 POSIX shell 时，调用在任何副作用之前失败，而不是不带该文件运行。脚本依次是 `[shopt -s expand_aliases]`、`. file`、写在 `\|\|`/`if` 之外的状态检查（文件里的 `set -e` 因而保持原义）和 `eval '<cmd>'`，因为 zsh 会先解析完整个 `-c` 字符串，然后才定义别名。POSIX shell 判断用的是 omp 自己的 `isPosixShell`，现与命令审批共用。 | 仅 fork |
+| omomp 发布成员身份：从 `release` 分支每日发布，加上成员声明与 `CHANGELOG.md`，取代 fork 的逐 push patch 升版本 | `.github/workflows/omomp-release.yml`、`package.json`（`omomp`、`files`）、`CHANGELOG.md`；删除 `.github/workflows/release.yml` 与 `fork-features/release-version.ts`；`Changelog.md` 改名 | omomp 成员从 `release` 分支按日发布，omp-config 把每个已装成员的 `omomp.changelog` 合并进 What's New。逐 push 升版本让每次合并到 `main` 都成为发布，既没有 `release` 通道，也没有客户机可读的声明。 | 仅 fork |
 
 已有工具名与仍保留的环境变量（`PI_UNIFIED_EXEC_*`）保持原名。只用于已删除路径的模块直接移除，不保留兼容 shim。
 
@@ -47,11 +48,13 @@
 
 - `Publish to npm` 和 `Interaction limit reminder` 已用 `gh workflow disable` 禁用：fork 不向 npm 发布任何内容，提醒跟踪的是上游自己的互动限制。这是仓库状态，所以把 workflow 文件同步回来也不会重新启用它们。
 - `Sync upstream`（`.github/workflows/sync-upstream.yml`）每天通过以 `CI` 为门禁的 PR 把 `upstream/main` 合并进 `main`。
-- `Release`（`.github/workflows/release.yml`）为每次推送到 `main` 生成新的 patch 版本：`fork-features/release-version.ts` 升级 `package.json` 和 `package-lock.json` 的两个版本字段，把 `Changelog.md` 顶部的 `## Unreleased` 改名为 `## X.Y.Z - YYYY-MM-DD`，并在其上新开一个空的 `## Unreleased`；随后由 bot 向 `main` 提交 `chore: release X.Y.Z`。版本号不再手动修改。短时间内连续推送可能共用一个版本；`Changelog.md` 的第一节不是 `## Unreleased` 时，运行失败。
+- `omomp-release`（`.github/workflows/omomp-release.yml`）是 omomp 的调用文件：每天 GMT+9 02:00 一次（`cron: "0 17 * * *"`）以及 `workflow_dispatch` 调用 `oh-my-omp/.github/.github/workflows/omomp-release.yml@main`，传 `version-files: package-lock.json`。一次运行把 `CHANGELOG.md` 顶部的 `## [Unreleased]` 提升为 `## [X.Y.Z] - YYYY-MM-DD`，在其上新开一个空的 `## [Unreleased]`，升级 `package.json` 和 `package-lock.json` 的两个版本字段，在 `main` 上提交 `chore: release X.Y.Z`，并在一次原子推送中同时移动 `main`、tag `vX.Y.Z` 和 `release` 分支。合并进入 `main` 不改版本号、也不发布；版本号不手动修改。`## [Unreleased]` 下没有顶层列表项时，运行报告 `nothing-to-release`，不推送任何 ref。
 
 ## 预期的同步冲突
 
-`name` 紧挨着 `version` 那一行，git 把相邻行的修改视为冲突。上游每次发布都会改 `version`，所以它的同步会以待审 PR 的形式到来。解决方法：保留 `"name": "omp-unified-exec"`，`package.json` 与 `package-lock.json` 中保留 fork 自己的 `version`；合并进入 `main` 后由 `Release` 升级。
+`name` 紧挨着 `version` 那一行，git 把相邻行的修改视为冲突。上游每次发布都会改 `version`，所以它的同步会以待审 PR 的形式到来。解决方法：保留 `"name": "omp-unified-exec"`，`package.json` 与 `package-lock.json` 中保留 fork 自己的 `version`；下一次 `omomp-release` 每日运行会升级它。
+
+上游的 changelog 仍叫 `Changelog.md`，本 fork 已改名为 `CHANGELOG.md`——lgit 和 omomp 发布运行只认这个名字。所以上游对 `Changelog.md` 的修改会以 add/delete 冲突到来，把旧文件重新加回。解决方法：保留删除，把上游条目搬进 `CHANGELOG.md` 的 `## [Unreleased]`（或它们所属的版本段），版本号不动。`.github/workflows/release.yml` 与 `fork-features/release-version.ts` 原本就是 fork 自己的，上游两者都没有，删除它们不会与上游冲突，也不要恢复。`package.json` 的 `omomp` 声明和 `files` 里的 `CHANGELOG.md` 是 fork 自己的行，上游改动这段元数据时两者都要保留。
 
 本仓库的 `exec_command` 只用 PTY（[#61](https://github.com/oh-my-omp/omp-unified-exec/issues/61)）：管道后端（`spawnPipes`、codex 首尾缓冲区的移植、`collectOutputUntilDeadline`、流式 `OutputTextSanitizer` 和管道 monitor 解码）、`tty` 参数与结果字段，以及移除宿主 `bash` 的参数都已删除，PowerShell 以 `-NoProfile -NoLogo -Command` 运行。上游对这些代码的改动会以 modify/delete 或内容冲突的形式到来。解决方法：保留删除，只把对 PTY 会话仍然成立的事实（shell 选择、信号、Windows 进程树、结果字段）搬进 PTY 代码；不要恢复管道路径、`tty` 参数、该参数或只为管道存在的 PowerShell 参数。
 

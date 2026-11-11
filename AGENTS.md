@@ -10,11 +10,15 @@ conflicts and omp-upgrade requalification are in
 
 ## Every change
 
-- When code, docs, tests or package metadata change, add an entry under the
-  first `## Unreleased` of `Changelog.md`, newest on top. Keep that heading as
-  the file's first section and leave versions alone: on every push to `main`
-  the `Release` workflow bumps `package.json` and `package-lock.json` and
-  renames the section to the new version.
+- Write changelog entries with lgit: `git add` the change, then run
+  `uvx --from lgit-cli lgit`. It commits and adds a top-level item for each
+  user-visible change under `## [Unreleased]` of `CHANGELOG.md`, newest on top;
+  a hand-written item in the same commit is kept. Keep that heading as the
+  file's first section and leave versions alone: merging to `main` publishes
+  nothing, and the daily `omomp-release` run at 02:00 GMT+9 promotes the
+  section to a new version, bumps `package.json` and `package-lock.json`, and
+  moves `main`, the tag and the `release` branch together. Users install from
+  `https://github.com/oh-my-omp/omp-unified-exec#release`.
 - Change `README.md` and `README.zh-CN.md` together, section for section; the
   same holds for `fork-features/README.md` and `fork-features/README.zh-CN.md`.
 - Commit with a Conventional Commit type and the issue number, e.g.

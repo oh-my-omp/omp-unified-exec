@@ -43,17 +43,18 @@ upgrades is in [fork-features/README.md](fork-features/README.md).
 ## Install
 
 ```bash
-omp install https://github.com/oh-my-omp/omp-unified-exec
+omp install https://github.com/oh-my-omp/omp-unified-exec#release
 ```
 
-Remove an existing `pi-unified-exec` first (`omp plugin uninstall
-pi-unified-exec`): both register the same tools. The fork publishes nothing to
-npm.
+`#release` is the published channel; `main` is the development branch, and a
+new version is published from it daily at 02:00 GMT+9. Remove an existing
+`pi-unified-exec` first (`omp plugin uninstall pi-unified-exec`): both register
+the same tools. The fork publishes nothing to npm.
 
 Updates use the same command with `--force`:
 
 ```bash
-omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
+omp plugin install https://github.com/oh-my-omp/omp-unified-exec#release --force
 ```
 
 The extension needs no Tern plugin. Versions up to 0.14.7 installed one

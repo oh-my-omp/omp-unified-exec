@@ -7,7 +7,7 @@ Fork of [iamwrm/pi-unified-exec](https://github.com/iamwrm/pi-unified-exec) for
 2026 and loads Pi packages through a compatibility layer that only covers part of
 Pi's newer API, so upstream releases can stop loading on omp.
 
-Install: `omp install https://github.com/oh-my-omp/omp-unified-exec`.
+Install: `omp install https://github.com/oh-my-omp/omp-unified-exec#release`.
 Remove an existing `pi-unified-exec` first (`omp plugin uninstall pi-unified-exec`):
 both register `exec_command` and the other unified-exec tools.
 
@@ -45,6 +45,7 @@ both register `exec_command` and the other unified-exec tools.
 | A subagent's terminals survive omp's idle park ([#90](https://github.com/oh-my-omp/omp-unified-exec/issues/90)): a finished (adopted) subagent is woken only by a terminal problem ([#96](https://github.com/oh-my-omp/omp-unified-exec/issues/96)), which revives a parked one through omp and reaches the revived session, which resumes the same `session_id`s; omp's release or abort of the parked agent ends its terminals | `fork-features/agent-park.ts`, `fork-features/terminal-notice.ts` (`finished`, `withheld`), `fork-features/terminal-lifecycle.ts` (`reclaimWithheld`), `fork-features/omp-presentation.ts` (`loadAgentHost`, `ActivatedExtension.store`), `fork-features/tern-terminal-hud.ts`, `fork-features/omp-tools.d.ts`; `createRuntime`, `deliverNotice`, `endRuntime`, `session_start` and `session_shutdown` in `src/index.ts`; `tests/agent-park.test.ts` | omp parks an adopted subagent after `task.agentIdleTtlMs` (default 420000 ms) by disposing its AgentSession, whose `session_shutdown` carries no cause; the handler used to kill every terminal and drop every notice, so monitors and `on_exit` wakes died with the park and the revived activation started with an empty store. Before the park, a subagent has no stop gate, so routine notices started turns in a finished subagent and restarted its idle TTL. The agent's terminal runtime is now owned per omp registry generation (`AgentRef`), not per activation: `AgentLifecycleManager.isParking` marks a park's shutdown, a process-global map keeps the runtime, the revived activation's `session_start` takes it back, and one registry listener ends it on `removed` or `aborted`. The old activation's `pi.sendMessage` stays bound to the disposed session and never revives, so a parked runtime delivers by `ensureLive` and then through the revived activation. | Fork-only |
 | A finished agent is woken only by a terminal problem ([#96](https://github.com/oh-my-omp/omp-unified-exec/issues/96)): a done verdict holds until the next `agent_start`, switch or branch, and an adopted subagent counts as finished; while finished, only an `abnormal_return` starts a turn and a batch holding one goes out whole, while any other batch is withheld and settled silently (an exit wake is consumed, a monitor ends with its terminal's wake, `unread`/`reclaim_due` reclaim at once) | `fork-features/terminal-notice.ts` (`isTerminalProblem`, `StopState` `done`, `NoticeDispatcher.flush`), `fork-features/monitor-subscription.ts` (`withheld`), `src/completion.ts` (`submitWake`), `fork-features/topics/lifecycle.md`, `fork-features/topics/monitor-subscription.md`; `tests/stop-gate.test.ts`, `tests/monitor.test.ts` | A done verdict applied only to the notices pending at its stop: later exit wakes, monitor returns and reminders and input-wait alerts started turns, and an adopted subagent was revived by every one of them, each wake moving omp's agent status back to `running` and restarting its idle TTL, so a subagent with a live terminal was rarely parked. `abnormal_return`, the one notice reporting a terminal fault, was meanwhile withheld from finished subagents. The operator ruled that finished work is woken only by a terminal problem; input waits and judge failures are not problems. Withheld exit wakes and monitors are consumed, so a finished agent never later receives a stale one. | Fork-only |
 | Native plugin setting `exec.initFile` (string): a POSIX shell script every `exec_command` shell sources before `cmd`, so exports and aliases (e.g. `alias omp='omp --hide-thinking'`) reach `exec_command` terminals only; a project's `.omp/plugin-overrides.json` value replaces the user value | `package.json` `omp.settings`, `fork-features/exec-init.ts`, `src/shell.ts` (`isPosixShell`, `shellBase`), `fork-features/command-approval.ts`; `runExecCommand`, `createRuntime` in `src/index.ts`; `tests/exec-init.test.ts`, `tests/terminal-lifecycle.test.ts` | omp's plugin settings hold only string/number/boolean/enum values and merge user and project values per key, so one path setting is the configuration surface; env maps or alias maps could not be edited in `/settings` and would need per-shell code generation. The setting is read per call with the session's cwd; an unusable value, file or non-POSIX shell fails the call before any side effect instead of running without the file. The script is `[shopt -s expand_aliases]`, `. file`, a status check outside `\|\|`/`if` (so the file's `set -e` holds) and `eval '<cmd>'`, because zsh parses a whole `-c` string before defining the aliases. The POSIX-shell test is omp's own `isPosixShell`, now shared with command approval. | Fork-only |
+| omomp release membership: a daily release run from a `release` branch, the member declaration and `CHANGELOG.md`, in place of the fork's per-push patch bump | `.github/workflows/omomp-release.yml`, `package.json` (`omomp`, `files`), `CHANGELOG.md`; deleted `.github/workflows/release.yml` and `fork-features/release-version.ts`; `Changelog.md` renamed | omomp members publish from a `release` branch on a daily run, and omp-config merges each installed member's `omomp.changelog` into its What's New. A per-push bump made every merge to `main` a release, left no `release` channel, and carried no declaration the client could read. | Fork-only |
 
 Existing tool names and retained environment variables (`PI_UNIFIED_EXEC_*`)
 keep their names. Modules used only for deleted paths are removed rather than
@@ -58,21 +59,38 @@ retained as compatibility shims.
   workflow files back in does not re-enable them.
 - `Sync upstream` (`.github/workflows/sync-upstream.yml`) merges `upstream/main`
   into `main` daily through PRs gated on `CI`.
-- `Release` (`.github/workflows/release.yml`) gives every push to `main` a new
-  patch version: `fork-features/release-version.ts` bumps `package.json` and
-  both version fields of `package-lock.json`, and renames the top
-  `## Unreleased` section of `Changelog.md` to `## X.Y.Z - YYYY-MM-DD` under a
-  fresh `## Unreleased`; the bot commits `chore: release X.Y.Z` to `main`.
-  Versions are not edited by hand. A burst of pushes may share one version,
-  and the run fails if `Changelog.md` does not start with `## Unreleased`.
+- `omomp-release` (`.github/workflows/omomp-release.yml`) is the omomp caller
+  file: a daily run at 02:00 GMT+9 (`cron: "0 17 * * *"`) and
+  `workflow_dispatch` call
+  `oh-my-omp/.github/.github/workflows/omomp-release.yml@main` with
+  `version-files: package-lock.json`. A run promotes `## [Unreleased]` of
+  `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD` under a fresh empty
+  `## [Unreleased]`, bumps `package.json` and both version fields of
+  `package-lock.json`, commits `chore: release X.Y.Z` on `main`, and moves
+  `main`, the tag `vX.Y.Z` and the `release` branch in one atomic push.
+  Merging to `main` changes no version and publishes nothing; versions are not
+  edited by hand. A run with no top-level item under `## [Unreleased]` reports
+  `nothing-to-release` and pushes nothing.
 
 ## Expected sync conflict
 
 `name` sits on the line next to `version`, and git treats edits to adjacent lines
 as a conflict. Every upstream release bumps `version`, so its sync arrives as a
 review PR. Resolve it by keeping `"name": "omp-unified-exec"` and the fork's own
-`version` in `package.json` and `package-lock.json`; `Release` bumps it once the
-merge lands on `main`.
+`version` in `package.json` and `package-lock.json`; `omomp-release` bumps it on
+its next daily run.
+
+Upstream still names its changelog `Changelog.md`; this fork renamed it to
+`CHANGELOG.md`, which is the only name lgit and the omomp release run read.
+Upstream edits to `Changelog.md` therefore arrive as an add/delete conflict
+that re-adds the old file. Keep the deletion, carry the upstream entries into
+`CHANGELOG.md` under `## [Unreleased]` (or into the version section they
+belong to), and leave versions alone. `.github/workflows/release.yml` and
+`fork-features/release-version.ts` were the fork's own and upstream has
+neither, so their deletion conflicts with nothing; do not restore them.
+`package.json`'s `omomp` declaration and its `CHANGELOG.md` entry in `files`
+are fork-owned lines, so keep both when an upstream change to that metadata
+arrives.
 
 `exec_command` is PTY-only here ([#61](https://github.com/oh-my-omp/omp-unified-exec/issues/61)):
 the pipe backend (`spawnPipes`, the port of codex's head/tail buffer,
