@@ -4,6 +4,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## Unreleased
 
+## 0.14.36 - 2026-11-11
+
 - `tests/e2e-pty.test.ts` no longer expects the child's `tty` to end its line (#113). On Ubuntu 26.04 (`ubuntu-latest`) `tty` is uutils coreutils 0.10.0, which prints the device path without a trailing newline, so `tty && echo seen=$TERM` rendered `/dev/pts/16seen=xterm-256color` and the `seen=` line assertion failed on every Linux CI run. The product was right: the session log of the same call held the child's bytes `/dev/pts/0seen=xterm-256color\r\n`, so only the test changed. Its command is now `t=$(tty) && echo "tty=$t" && echo "seen=$TERM"`, asserting a `tty=/dev/` line and `seen=xterm-256color` on a line of its own.
 
 ## 0.14.35 - 2026-11-08
