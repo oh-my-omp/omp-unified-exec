@@ -10,8 +10,9 @@ name: Sync upstream
 #   - When everything merges cleanly there is just the one auto-merge PR and
 #     no review PR. Upstream release commits bump `version` next to this
 #     fork's renamed `name` in package.json, so they arrive as review PRs;
-#     keep the fork's version, and release.yml bumps it after the merge
-#     (see fork-features/README.md).
+#     resolve them by keeping the fork's version. Merging does not change
+#     the version: the daily omomp release run sets it (see
+#     fork-features/README.md).
 #
 # Guarantees and the reasoning behind them:
 #   - At most ONE un-merged sync PR of each kind lives at a time. This is NOT
