@@ -8,6 +8,8 @@ All notable changes to this project. **Newest entries go on top.**
 
 - This repository is an omomp release member: merging to `main` no longer changes the version, and a daily run at 02:00 GMT+9 promotes this section to the new version, bumps `package.json` and both `package-lock.json` version fields, commits `chore: release X.Y.Z` on `main`, and moves `main`, the tag `vX.Y.Z` and the `release` branch together. `.github/workflows/omomp-release.yml` calls the shared workflow in `oh-my-omp/.github`; `.github/workflows/release.yml` and `fork-features/release-version.ts` are deleted. `Changelog.md` is renamed `CHANGELOG.md`, and `package.json` declares `"omomp": {"changelog": "CHANGELOG.md"}` and ships the file, so installs carry the changelog; install from `https://github.com/oh-my-omp/omp-unified-exec#release`.
 
+## 0.14.36 - 2026-11-11
+
 - `tests/e2e-pty.test.ts` no longer expects the child's `tty` to end its line (#113). On Ubuntu 26.04 (`ubuntu-latest`) `tty` is uutils coreutils 0.10.0, which prints the device path without a trailing newline, so `tty && echo seen=$TERM` rendered `/dev/pts/16seen=xterm-256color` and the `seen=` line assertion failed on every Linux CI run. The product was right: the session log of the same call held the child's bytes `/dev/pts/0seen=xterm-256color\r\n`, so only the test changed. Its command is now `t=$(tty) && echo "tty=$t" && echo "seen=$TERM"`, asserting a `tty=/dev/` line and `seen=xterm-256color` on a line of its own.
 
 ## 0.14.35 - 2026-11-08
