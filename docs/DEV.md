@@ -300,7 +300,7 @@ runtime. Stub-host tests alone do not qualify host compatibility. Confirm
 checkout loading, `omp plugin install` loading through `omp.extensions`,
 exec/write/kill cards, and Tern terminal interactions; required host modules
 must fail loading rather than silently degrade. Record observed qualification
-in `Changelog.md` with environment and evidence.
+in `CHANGELOG.md` with environment and evidence.
 
 ## Re-recording the README demos
 
@@ -350,16 +350,19 @@ READMEs show the GIF and link the MP4.
 
 ## Package delivery
 
-This fork does not publish to npm; its publish workflow is disabled.
-Users install the Git source with:
+This fork does not publish to npm; its publish workflow is disabled. The
+`release` branch is the published channel, moved daily at 02:00 GMT+9 by the
+`omomp-release` workflow, while `main` is development. Users install the Git
+source with:
 
 ```bash
-omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
+omp plugin install https://github.com/oh-my-omp/omp-unified-exec#release --force
 ```
 
 `files` in `package.json` includes `src`, the fork's TypeScript modules and
-`fork-features/topics/*.md`, `README.md`, and `LICENSE`. Keep required runtime
-files inside that package set.
+`fork-features/topics/*.md`, `README.md`, `LICENSE` and `CHANGELOG.md` (the
+`omomp.changelog` declaration). Keep required runtime files inside that package
+set.
 
 ## Commit conventions
 

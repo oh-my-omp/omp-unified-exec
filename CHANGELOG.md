@@ -2,7 +2,11 @@
 
 All notable changes to this project. **Newest entries go on top.**
 
-## Unreleased
+## [Unreleased]
+
+### Changed
+
+- This repository is an omomp release member: merging to `main` no longer changes the version, and a daily run at 02:00 GMT+9 promotes this section to the new version, bumps `package.json` and both `package-lock.json` version fields, commits `chore: release X.Y.Z` on `main`, and moves `main`, the tag `vX.Y.Z` and the `release` branch together. `.github/workflows/omomp-release.yml` calls the shared workflow in `oh-my-omp/.github`; `.github/workflows/release.yml` and `fork-features/release-version.ts` are deleted. `Changelog.md` is renamed `CHANGELOG.md`, and `package.json` declares `"omomp": {"changelog": "CHANGELOG.md"}` and ships the file, so installs carry the changelog; install from `https://github.com/oh-my-omp/omp-unified-exec#release`.
 
 ## 0.14.36 - 2026-11-11
 

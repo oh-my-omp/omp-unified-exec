@@ -18,15 +18,15 @@ agent 用 `exec_command` 启动 `python3 -q`，再通过 `write_stdin` 执行 `x
 ## 安装
 
 ```bash
-omp install https://github.com/oh-my-omp/omp-unified-exec
+omp install https://github.com/oh-my-omp/omp-unified-exec#release
 ```
 
-请先卸载已有的 `pi-unified-exec`（`omp plugin uninstall pi-unified-exec`）：两者注册的是同一组工具。本 fork 不向 npm 发布任何内容。
+`#release` 是发布通道，`main` 是开发分支，每天 GMT+9 02:00 从 `main` 发布一个新版本。请先卸载已有的 `pi-unified-exec`（`omp plugin uninstall pi-unified-exec`）：两者注册的是同一组工具。本 fork 不向 npm 发布任何内容。
 
 更新时执行同一安装命令并加上 `--force`：
 
 ```bash
-omp plugin install https://github.com/oh-my-omp/omp-unified-exec --force
+omp plugin install https://github.com/oh-my-omp/omp-unified-exec#release --force
 ```
 
 本扩展不需要 Tern 插件。0.14.7 及以前的版本会安装一个 Tern 插件（`omp-unified-exec`）；PATH 中存在 `tern` 时，加载本扩展（包括安装校验）会通过 Tern 自己的 CLI 移除那份副本或链接。

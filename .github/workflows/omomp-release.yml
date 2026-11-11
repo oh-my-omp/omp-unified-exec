@@ -1,0 +1,23 @@
+name: omomp-release
+
+# Daily omomp release: promotes `## [Unreleased]` of CHANGELOG.md to a version,
+# bumps package.json and package-lock.json, commits `chore: release X.Y.Z` on
+# main, and moves main, the tag `vX.Y.Z` and the `release` branch in one atomic
+# push. The logic is oh-my-omp/.github's scripts/omomp-release.ts, checked out
+# from main beside this repository; see that repository's README.md.
+#
+# Merging to main does not publish. Users install from the `release` branch.
+
+on:
+  schedule:
+    - cron: "0 17 * * *" # 02:00 GMT+9
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: oh-my-omp/.github/.github/workflows/omomp-release.yml@main
+    with:
+      version-files: package-lock.json
