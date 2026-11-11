@@ -83,12 +83,13 @@ describe("unified-exec PTY mode", () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		try {
-			const r = await h.call("exec_command", { title: "Test command", cmd: "tty && echo seen=$TERM",
+			// `echo` ends each line itself: `tty` does not on uutils coreutils (Ubuntu 26.04).
+			const r = await h.call("exec_command", { title: "Test command", cmd: 't=$(tty) && echo "tty=$t" && echo "seen=$TERM"',
 
 				yield_time_ms: 1500, });
 			// If short-lived: exit_code is set; long-running: session_id. Either way output should
-			// include "tty" / "dev/" to confirm a PTY was allocated.
-			assert.ok(r.details.output.toLowerCase().includes("/dev/"), `output=${r.details.output}`);
+			// include "dev/" to confirm a PTY was allocated.
+			assert.match(r.details.output, /^tty=\/dev\//m, `output=${r.details.output}`);
 			if (!IS_WINDOWS) assert.match(r.details.output, /^seen=xterm-256color$/m);
 			if (r.details.session_id !== undefined) {
 				await h.call("kill_session", { session_id: r.details.session_id });
