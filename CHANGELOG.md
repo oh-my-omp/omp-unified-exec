@@ -11,7 +11,7 @@ All notable changes to this project. **Newest entries go on top.**
 ### Changed
 
 - Used omp's pi-shell as the Windows default shell and `bash` on other platforms
-- Resolved the default shell from the explicit argument, `shellPath`, `SHELL`, then the platform default
+- Resolved the default shell from the explicit argument, `shellPath`, `SHELL`, then the platform default, treating a blank argument as no choice
 - Used `-Command` for PowerShell/pwsh and `-c` for other shells
 - Honored `PI_UNIFIED_EXEC_BASH` for bash selections and skipped the System32 WSL stub
 - Sourced the exec init file under pi-shell with alias expansion enabled

@@ -265,6 +265,32 @@ describe("unified-exec e2e", () => {
 		}
 	});
 
+	it("blank shell argument counts as no choice and falls back to shellPath, not SHELL", async () => {
+		const previous = process.env.SHELL;
+		let reads = 0;
+		const h = makeHarness(() => {
+			reads++;
+			return IS_WINDOWS ? "bash" : "/bin/sh";
+		});
+		try {
+			await h.emit("session_start");
+			process.env.SHELL = "definitely-not-a-real-shel-xyz";
+			for (const blank of ["", "   ", "\t\n "]) {
+				const result = await h.call("exec_command", { title: "Test command", cmd: "echo blank-shell-falls-through", shell: blank });
+				assert.equal(result.details.exit_code, 0, JSON.stringify(result.details));
+				assert.match(result.details.output, /blank-shell-falls-through/);
+				const shell: unknown = result.details.shell;
+				assert.ok(typeof shell === "string" && isAbsolute(shell), `unresolved shell: ${String(shell)}`);
+				assertReportedShell(result, shell);
+			}
+			assert.equal(reads, 3, "a blank shell argument must fall through to the live shellPath");
+		} finally {
+			if (previous === undefined) delete process.env.SHELL;
+			else process.env.SHELL = previous;
+			await h.emit("session_shutdown");
+		}
+	});
+
 	it("POSIX: live SHELL selects new PTYs while poll, list, kill, and streams retain the original shell", { skip: IS_WINDOWS }, async () => {
 		const previous = process.env.SHELL;
 		const h = makeHarness();

@@ -358,9 +358,11 @@ async function runExecCommand(
 	}
 
 	// One selection for the call: its `shell` argument, omp's live `shellPath`,
-	// then `SHELL`, then the platform default (pi-shell on Windows). An explicit
-	// cmd is refused here — the host's own test names it, nothing is spawned.
-	const chosen = resolveDefaultShell(undefined, args.shell ?? ctx.shellPath?.(), {
+	// then `SHELL`, then the platform default (pi-shell on Windows). A blank
+	// argument is no choice at all, so it falls through to `shellPath`. An
+	// explicit cmd is refused here — the host's own test names it, nothing is spawned.
+	const requestedShell = args.shell?.trim() ? args.shell : ctx.shellPath?.();
+	const chosen = resolveDefaultShell(undefined, requestedShell, {
 		isCmdShell: ctx.shellHost.isCmdShell,
 		requestedSource: args.shell?.trim() ? "call" : "shellPath",
 	});
