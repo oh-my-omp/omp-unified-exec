@@ -14,6 +14,7 @@ import { resolveInitPath, shellScript } from "../fork-features/exec-init.ts";
 import type { PluginSettingsReader } from "../fork-features/plugin-settings.ts";
 import { activate } from "../src/index.ts";
 import { findOnPath, IS_WINDOWS } from "../src/shell.ts";
+import { STUB_SHELL_PATH, stubShellHost } from "./stub-shell.ts";
 
 /** The result fields these tests read. */
 interface ExecDetails {
@@ -50,7 +51,7 @@ function makeHarness(cwd: string, settings: PluginSettingsReader): Harness {
 		getFlag: () => false, getActiveTools: () => ["bash"], setActiveTools() {}, sendMessage() {},
 	};
 	// The fake supplies only the ExtensionAPI surfaces the tool core consumes.
-	activate(pi as unknown as Parameters<typeof activate>[0], undefined, undefined, undefined, undefined, {}, undefined, settings);
+	activate(pi as unknown as Parameters<typeof activate>[0], undefined, undefined, undefined, undefined, {}, undefined, settings, undefined, stubShellHost);
 	const harness: Harness = {
 		async exec(params) {
 			const result = await tools.exec_command!.execute("call", { title: "init test", yield_time_ms: 10_000, ...params }, undefined, undefined, ctx);
@@ -145,12 +146,19 @@ describe("exec.initFile", () => {
 
 	it("refuses non-POSIX shells while a file is configured", () => {
 		const file = { kind: "file", path: "/tmp/init.sh" } as const;
-		for (const shell of ["/usr/bin/fish", "pwsh", "C:\\Windows\\System32\\cmd.exe", "powershell.exe"]) {
-			assert.equal(shellScript(file, shell, "echo hi").kind, "unusable", shell);
+		for (const shell of ["/usr/bin/fish", "pwsh", "powershell.exe"]) {
+			assert.equal(shellScript(file, { kind: "shell", shell }, "echo hi").kind, "unusable", shell);
 		}
 		for (const shell of ["/bin/bash", "/bin/zsh", "/bin/sh", "dash", "C:\\Git\\bin\\bash.exe"]) {
-			assert.equal(shellScript(file, shell, "echo hi").kind, "ready", shell);
+			assert.equal(shellScript(file, { kind: "shell", shell }, "echo hi").kind, "ready", shell);
 		}
+	});
+
+	it("sources the file and expands aliases in omp's pi-shell too", () => {
+		const file = { kind: "file", path: "/tmp/init.sh" } as const;
+		const script = shellScript(file, { kind: "pi-shell", shell: "C:\\omp\\omp.exe" }, "greet one");
+		assert.equal(script.kind, "ready");
+		assert.match(script.kind === "ready" ? script.cmd : "", /shopt -s expand_aliases/);
 	});
 
 	it("resolves ~ to the home directory and other relative paths against the session cwd", () => {

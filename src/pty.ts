@@ -22,8 +22,6 @@ export interface SpawnOptions {
 	env: NodeJS.ProcessEnv;
 	cols?: number;
 	rows?: number;
-	/** Windows-only: pass args verbatim (needed for cmd.exe quoting). */
-	windowsVerbatimArguments?: boolean;
 }
 
 /**
@@ -96,7 +94,6 @@ type BunSubprocess = {
 type BunSpawnOptions = {
 	cwd: string;
 	env: NodeJS.ProcessEnv;
-	windowsVerbatimArguments?: boolean;
 	terminal: {
 		name: string;
 		cols: number;
@@ -292,7 +289,6 @@ export function spawnBunPty(runtime: BunRuntime, opts: SpawnOptions): SpawnedChi
 		cwd: opts.cwd,
 		// The child talks to this PTY's xterm emulator, never to omp's own terminal.
 		env: { ...opts.env, TERM: "xterm-256color" },
-		windowsVerbatimArguments: opts.windowsVerbatimArguments,
 		terminal: {
 			name: "xterm-256color",
 			cols: opts.cols ?? DEFAULT_PTY_COLS,

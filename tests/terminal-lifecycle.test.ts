@@ -14,6 +14,7 @@ import { afterEach, describe, it } from "node:test";
 import type { PluginSettingsReader } from "../fork-features/plugin-settings.ts";
 import { noteTerminalRead, readTerminal } from "../fork-features/terminal-resource.ts";
 import { activate } from "../src/index.ts";
+import { STUB_SHELL_PATH, stubShellHost } from "./stub-shell.ts";
 
 const MINUTE = 60_000;
 
@@ -89,7 +90,7 @@ function makeHarness(pluginSettings?: PluginSettingsReader): Harness {
 		nowFn: () => now,
 		setIntervalFn: (cb) => { sweep = cb; return 1; },
 		clearIntervalFn: () => { sweep = undefined; },
-	}, undefined, pluginSettings);
+	}, undefined, pluginSettings, undefined, stubShellHost);
 	let nextCallId = 1;
 	const harness: Harness = {
 		sent,

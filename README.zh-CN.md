@@ -45,7 +45,7 @@ omp plugin install https://github.com/oh-my-omp/omp-unified-exec#release --force
 ## 功能
 
 - **会话，而不是调用。** `exec_command` 在 PTY 中启动进程，在等待窗口内返回已有输出和一个 `session_id`；之后的轮次里，`write_stdin` 把字节原样写给它（文本、`\x03` Ctrl-C、方向键）。状态与内容用 `read terminal_url` 读取，事件与完成用 `monitor` 等待。取消调用永远不会杀掉进程。没有命令截止时间，退出的进程也不会被重启。
-- **宿主的 shell。** 调用没有指定 `shell` 时，命令使用 omp 的 `shellPath` 设置，未设置时用环境变量 `SHELL`，再没有则用平台默认值。每个结果都写明启动所用的 shell，模型据此按该 shell 的语法写命令。
+- **宿主的 shell。** 调用没有指定 `shell` 时，命令使用 omp 的 `shellPath` 设置，未设置时用环境变量 `SHELL`，再没有则用平台默认值：Windows 上是 omp 自带的 pi-shell（`omp bash`，bash 5.3 语法），其他平台是 `bash`。`cmd` 会被拒绝，不会被启动。每个结果都写明启动所用的 shell，模型据此按该 shell 的语法写命令。
 - **输出就是终端上看到的内容。** 每个会话都经过无头终端模拟器。运行中的结果返回当前屏幕、自上次调用以来滚出的未见历史与光标位置，而不是叠加每次重绘；退出结果只返回最终活动屏，其余保留行通过 `terminal_url` 读取。模拟器会像真实终端一样回应光标位置、设备属性与默认颜色查询，因此等待回应或选择配色的程序表现与真实终端一致。
 - **输出有上限，完整内容可找回。** 模型看到的每个结果都从尾部截取，最多 50 KiB / 2000 行，并去掉终端控制序列；每个会话的完整原始输出都写入 `log_path`。
 - **终端生命周期。** 后台终端的命令返回后，终端仍保留在列表里，直到被回收。正常返回且已没有任何进程的终端，保留 5 分钟后静默回收，读没读过都一样；其 `term://` 和日志仍可读。异常返回立即提醒；对异常返回的终端、或正常返回但仍有进程的终端，返回或最近一次读取 30 分钟后，从未读过的收到一条读取提醒，读过的收到一条即将回收提醒，并有 5 分钟反悔期，期满仍未再读就结束其剩余进程并回收；除非打开插件设置 `notice.graceReclaim`，回收不另发通知。见[终端生命周期](#terminal-lifecycle)。
@@ -100,7 +100,7 @@ Markdown 文件随包放在 `fork-features/topics/`；读取 topic 不依赖外�
 | `cmd` | string | — | Shell 命令。必填。 |
 | `title` | string | — | 必填的启动标题，在 `list_sessions`、Terminals 视图和每条有关通知里指明这个终端。折成一行，最多保留 80 个字符。缺失或全空白时调用在启动任何进程之前失败。 |
 | `workdir` | string | 宿主会话的 cwd | 工作目录。默认值在每次调用时从宿主读取；会话里的 `cd` 不会改变它。相对路径按该会话 cwd 解析。路径不存在或不是目录时，以 `Working directory does not exist: <路径>` / `Working directory is not a directory: <路径>`（与宿主 bash 相同的文案）失败，不启动任何进程。 |
-| `shell` | string | omp `shellPath`，否则 `SHELL`，否则 `bash` | Shell 可执行文件，见 [Shell 选择](#shell-selection)。`cmd` / `powershell` / `pwsh` 会带上各自对应的参数；其他 shell 一律使用 `-c`。 |
+| `shell` | string | omp `shellPath`，否则 `SHELL`，否则 Windows 上的 pi-shell（`omp bash`），否则 `bash` | Shell 可执行文件，见 [Shell 选择](#shell-selection)。`cmd` 会被拒绝；`powershell` / `pwsh` 带 `-Command`；其他 shell（包括 pi-shell）一律使用 `-c`。 |
 | `cols` | number | `120` | PTY 宽度。限制在 [20, 500]。 |
 | `rows` | number | `80` | PTY 高度。限制在 [5, 300]。 |
 | `yield_time_ms` | number | `10_000` | 本次调用保持连接、等待输出的时长（不是命令的生命期），限制在 [250, 30_000]。 |
@@ -160,11 +160,13 @@ switch 与 branch 只复核身份。绑定不可用或失败时，审批返回�
 1. 调用的 `shell` 参数；
 2. omp 的 `shellPath` 设置：每次启动进程时从 omp 的设置注册表读取，而不是在加载时复制一份；
 3. 环境变量 `SHELL`；
-4. 平台默认值：`bash`；Windows 上依次探测 Git Bash，最后是 PowerShell（见 [Windows](#windows)）。
+4. 平台默认值：Windows 上是 omp 自带的 pi-shell，即 omp 可执行文件的 `bash` 子命令，没有任何 PATH 探测参与；其他平台是 `bash`（见 [Windows](#windows)）。
 
-进程启动前，选中的 shell 会被解析成绝对可执行路径：裸名称经 `PATH` 查找，包含 `/` 或 `\` 的相对路径相对于实际生效的 `workdir` 解析。选中的 shell 找不到或无法启动时，调用失败（`failure_message: spawn <file> ENOENT: …`；Windows 上若 `PATH` 中找不到该 shell，则报错并给出其名称）；命令绝不会改用优先级更低的 shell 执行。
+进程启动前，选中的 shell 可执行文件会被解析成绝对路径：裸名称经 `PATH` 查找，包含 `/` 或 `\` 的相对路径相对于实际生效的 `workdir` 解析。选中的 shell 找不到或无法启动时，调用失败（`failure_message: spawn <file> ENOENT: …`；Windows 上若 `PATH` 中找不到该 shell，则报错并给出其名称）；命令绝不会改用优先级更低的 shell 执行。
 
-`cmd`（Windows）使用 `/d /s /c` 及其自身的引号规则，`powershell` / `pwsh` 使用 `-NoProfile -NoLogo -Command`；其他 shell 都以 `<shell> -c <cmd>` 运行。命令文本原样传入，所以要按结果中写明的 shell 的语法来写。
+显式指定的 `cmd` 会被拒绝：由 omp 自己的 shell 判定识别，调用不启动任何进程即失败，并给出一条通知，指明该选择来自哪个设置（`shell` 参数、`shellPath` 或 `SHELL`），并指向 pi-shell 或 bash 路径。`omp-unified-exec` 从不启动 cmd。
+
+`powershell` / `pwsh` 使用 `-NoProfile -NoLogo -Command`；其他 shell（包括 pi-shell）都以 `<shell> -c <cmd>` 运行。命令文本原样传入，所以要按结果中写明的 shell 的语法来写；pi-shell 就是 bash 5.3，POSIX 语法可直接运行。
 
 结果头、`details` 和 `structuredContent` 都以 `shell` 字段给出解析后的可执行文件：短命令、已启动的会话和启动失败都一样。`write_stdin` 结果、流式更新、`kill_session` 结果和 `list_sessions` 条目沿用会话启动时的 shell，不会重新选择。shell 只是元数据，从不加入 `output`。
 
@@ -604,8 +606,9 @@ completion_notification: armed
 
 每个会话都通过 Bun 原生的 `Bun.Terminal` 在 ConPTY 中运行。
 
-- **平台默认 shell**（没有 `shell` 参数、omp `shellPath` 或 `SHELL` 时）：`bash`，依次查找 `PI_UNIFIED_EXEC_BASH`、PATH 上的 `bash`（排除 System32 里的 WSL 存根）、由 `git.exe` 推导或常见安装位置下的 Git for Windows，最后退回 `powershell` 并提示一次。这一探测结果在进程生命期内缓存。
-- **Shell 名称**在启动前解析成绝对路径（`bash` 经同一 Git Bash 探测）。PATH 上找不到的裸名称会让调用失败，而不会在 workdir 中查找。
+- **平台默认 shell**（没有 `shell` 参数、omp `shellPath` 或 `SHELL` 时）：omp 自带的 pi-shell，以 `<omp> bash -c <cmd>` 启动——omp 可执行文件里的 bash 5.3 引擎，凡能跑 omp 的机器上都有。不再探测 Git Bash，不再退回 PowerShell，也没有缓存。
+- **Shell 名称**在启动前解析成绝对路径：裸名称经 PATH 查找，bash 名称不会落到 System32 里的 WSL 存根上。`PI_UNIFIED_EXEC_BASH` 仍然是 bash 选择所解析到的那个 bash。PATH 上找不到的裸名称会让调用失败，而不会在 workdir 中查找。
+- **`shell: cmd` 会被拒绝**，从环境继承的、指向 cmd.exe 的 `SHELL` 同样；调用失败并给出一条通知，指明来自哪个设置，并指向 pi-shell 或 bash 路径。
 - **从 Git Bash 或 MSYS 继承的 `SHELL`** 与其他选择一样生效，所以它必须是 Windows 能启动的路径；否则请传 `shell`、设置 omp 的 `shellPath`，或取消 `SHELL`。
 - **PowerShell**（`powershell`，或任何平台上的 `pwsh`）以 `-NoProfile -NoLogo -Command <cmd>` 运行，所以它的交互式提示可以用 `write_stdin` 回答。
 - **没有 POSIX 信号：**每次 kill 都是结束整个进程树（`taskkill /T /F`）；被结束的进程报告 `exit_code: 1`，kill 失败会如实报告。
@@ -623,7 +626,7 @@ src/
 ├── completion.ts         # on_exit "wake" coordination (exactly-once), monitor ownership
 ├── notify.ts             # Notify / Gate / sleep primitives
 ├── pty.ts                # Bun.Terminal backend, host admission, spawn preflight, shell-exit events, process-group signals, Windows tree-kill
-├── shell.ts              # shell selection and argv (Windows-aware); omp's POSIX-shell test
+├── shell.ts              # shell choice (pi-shell, explicit shell, refused cmd) and argv; omp's POSIX-shell test
 ├── output-safety.ts      # terminal-control stripping
 ├── terminal-screen.ts    # headless terminal: observations, styled screens, query answers
 ├── tool-result.ts        # bounded envelopes + model-visible text
@@ -632,6 +635,7 @@ src/
 fork-features/
 ├── omp-presentation.ts   # omp host detection, bash-renderer delegation, theme appearance, shellPath setting
 ├── command-approval.ts   # built-in bash approval port and factory-loaded host helpers
+├── shell-host.ts         # omp's cmd.exe test, loaded at factory time
 ├── agent-park.ts         # omp's agent registry/lifecycle reader; parked subagents' terminal runtimes
 ├── session-binding.ts    # activation-local AgentSession identity for approval settings and stop detectors
 ├── omp-tools.d.ts        # types of the omp modules loaded at runtime

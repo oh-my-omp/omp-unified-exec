@@ -31,7 +31,7 @@ both register `exec_command` and the other unified-exec tools.
 | Input-wait alerts for every running session, with or without a monitor | `fork-features/input-wait.ts`, `src/session.ts` (`watchInputWait`, `collect` attachments), `src/terminal-screen.ts` (`inputProbe`, `unseen`), `src/completion.ts` (`alertInputWait`), `src/index.ts`, `tests/input-wait.test.ts` | No terminal protocol announces that a program waits for input: debconf's question (e.g. sshd_config during `apt upgrade`) reaches the PTY only as whiptail drawing, and over ssh local process state is silent. After 5 s of quiet, a screen no tool result has shown is matched against dialog buttons, prompts at the cursor and pager prompts; each screen alerts once as an `input_wait` terminal notice, which the dispatcher keeps per session (the newest screen wins) and drops once the screen is no longer current and unseen. | Fork-only |
 | Required `exec_command` title, terminal lifecycle and one terminal-notice channel: a returned background terminal gets an immediate abnormal-return notice; a normal return with no process left lingers 5 minutes and is reclaimed silently, read or not; any other returned terminal gets, 30 minutes after its return or last read, a read reminder (never read) or a reclaim-due notice and a 5-minute grace (read); an unread grace ends in reclaim, which kills what is left of its process group and removes it from the store; tool calls naming a reclaimed `session_id` point to its `term://` and log; every follow-up (wake, monitor, input-wait, lifecycle) is a `TerminalNotice` merged into one `unified-exec-notice` message | `fork-features/terminal-notice.ts`, `fork-features/terminal-lifecycle.ts`, `fork-features/terminal-resource.ts` (`noteTerminalRead`, `detachTerminalReader`), `fork-features/terminal-url.ts`, `fork-features/monitor-subscription.ts`, `fork-features/input-wait.ts`, `fork-features/tern-terminal-hud.ts`; `src/index.ts`, `src/completion.ts`, `src/session.ts` (`title`, `onShellExit`, `onTerminalRead`, `signalProcessGroup`, `processesRemain`), `src/pty.ts` (`onProcessExit`, `signalGroup`), `src/script-result.ts`; `tests/terminal-lifecycle.test.ts` | Upstream drained an exited session on the first `write_stdin`/`list_sessions` that observed it and never otherwise, so a terminal read through `term://` (the fork's way to read) lingered until the 64-session LRU, and its background jobs ran on. The lifecycle owns each background terminal from its `session_id` to reclaim: shell exit is an immediate PTY event (Bun's `onExit` precedes terminal close), reads come from the `term://` handler after it delivered content and from tool results committed at `tool_execution_end`, and a one-minute sweep drives TTLs (clock injectable through `activate`'s `lifecycleClock`). Reclaim signals the process group even after the terminal closed, because on macOS the terminal closes with the shell while group members run on. Kills by the model or a human are normal endings and count as reads. Separate customTypes per source could not merge, so the notice ADT gives every source one formatter (session id, title, short reason) and one dispatcher (250 ms merge, retry at tool end, a settled run and the sweep, stale notices dropped). | Fork-only |
 | PTY-only `exec_command`: every session runs in a PTY; the pipe backend, `tty` parameter/result field, in-memory raw-output retention, pipe monitor decoding and the flag removing host `bash` are deleted | `src/pty.ts`, `src/session.ts`, `src/collect.ts`, `src/long-wait.ts`, `src/output-safety.ts`, `src/index.ts`, `src/shell.ts`, `src/tool-result.ts`, `src/script-result.ts`, `src/terminal-screen.ts`, `fork-features/monitor-subscription.ts`, `fork-features/terminal-resource.ts`, `fork-features/tern-terminal-hud.ts`, `fork-features/omp-presentation.ts` | A pipe session kept stdin open indefinitely and duplicated host `bash` without its approval, direnv, Git Guard, auto-backgrounding and output shaping ([#61](https://github.com/oh-my-omp/omp-unified-exec/issues/61)). PTYs bound each read to rendered screen state, flush interactive output promptly and route Ctrl-C through the foreground process group. Short commands stay with host `bash`; writes append nothing, PowerShell uses `-NoProfile -NoLogo -Command`, missing PTY backends fail explicitly, and exited processes never restart. | Fork-only |
-| Shell selection follows the host: an explicit `shell`, then omp's live `shellPath`, then `SHELL`, then the platform default; results, streaming updates, kill results and session listings name the executable actually spawned | `fork-features/omp-presentation.ts` (`loadOmpShellPath`, passed to `activate` by `withHostPresentation`), `fork-features/omp-tools.d.ts`; `resolveDefaultShell` in `src/shell.ts`; shell resolution in `runExecCommand` and `activate` in `src/index.ts`; `ExecSession.shell` in `src/session.ts`; `shell` in `src/tool-result.ts` and `src/script-result.ts`; `tests/shell.test.ts`, `tests/e2e.test.ts` | Upstream hard-wired `bash` on POSIX and probed Windows itself, so omp's configured or login shell could differ from the shell that ran a command, and results did not say which one ran ([#63](https://github.com/oh-my-omp/omp-unified-exec/issues/63)). omp owns `shellPath`: `@oh-my-pi/pi-coding-agent/config/registry` exposes `lookup("shellPath").get(host.pi.settings)`. The admitted factory loads it with the other omp modules; each new process reads the effective setting through that getter, never an activation-time copy. A reshaped registry fails plugin loading. Shell resolution precedes argv construction, with no lower-priority fallback after failure. `ExecSession.shell` reads `command[0]`, so later results retain the spawned executable. Command text is not translated: cmd and PowerShell keep their argv; every other shell gets `-c`. | Fork-only |
+| Shell selection follows the host: an explicit `shell`, then omp's live `shellPath`, then `SHELL`, then the platform default — omp's pi-shell (`<omp> bash`) on Windows, `bash` elsewhere; an explicit cmd is refused through omp's own `procmgr.isCmdShell`; results, streaming updates, kill results and session listings name the executable actually spawned | `fork-features/omp-presentation.ts` (`loadOmpShellPath`, passed to `activate` by `withHostPresentation`), `fork-features/shell-host.ts` (`loadShellHost`, same path), `fork-features/omp-tools.d.ts`; `resolveDefaultShell` and `shellArgv` in `src/shell.ts`; shell resolution in `runExecCommand` and `activate` in `src/index.ts`; `ExecSession.shell` in `src/session.ts`; `shell` in `src/tool-result.ts` and `src/script-result.ts`; `tests/shell.test.ts`, `tests/e2e.test.ts` | Upstream hard-wired `bash` on POSIX and probed Windows itself, so omp's configured or login shell could differ from the shell that ran a command, and results did not say which one ran ([#63](https://github.com/oh-my-omp/omp-unified-exec/issues/63)). omp owns `shellPath`: `@oh-my-pi/pi-coding-agent/config/registry` exposes `lookup("shellPath").get(host.pi.settings)`. The admitted factory loads it with the other omp modules; each new process reads the effective setting through that getter, never an activation-time copy. A reshaped registry fails plugin loading. Shell resolution precedes argv construction, with no lower-priority fallback after failure. `ExecSession.shell` reads `command[0]`, so later results retain the spawned executable. Command text is not translated: cmd and PowerShell keep their argv; every other shell gets `-c`. | Fork-only |
 | Command approval and host session binding ([#29](https://github.com/oh-my-omp/omp-unified-exec/issues/29)) | `fork-features/command-approval.ts`, `fork-features/session-binding.ts`, `fork-features/omp-presentation.ts`, `fork-features/omp-tools.d.ts`, `src/index.ts`, `tests/command-approval.test.ts` | `exec_command` checks raw `cmd` through the built-in bash decision logic before execution. Its first `session_start` binds `AgentRegistry.global().get(ctx.agent.id)?.session` with `sessionManager` identity; switches/branches only recheck. Every approval reads that actual session's live settings, never global settings or cwd. Unbound returns bare `exec` without settings access and does not disable execution. Other tools retain host-default approval. | Fork-only |
 | `gh` mutations through `exec_command` invalidate omp's `issue://` / `pr://` view cache before the PTY starts ([#32](https://github.com/oh-my-omp/omp-unified-exec/issues/32)) | `fork-features/omp-presentation.ts` (`loadGithubCacheInvalidation`), `fork-features/omp-tools.d.ts`; `runExecCommand` and `activate` in `src/index.ts` | Interactive `gh` mutations (merge confirmations, comment editors) need a terminal and therefore run through `exec_command`, which the host bash's invalidation never saw. The factory imports omp's `tools/gh-cache-invalidation.invalidateGithubCacheForBashCommand` and calls it with the raw `cmd` before spawning, as `BashTool.execute` does; the detector and the SQLite cache stay host-owned. On omp upgrades, requalify that this export still exists and that a `gh issue close` through `exec_command` makes the next `issue://` read refetch. | Fork-only |
 | Input-only `write_stdin`; zero-byte polling and its deadline/configuration paths are deleted ([#44](https://github.com/oh-my-omp/omp-unified-exec/issues/44)) | `src/index.ts`, `src/completion.ts`, `src/long-wait.ts`, `src/format-time.ts`, `src/tool-result.ts`, `src/script-result.ts`, `fork-features/omp-presentation.ts`; deleted `src/time.ts` | Reads obtain state/content through `term://`; monitor waits for events or completion; writes require nonempty decoded input and otherwise return typed `empty_poll_removed` without observation. Completion wakes point to each terminal's read address; input attachment and human-explicit wake policy remain unchanged. | Fork-only |
@@ -135,21 +135,27 @@ teardown lives in `endRuntime`. Upstream edits to the `session_shutdown` or
 content conflicts. Keep the runtime split and the park check, and port upstream
 teardown facts into `endRuntime`.
 
-Shell selection follows the host here ([#63](https://github.com/oh-my-omp/omp-unified-exec/issues/63)):
-upstream's `resolveDefaultShell` returns `bash` on POSIX, its `shell`
-parameter text says so, and its spawn options record the raw `shell`
-argument. Upstream changes there arrive as content conflicts in
-`src/shell.ts`, `src/index.ts` and `src/session.ts`. Keep the precedence
-(explicit `shell`, omp `shellPath`, `SHELL`, platform default), resolution
-before `buildShellCommand`, and `ExecSession.shell` as `command[0]`; port
-upstream fixes to the Windows Git Bash/PowerShell probe into the platform
-default branch only, and never add a fallback after a selected shell fails.
+Shell selection follows the host here ([#63](https://github.com/oh-my-omp/omp-unified-exec/issues/63),
+[#118](https://github.com/oh-my-omp/omp-unified-exec/issues/118)): upstream's
+`resolveDefaultShell` probes Windows for Git Bash and falls back to
+PowerShell, its `shell` parameter text describes that probe, and its spawn
+options record the raw `shell` argument. This fork deleted the probe
+(`findWindowsBash`, `probeWindowsDefaultShell`, its cache and the verbatim
+cmd argv): the platform default is omp's pi-shell on Windows and `bash` on
+POSIX, an explicit cmd is refused through omp's `procmgr.isCmdShell`, and
+`PI_UNIFIED_EXEC_BASH` names the bash a bash selection resolves to. Upstream
+changes there arrive as content conflicts in `src/shell.ts`, `src/index.ts`,
+`src/pty.ts` and `src/session.ts`. Keep the precedence (explicit `shell`, omp
+`shellPath`, `SHELL`, platform default), resolution before `shellArgv`, and
+`ExecSession.shell` as `command[0]`; keep the probe and the PowerShell
+fallback deleted, and never add a fallback after a selected shell fails.
 
-`exec.initFile` wraps `cmd` between shell resolution and `buildShellCommand`
-in `runExecCommand`. Upstream edits to that stretch (workdir checks, the
-`buildShellCommand` call, spawn options) arrive as content conflicts; keep the
+`exec.initFile` wraps `cmd` between shell resolution and argv construction in
+`runExecCommand`; it takes the resolved shell choice, so pi-shell counts as
+bash and sources the file like one. Upstream edits to that stretch (workdir
+checks, the argv call, spawn options) arrive as content conflicts; keep the
 settings read and its failure return ahead of `invalidateGithubCache` and
-`allocateId`, and keep `buildShellCommand(shellBin, script.cmd)` with
+`allocateId`, and keep `shellArgv(shell, script.cmd)` with
 `displayCommand: args.cmd`.
 On omp upgrades, requalify it through real omp: with a user value whose file
 defines an alias and an export, an `exec_command` under zsh and under bash
@@ -275,11 +281,17 @@ leave no process of a parked subagent's terminal.
 
 On omp upgrades, requalify the shell bridge: `@oh-my-pi/pi-coding-agent/config/registry`
 must still export `lookup`, and `lookup("shellPath").get(host.pi.settings)` must
-still return omp's effective setting as a string or undefined. Through real
-interactive omp, a `shellPath` overlay must outrank `SHELL` and an explicit
-`shell` must outrank both; an explicit `shell` that does not exist must
-return `spawn … ENOENT` and no output rather than another shell (omp itself
-rejects a missing `shellPath` at startup, before the extension loads); later input writes, kills and listings must repeat the session's shell;
+still return omp's effective setting as a string or undefined, and
+`@oh-my-pi/pi-utils` must still export `procmgr.isCmdShell` (the factory fails
+loading without it). Through real interactive omp, a `shellPath` overlay must
+outrank `SHELL` and an explicit `shell` must outrank both; with none of them
+set, `exec_command` must run in pi-shell (`shell` names the omp binary and
+`<omp> bash -c` runs POSIX syntax); an explicit `shell: "C:\\Windows\\System32\\cmd.exe"`
+must fail with one notice naming its source and no cmd process; an explicit
+`shell` that does not exist must return `spawn … ENOENT` and no output rather
+than another shell (omp itself rejects a missing `shellPath` at startup, before
+the extension loads); later input writes, kills and listings must repeat the
+session's shell;
 and the default `workdir` must still follow omp's cwd.
 
 On omp upgrades, requalify the top-level mount: in a real `omp --mode rpc`

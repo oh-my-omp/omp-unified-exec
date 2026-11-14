@@ -12,6 +12,7 @@ import { readTerminal } from "../fork-features/terminal-resource.ts";
 import { afterEach, describe, it } from "node:test";
 import { activate, EmptyPollRemovedError } from "../src/index.ts";
 import type { NoticeMessage } from "../fork-features/terminal-notice.ts";
+import { STUB_SHELL_PATH, stubShellHost } from "./stub-shell.ts";
 
 
 interface ToolDef {
@@ -72,7 +73,7 @@ function makeHarness() {
 
 	// The fake supplies only the ExtensionAPI surfaces consumed by the tool core.
 	const api = pi as unknown as Parameters<typeof activate>[0];
-	activate(api);
+	activate(api, undefined, STUB_SHELL_PATH, undefined, undefined, {}, undefined, undefined, undefined, stubShellHost);
 
 	let nextCallId = 1;
 	let shutDown = false;

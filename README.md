@@ -89,8 +89,9 @@ results remain in English.
   and a process that exits is never restarted.
 - **The host's shell.** Unless the call names a `shell`, commands run in omp's
   `shellPath` setting, else the environment's `SHELL`, else the platform
-  default. Every result names the shell it started, so the model writes that
-  shell's syntax.
+  default: omp's own pi-shell on Windows (`omp bash`, bash 5.3 syntax) and
+  `bash` elsewhere. `cmd` is refused instead of launched. Every result names
+  the shell it started, so the model writes that shell's syntax.
 - **Output is what a terminal shows.** Every session runs through a headless
   terminal emulator, so progress bars, redraws and full-screen programs return
   the current screen plus unseen history while running, not every redraw
@@ -221,7 +222,7 @@ configuration extension. An unknown topic returns a missing-topic error.
 | `cmd` | string | — | Shell command. Required. |
 | `title` | string | — | Required start title naming the terminal in `list_sessions`, the Terminals view and every notice about it. Folded to one line; at most 80 characters are kept. A missing or blank title fails the call before anything starts. |
 | `workdir` | string | host session cwd | Working directory. The default is read from the host for each call; a `cd` inside a session never changes it. A relative path resolves against that session cwd. A missing path or a non-directory fails with `Working directory does not exist: <path>` / `Working directory is not a directory: <path>` (the host bash's wording) and starts nothing. |
-| `shell` | string | omp `shellPath`, else `SHELL`, else `bash` | Shell executable; see [Shell selection](#shell-selection). `cmd` / `powershell` / `pwsh` get shell-appropriate flags; every other shell gets `-c`. |
+| `shell` | string | omp `shellPath`, else `SHELL`, else pi-shell on Windows (`omp bash`), else `bash` | Shell executable; see [Shell selection](#shell-selection). `cmd` is refused; `powershell` / `pwsh` get `-Command`; every other shell, pi-shell included, gets `-c`. |
 | `cols` | number | `120` | PTY width. Clamped to [20, 500]. |
 | `rows` | number | `80` | PTY height. Clamped to [5, 300]. |
 | `yield_time_ms` | number | `10_000` | How long this call stays attached waiting for output (not the command's lifetime), clamped to [250, 30_000]. |
@@ -285,20 +286,26 @@ Each new process uses the first of these that is set; a blank `shellPath` or
 2. the omp `shellPath` setting, read from omp's settings registry each
    time a process starts rather than copied at load;
 3. `SHELL` from the environment;
-4. the platform default: `bash`, or on Windows Git Bash with PowerShell last
-   (see [Windows](#windows)).
+4. the platform default: omp's pi-shell on Windows — the omp executable's
+   `bash` subcommand, so no PATH probe decides it — and `bash` elsewhere (see
+   [Windows](#windows)).
 
-The selected shell is resolved to an absolute executable path before the
-process starts: a bare name through `PATH`, a relative path containing `/` or
-`\` against the effective `workdir`. A selected shell that cannot be found or
+A selected shell executable is resolved to an absolute path before the process
+starts: a bare name through `PATH`, a relative path containing `/` or `\`
+against the effective `workdir`. A selected shell that cannot be found or
 started fails the call (`failure_message: spawn <file> ENOENT: …`, or on
 Windows an error naming a shell that is not on `PATH`); the command never runs
 under a lower-priority shell.
 
-`cmd` (Windows) gets `/d /s /c` with its own quoting and `powershell` / `pwsh`
-get `-NoProfile -NoLogo -Command`; every other shell runs as
-`<shell> -c <cmd>`. The command text is passed unchanged, so write it in the
-syntax of the shell the result names.
+An explicit `cmd` is refused: omp's own shell test recognizes it, the call
+fails without spawning anything, and one notice names the setting that supplied
+it (the `shell` argument, `shellPath` or `SHELL`) and points at pi-shell or a
+bash path. `omp-unified-exec` never launches cmd.
+
+`powershell` / `pwsh` get `-NoProfile -NoLogo -Command`; every other shell,
+pi-shell included, runs as `<shell> -c <cmd>`. The command text is passed
+unchanged, so write it in the syntax of the shell the result names; pi-shell is
+bash 5.3, so POSIX syntax runs there.
 
 The result header, `details` and `structuredContent` carry the
 resolved executable as `shell`: for short commands, started sessions and spawn
@@ -1021,13 +1028,17 @@ completion_notification: armed
 Every session runs in ConPTY through Bun's native `Bun.Terminal`.
 
 - **Platform default shell** (no `shell` argument, omp `shellPath` or
-  `SHELL`): `bash`, found via `PI_UNIFIED_EXEC_BASH`, then `bash` on PATH
-  (excluding System32's WSL stub), then Git for Windows derived from `git.exe`
-  or well-known install roots, then `powershell` with a one-time warning. This
-  probe is cached for the process lifetime.
-- **Shell names** are resolved to absolute paths before spawning (`bash`
-  through the same Git Bash probe). A bare name not found on PATH fails the
-  call instead of being looked up in the workdir.
+  `SHELL`): omp's pi-shell, spawned as `<omp> bash -c <cmd>` — the omp
+  executable's own bash 5.3 engine, present on every machine omp runs on. No
+  Git Bash discovery, no PowerShell fallback, nothing cached.
+- **Shell names** are resolved to absolute paths before spawning: a bare name
+  through PATH, and a bash name never through System32's WSL stub.
+  `PI_UNIFIED_EXEC_BASH` still names the bash that a bash selection resolves
+  to. A bare name not found on PATH fails the call instead of being looked up
+  in the workdir.
+- **`shell: cmd` is refused**, also when an inherited `SHELL` names cmd.exe:
+  the call fails with one notice naming the setting and pointing at pi-shell or
+  a bash path.
 - **`SHELL` inherited from Git Bash or MSYS** is used like any other
   selection, so it must name a path Windows can spawn; otherwise pass `shell`,
   set omp's `shellPath`, or unset `SHELL`.
@@ -1050,7 +1061,7 @@ src/
 ├── completion.ts         # on_exit "wake" coordination (exactly-once), monitor ownership
 ├── notify.ts             # Notify / Gate / sleep primitives
 ├── pty.ts                # Bun.Terminal backend, host admission, spawn preflight, shell-exit events, process-group signals, Windows tree-kill
-├── shell.ts              # shell selection and argv (Windows-aware); omp's POSIX-shell test
+├── shell.ts              # shell choice (pi-shell, explicit shell, refused cmd) and argv; omp's POSIX-shell test
 ├── output-safety.ts      # terminal-control stripping
 ├── terminal-screen.ts    # headless terminal: observations, styled screens, query answers
 ├── tool-result.ts        # bounded envelopes + model-visible text
@@ -1059,6 +1070,7 @@ src/
 fork-features/
 ├── omp-presentation.ts   # omp host detection, bash-renderer delegation, theme appearance, shellPath setting
 ├── command-approval.ts   # built-in bash approval port and factory-loaded host helpers
+├── shell-host.ts         # omp's cmd.exe test, loaded at factory time
 ├── agent-park.ts         # omp's agent registry/lifecycle reader; parked subagents' terminal runtimes
 ├── session-binding.ts    # activation-local AgentSession identity for approval settings and stop detectors
 ├── omp-tools.d.ts        # types of the omp modules loaded at runtime

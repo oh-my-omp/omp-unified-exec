@@ -58,6 +58,7 @@ import {
 import { bindingContext, bindSession, type HostBindingState, recheckBinding } from "../fork-features/session-binding.ts";
 import { MonitorError, type MonitorWatchStatus } from "../fork-features/monitor-subscription.ts";
 import { loadInitFile, shellScript } from "../fork-features/exec-init.ts";
+import { noShellHost, type ShellHost } from "../fork-features/shell-host.ts";
 import { parseGraceReclaim, type PluginSettingsReader } from "../fork-features/plugin-settings.ts";
 import { loadStopConfig } from "../fork-features/stop-config.ts";
 import { detectStop, type StopHost } from "../fork-features/stop-gate.ts";
@@ -88,7 +89,7 @@ import {
 } from "./script-result.ts";
 import { ExecSession } from "./session.ts";
 import { SessionStore } from "./session-store.ts";
-import { buildShellCommand, IS_WINDOWS, resolveBinary, resolveDefaultShell, resolveWindowsShell } from "./shell.ts";
+import { IS_WINDOWS, resolveBinary, resolveDefaultShell, resolveWindowsShell, shellArgv, type LaunchShell, type ShellSource } from "./shell.ts";
 import type { TerminalAppearance } from "./terminal-screen.ts";
 import {
 	finalizeKillResult,
@@ -207,8 +208,6 @@ interface ExtensionCtx extends ParkedRuntime {
 	ui: ExtensionContext["ui"] | undefined;
 	widgetVisible: boolean;
 	exitUnsubscribers: Map<number, () => void>;
-	warnedShellFallback: boolean;
-	notifiedBashSource: boolean;
 	/**
 	 * Sessions spawned but not yet inserted into the store (inside the
 	 * early-exit grace window). Membership is ownership: session_shutdown
@@ -222,6 +221,8 @@ interface ExtensionCtx extends ParkedRuntime {
 	appearance: () => TerminalAppearance;
 	/** Live omp-owned setting. Called for each new process. */
 	shellPath?: () => string | undefined;
+	/** omp's cmd.exe test, which decides whether an explicit shell is refused. */
+	shellHost: ShellHost;
 	/** omp's shared GitHub view-cache invalidation for `gh` mutations, as the host bash calls it. */
 	invalidateGithubCache?: (command: string) => void;
 	/** omp's plugin settings, read per call for `exec.initFile`; undefined without omp's settings API. */
@@ -326,6 +327,18 @@ function workdirProblem(dir: string): string | undefined {
 	}
 }
 
+/** How the setting that supplied a refused shell reads in the notice, per language. */
+function refuseOrigin(source: ShellSource): { readonly en: string; readonly zh: string } {
+	switch (source) {
+		case "call":
+			return { en: "the shell argument", zh: "shell 参数" };
+		case "shellPath":
+			return { en: "shellPath", zh: "shellPath" };
+		case "SHELL":
+			return { en: "SHELL", zh: "SHELL" };
+	}
+}
+
 async function runExecCommand(
 	ctx: ExtensionCtx,
 	args: ExecCommandArgs,
@@ -344,48 +357,18 @@ async function runExecCommand(
 		throw new Error(`exec_command: title is required — a short nonblank name for this terminal (at most ${MAX_TITLE_CHARS} characters shown); notices and list_sessions identify the terminal by it.`);
 	}
 
-	let shellBin = args.shell;
-	if (!shellBin) {
-		const resolved = resolveDefaultShell(undefined, ctx.shellPath?.());
-		shellBin = resolved.shell;
-		if (resolved.fellBack && !ctx.warnedShellFallback) {
-			ctx.warnedShellFallback = true;
-			ctx.ui?.notify(
-				tr(
-					"unified-exec: no bash found (PATH, git-derived, or known install roots); falling back to powershell. Install Git Bash or set PI_UNIFIED_EXEC_BASH.",
-					"unified-exec：未找到 bash（PATH、Git 派生路径或已知安装目录）；将回退到 powershell。请安装 Git Bash，或设置 PI_UNIFIED_EXEC_BASH。",
-				),
-				"warning",
-			);
-		} else if (
-			!resolved.fellBack &&
-			resolved.bashSource &&
-			resolved.bashSource !== "path" &&
-			resolved.bashSource !== "env" &&
-			!ctx.notifiedBashSource
-		) {
-			// bash located off PATH (derived from git.exe or a known install
-			// root) — say so once, so shell selection is never mysterious.
-			ctx.notifiedBashSource = true;
-			ctx.ui?.notify(
-				tr(
-					`unified-exec: using bash at ${resolved.shell} (not on PATH)`,
-					`unified-exec：正在使用 ${resolved.shell} 中的 bash（不在 PATH 中）`,
-				),
-				"info",
-			);
-		}
-	}
+	// One selection for the call: its `shell` argument, omp's live `shellPath`,
+	// then `SHELL`, then the platform default (pi-shell on Windows). An explicit
+	// cmd is refused here — the host's own test names it, nothing is spawned.
+	const chosen = resolveDefaultShell(undefined, args.shell ?? ctx.shellPath?.(), {
+		isCmdShell: ctx.shellHost.isCmdShell,
+		requestedSource: args.shell?.trim() ? "call" : "shellPath",
+	});
 	// A relative workdir is relative to the calling session's cwd, never to the host process's.
 	const effectiveCwd = args.workdir && args.workdir.length > 0 ? resolve(cwd, args.workdir) : cwd;
-	// Resolve before building argv so the result names exactly what is spawned.
-	// Windows resolution fails closed to avoid cwd-first executable lookup.
-	shellBin = /[\\/]/.test(shellBin)
-		? resolve(effectiveCwd, shellBin)
-		: IS_WINDOWS ? resolveWindowsShell(shellBin) : resolveBinary(shellBin);
 	const yieldTimeMs = clampYield(args.yield_time_ms, DEFAULT_EXEC_YIELD_MS);
 	const wantsWake = args.on_exit === "wake";
-	const setupFailure = (failure: string): ResponseShape => finalizeResponse({
+	const setupFailure = (shell: string, failure: string): ResponseShape => finalizeResponse({
 		wallTimeSec: 0,
 		collected: NO_OUTPUT,
 		sessionId: undefined,
@@ -394,19 +377,45 @@ async function runExecCommand(
 		failure,
 		logPath: undefined,
 		cwd: effectiveCwd,
-		shell: shellBin,
+		shell,
 		command: args.cmd,
 		yieldTimeMs,
 	});
+	if (chosen.kind === "refused") {
+		const origin = refuseOrigin(chosen.source);
+		ctx.ui?.notify(
+			tr(
+				`unified-exec: not launching cmd (from ${origin.en}); omit shell to run in omp's pi-shell (omp bash), or pass a bash executable path.`,
+				`unified-exec：不启动 cmd（来自 ${origin.zh}）；省略 shell 以使用 omp 的 pi-shell（omp bash），或传入 bash 可执行文件路径。`,
+			),
+			"warning",
+		);
+		return setupFailure(
+			chosen.shell,
+			`shell "${chosen.shell}" is not supported: omp-unified-exec never launches cmd. Omit shell to run in omp's pi-shell (omp bash), or pass a bash executable path.`,
+		);
+	}
+	// Resolve before building argv so the result names exactly what is spawned.
+	// Windows resolution fails closed to avoid cwd-first executable lookup;
+	// pi-shell is the omp executable itself, already absolute.
+	const shell: LaunchShell = chosen.kind === "pi-shell"
+		? chosen
+		: {
+			kind: "shell",
+			shell: /[\\/]/.test(chosen.shell)
+				? resolve(effectiveCwd, chosen.shell)
+				: IS_WINDOWS ? resolveWindowsShell(chosen.shell) : resolveBinary(chosen.shell),
+		};
+	const shellBin = shell.shell;
 
 	// Same wording as the host's bash; nothing is spawned for an unusable directory.
 	const workdirFailure = workdirProblem(effectiveCwd);
-	if (workdirFailure) return setupFailure(workdirFailure);
+	if (workdirFailure) return setupFailure(shellBin, workdirFailure);
 
 	// The project's settings belong to the calling session's cwd, not to `workdir`.
-	const script = shellScript(await loadInitFile(ctx.pluginSettings, cwd), shellBin, args.cmd);
-	if (script.kind === "unusable") return setupFailure(script.reason);
-	const shellCommand = buildShellCommand(shellBin, script.cmd);
+	const script = shellScript(await loadInitFile(ctx.pluginSettings, cwd), shell, args.cmd);
+	if (script.kind === "unusable") return setupFailure(shellBin, script.reason);
+	const command = shellArgv(shell, script.cmd);
 
 	// Like the host bash: a `gh` mutation clears issue:// / pr:// cache rows
 	// before it runs; a failed command still pays only one extra fetch.
@@ -414,14 +423,13 @@ async function runExecCommand(
 
 	const id = ctx.store.allocateId();
 	const session = ExecSession.spawn(id, {
-		command: shellCommand.command,
+		command,
 		cwd: effectiveCwd,
 		env: process.env,
 		cols: args.cols !== undefined ? clamp(Math.floor(args.cols), MIN_PTY_COLS, MAX_PTY_COLS) : undefined,
 		rows: args.rows !== undefined ? clamp(Math.floor(args.rows), MIN_PTY_ROWS, MAX_PTY_ROWS) : undefined,
 		displayCommand: args.cmd,
 		title,
-		windowsVerbatimArguments: shellCommand.windowsVerbatimArguments,
 		appearance: ctx.appearance,
 		inputWait: { quietMs: INPUT_WAIT_QUIET_MS, onAlert: (alert) => ctx.coordinator.alertInputWait(alert) },
 	});
@@ -1030,6 +1038,7 @@ interface RuntimeOptions {
 	readonly lifecycleClock: LifecycleClock;
 	readonly appearance: () => TerminalAppearance;
 	readonly shellPath: (() => string | undefined) | undefined;
+	readonly shellHost: ShellHost;
 	readonly invalidateGithubCache: ((command: string) => void) | undefined;
 	readonly pluginSettings: PluginSettingsReader | undefined;
 }
@@ -1083,12 +1092,11 @@ function createRuntime(opts: RuntimeOptions): ExtensionCtx {
 		ui: undefined,
 		widgetVisible: false,
 		exitUnsubscribers: new Map(),
-		warnedShellFallback: false,
-		notifiedBashSource: false,
 		pendingSessions: new Set(),
 		shuttingDown: false,
 		appearance: opts.appearance,
 		shellPath: opts.shellPath,
+		shellHost: opts.shellHost,
 		invalidateGithubCache: opts.invalidateGithubCache,
 		pluginSettings: opts.pluginSettings,
 		host: opts.attachment,
@@ -1170,7 +1178,8 @@ async function endRuntime(ctx: ExtensionCtx): Promise<void> {
  * TTLs and the minute sweep; `stopHost` enables stop decisions;
  * `pluginSettings` reads the native plugin settings (absent: manifest
  * defaults); `agentHost` (omp's agent registry and lifecycle) lets a
- * subagent's terminals outlive its park.
+ * subagent's terminals outlive its park; `shellHost` is omp's cmd.exe test,
+ * which a stub host supplies for itself (the factory loads omp's).
  */
 export function activate(
 	pi: ExtensionAPI,
@@ -1182,6 +1191,7 @@ export function activate(
 	stopHost?: StopHost,
 	pluginSettings?: PluginSettingsReader,
 	agentHost?: AgentHost,
+	shellHost: ShellHost = noShellHost,
 ): ActivatedExtension {
 	let binding: HostBindingState = { kind: "pending" };
 	// The conversation the stop gate reads its config and todo list for, from the latest session_start.
@@ -1281,7 +1291,7 @@ export function activate(
 	};
 	const parked = parkedRuntimes<ExtensionCtx>();
 	// The runtime this activation serves; a revived agent's activation swaps in the one its park left behind.
-	let ctx = createRuntime({ attachment, agentHost, lifecycleClock, appearance, shellPath, invalidateGithubCache, pluginSettings });
+	let ctx = createRuntime({ attachment, agentHost, lifecycleClock, appearance, shellPath, shellHost, invalidateGithubCache, pluginSettings });
 	const registerMessageRenderer = (pi as ExtensionAPI & {
 		registerMessageRenderer?: (
 			customType: string,
@@ -1446,7 +1456,7 @@ export function activate(
 		title: Type.String({ description: `Terminal name in list_sessions, the Terminals view and every notice: one nonblank line, at most ${MAX_TITLE_CHARS} characters kept.` }),
 		workdir: Type.Optional(Type.String({ description: "Working directory. Defaults to the session cwd." })),
 		shell: Type.Optional(Type.String({
-			description: "Shell executable. Defaults to omp shellPath, then $SHELL, then bash (Windows: Git Bash, else PowerShell). Write cmd in that shell's syntax; results name it.",
+			description: "Shell executable. Defaults to omp shellPath, then $SHELL, then the platform default: omp's pi-shell (omp bash, bash 5.3 syntax) on Windows, bash elsewhere. cmd is refused. Write cmd in that shell's syntax; results name it.",
 		})),
 		cols: Type.Optional(Type.Number({
 			description: `PTY width in columns. Default 120, clamped to [${MIN_PTY_COLS}, ${MAX_PTY_COLS}].`,

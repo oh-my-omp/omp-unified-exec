@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 
 import { spawnChild } from "../src/pty.ts";
-import { buildShellCommand, IS_WINDOWS } from "../src/shell.ts";
+import { buildShellCommand, IS_WINDOWS, resolveWindowsShell } from "../src/shell.ts";
 
 function collect(child, name, action) {
 	const decoder = new TextDecoder();
@@ -62,12 +62,12 @@ async function runInteractiveCase() {
 }
 
 async function runShellCase() {
-	const shell = IS_WINDOWS
-		? (process.env.ComSpec ?? `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\cmd.exe`)
-		: "/bin/sh";
-	const shellCommand = buildShellCommand(shell, "echo SHELL_OK");
+	// The repository never launches cmd; the fixture proves a POSIX bash reaches a
+	// ConPTY. The resolved absolute path honours PI_UNIFIED_EXEC_BASH and keeps a
+	// bash name off System32's WSL stub, which a bare `bash` spawn would reach.
+	const shell = IS_WINDOWS ? resolveWindowsShell("bash") : "/bin/sh";
 	const child = spawnChild({
-		...shellCommand,
+		command: buildShellCommand(shell, "echo SHELL_OK"),
 		cwd: process.cwd(),
 		env: process.env,
 		cols: 90,
