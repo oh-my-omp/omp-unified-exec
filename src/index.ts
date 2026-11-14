@@ -294,11 +294,17 @@ function resolveWriteInput(args: WriteStdinArgs): Uint8Array | undefined {
 	return undefined;
 }
 
-const HELD_OPEN_NOTE =
-	"shell has exited, but background process(es) still hold the terminal " +
-	"(e.g. a nohup'd or SIGHUP-ignoring job that kept the PTY as stdin/stdout/stderr), " +
-	"so this session stays open until they exit. To detach: redirect inside the job — " +
-	"`setsid cmd >log 2>&1 </dev/null &` — or end the session with kill_session.";
+// No Windows session shell runs the POSIX recipe (PowerShell and cmd have neither `setsid`
+// nor `/dev/null`, Git Bash has no `setsid`), so the note there keeps the state and the
+// kill_session way out only.
+const HELD_OPEN_NOTE = IS_WINDOWS
+	? "shell has exited, but background process(es) still hold the terminal " +
+		"(a job started from this shell that kept its console as stdin/stdout/stderr), " +
+		"so this session stays open until they exit, or end the session with kill_session."
+	: "shell has exited, but background process(es) still hold the terminal " +
+		"(e.g. a nohup'd or SIGHUP-ignoring job that kept the PTY as stdin/stdout/stderr), " +
+		"so this session stays open until they exit. To detach: redirect inside the job — " +
+		"`setsid cmd >log 2>&1 </dev/null &` — or end the session with kill_session.";
 
 /**
  * Explanation for sessions whose shell has exited but whose terminal is

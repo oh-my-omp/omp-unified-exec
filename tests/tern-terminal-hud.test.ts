@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { homedir } from "node:os";
+import { join, parse, sep } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -288,9 +289,9 @@ describe("terminal HUD view description", () => {
 		const home = homedir();
 		for (const [cwd, shown] of [
 			[home, "~"],
-			[`${home}/projects/terminal`, "~/projects/terminal"],
-			[`${home}-other/terminal`, `${home}-other/terminal`],
-			["/tmp/terminal", "/tmp/terminal"],
+			[join(home, "projects", "terminal"), `~${sep}projects${sep}terminal`],
+			[join(`${home}-other`, "terminal"), join(`${home}-other`, "terminal")],
+			[join(parse(home).root, "tmp", "terminal"), join(parse(home).root, "tmp", "terminal")],
 		] as const) {
 			const selected = { ...entry(7, { kind: "running" }), cwd, logPath: "/tmp/logs/terminal 7.log" };
 			const view = describeTerminalsSheet([selected], selected);

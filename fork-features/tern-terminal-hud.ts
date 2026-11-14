@@ -25,6 +25,7 @@
  * and chat style without a plugin; the components keep all behavior.
  */
 import { homedir } from "node:os";
+import { isAbsolute, relative, sep } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { matchesKey, type Component } from "@earendil-works/pi-tui";
@@ -299,10 +300,17 @@ function actionButton(label: string, act: string, keys?: string, tone?: string):
 	};
 }
 
-/** A leading home directory as `~`, as omp's `shortenPath` shows paths. */
+/**
+ * A leading home directory as `~`: the rest keeps the platform separator (`~/src` on
+ * macOS and Linux, `~\src` on Windows). `relative` compares the two sides under the
+ * platform's rules (separators, and letter case on Windows). omp's own `shortenPath`
+ * lives in `@oh-my-pi/pi-tui/render`, which ships TypeScript source; importing it would
+ * stop this module from loading on a Node host before the factory can reject that host.
+ */
 function shortenHome(path: string): string {
-	const home = homedir();
-	return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+	const below = relative(homedir(), path);
+	if (below === "") return "~";
+	return below === ".." || below.startsWith(`..${sep}`) || isAbsolute(below) ? path : `~${sep}${below}`;
 }
 
 function localDateTime(at: number): string {
