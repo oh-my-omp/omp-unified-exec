@@ -32,7 +32,6 @@ export interface SessionSpawnOptions {
 	displayCommand?: string; // human-readable command for list_sessions/UI
 	/** The start title exec_command was given; names the terminal in lists and notices. */
 	title: string;
-	windowsVerbatimArguments?: boolean; // Windows cmd.exe quoting (see shell.ts)
 	/** The background the session's screen is shown on (default dark), answered to OSC 10/11. */
 	appearance?: () => TerminalAppearance;
 	/** Alert when the screen settles on an unseen input prompt (see fork-features/input-wait.ts). */
@@ -143,7 +142,6 @@ export class ExecSession {
 				env: opts.env,
 				cols,
 				rows,
-				windowsVerbatimArguments: opts.windowsVerbatimArguments,
 			});
 		} catch (err: any) {
 			self.markFailure(err?.message ?? String(err));

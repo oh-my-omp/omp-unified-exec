@@ -1,14 +1,16 @@
 /**
  * Shell selection and command-line construction, cross-platform.
  *
- * On POSIX every shell we care about takes `-c <cmd>`. On Windows the
- * invocation differs per shell (cmd.exe wants `/d /s /c`, PowerShell wants
- * `-Command`), and `bash` may not exist at all — in that case we fall back
- * to `powershell` (with a user-visible warning at the call site).
+ * A call that names no shell — no `shell` argument, no omp `shellPath`, no
+ * `SHELL` — runs in omp's own pi-shell on Windows: the omp executable's `bash`
+ * subcommand, which exists wherever omp does. POSIX keeps `bash`. An explicit
+ * choice is used as given, except cmd.exe: the host's `procmgr.isCmdShell`
+ * recognizes it and the plugin refuses it rather than launching a shell whose
+ * command language is neither POSIX nor omp's.
  */
 
 import { statSync } from "node:fs";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, resolve } from "node:path";
 
 export const IS_WINDOWS = process.platform === "win32";
 
@@ -17,17 +19,10 @@ const WINDOWS_EXEC_EXTS = [".com", ".exe", ".bat", ".cmd", ""];
 
 /**
  * Extensions valid for a SHELL binary. Only formats CreateProcess runs
- * directly: Node refuses to spawn .bat/.cmd without shell:true
- * (CVE-2024-27980 hardening), so resolving a shell to a .cmd wrapper would
- * produce an unspawnable EINVAL path.
+ * directly: a .cmd/.bat wrapper would be executed by cmd.exe, not by the
+ * shell the caller asked for.
  */
 const WINDOWS_SHELL_EXTS = [".com", ".exe"];
-
-/** %SystemRoot%\System32 path builder with a sane fallback. */
-function system32(...parts: string[]): string {
-	const root = process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows";
-	return join(root, "System32", ...parts);
-}
 
 /** statSync().isFile() that never throws. */
 export function isFile(p: string): boolean {
@@ -36,15 +31,6 @@ export function isFile(p: string): boolean {
 	} catch {
 		return false;
 	}
-}
-
-export interface ShellCommand {
-	command: string[];
-	/**
-	 * Pass args to the OS verbatim (no Node re-quoting). Required for
-	 * cmd.exe, whose quoting rules CreateProcess-style escaping mangles.
-	 */
-	windowsVerbatimArguments?: boolean;
 }
 
 /** Basename without a Windows executable extension, lowercased. */
@@ -62,34 +48,18 @@ export function isPosixShell(shell: string): boolean {
 }
 
 /**
- * Build the argv for running `cmd` under the given shell binary.
- * `isWindows` is a parameter (defaulting to the real platform) so tests can
- * exercise both branches anywhere.
+ * Build the argv for running `cmd` under the given shell executable.
  */
-export function buildShellCommand(shellBin: string, cmd: string, isWindows: boolean = IS_WINDOWS): ShellCommand {
+export function buildShellCommand(shellBin: string, cmd: string): string[] {
 	const base = shellBase(shellBin);
-	// cmd.exe specialization only applies on Windows — a POSIX binary that
-	// happens to be named `cmd` must get the uniform `-c` treatment.
-	if (isWindows && base === "cmd") {
-		if (/[\r\n]/.test(cmd)) {
-			// cmd.exe /c silently stops at the first newline, executing only
-			// the first line — fail closed rather than silently truncate.
-			throw new Error(
-				'cmd.exe cannot run multiline commands via /c (everything after the first line is silently dropped). Join lines with " & ", or use shell: "powershell" or bash.',
-			);
-		}
-		// /d skip AutoRun, /s standard quote handling, /c run-and-exit.
-		// Verbatim so cmd.exe sees exactly: /d /s /c "<cmd>"
-		return { command: [shellBin, "/d", "/s", "/c", `"${cmd}"`], windowsVerbatimArguments: true };
-	}
 	// powershell/pwsh take -Command on every platform (pwsh is cross-platform).
 	if (base === "powershell" || base === "pwsh") {
 		// -NoLogo: no banner on the PTY screen. No -NonInteractive: in a PTY it
 		// would block interactive prompts the session is meant to answer.
-		return { command: [shellBin, "-NoProfile", "-NoLogo", "-Command", cmd] };
+		return [shellBin, "-NoProfile", "-NoLogo", "-Command", cmd];
 	}
 	// bash, sh, zsh, fish, … all take -c.
-	return { command: [shellBin, "-c", cmd] };
+	return [shellBin, "-c", cmd];
 }
 
 export interface FindOnPathOptions {
@@ -124,119 +94,86 @@ export function findOnPath(
 	return undefined;
 }
 
-export interface DefaultShell {
-	/** Shell to spawn. Absolute path when resolved from PATH. */
-	shell: string;
-	/** true when Windows had no usable bash and we fell back to powershell. */
-	fellBack: boolean;
-	/** How bash was located (absent when fellBack or on POSIX). */
-	bashSource?: BashSource;
-}
-
-/** System32's bash.exe is the WSL stub — a different OS view entirely. */
-const SYSTEM32_RE = /[\\/]system32[\\/]/i;
-
-/** How a Windows bash was located (drives the one-time "off PATH" notice). */
-export type BashSource = "env" | "path" | "git-derived" | "install-root";
-
-export interface WindowsBash {
-	path: string;
-	source: BashSource;
-}
-
-/**
- * Locate a usable Git Bash on Windows, beyond plain PATH lookup.
- *
- * Git for Windows' default installer option puts only `Git\cmd` (git.exe)
- * on PATH — not `Git\bin` — so the very common setup is "git works, bash
- * doesn't". Resolution order:
- *   1. PI_UNIFIED_EXEC_BASH env var (explicit override)
- *   2. bash on PATH (excluding the System32 WSL stub)
- *   3. derived from git.exe on PATH: walk up from git's dir probing
- *      <root>\bin\bash.exe (covers Git\cmd, Git\bin, Git\mingw64\bin)
- *   4. well-known install roots (%ProgramFiles%\Git, %ProgramW6432%\Git,
- *      %ProgramFiles(x86)%\Git, %LocalAppData%\Programs\Git)
- *
- * Derived/fixed-path hits use `bin\bash.exe` (Git's launcher, which sets up
- * MSYS PATH so ls/grep/sed work in the child) — never usr\bin\bash.exe,
- * which spawns a bash without coreutils on PATH. Only absolute paths under
- * admin/user-owned install roots or the tree of an already-PATH-trusted
- * git.exe are probed; never anything cwd-relative.
- */
-export function findWindowsBash(env: NodeJS.ProcessEnv): WindowsBash | undefined {
-	// 1. Explicit override.
-	const override = env.PI_UNIFIED_EXEC_BASH?.trim();
-	if (override && isFile(override)) return { path: override, source: "env" };
-
-	// 2. Plain PATH.
-	const onPath = findOnPath("bash", env, { exts: WINDOWS_SHELL_EXTS, exclude: SYSTEM32_RE });
-	if (onPath) return { path: onPath, source: "path" };
-
-	// 3. Derive from git.exe on PATH.
-	const git = findOnPath("git", env, { exts: WINDOWS_SHELL_EXTS, exclude: SYSTEM32_RE });
-	if (git) {
-		let dir = dirname(git); // e.g. <root>\cmd or <root>\mingw64\bin
-		for (let i = 0; i < 3; i++) {
-			const candidate = join(dir, "bin", "bash.exe");
-			if (isFile(candidate)) return { path: candidate, source: "git-derived" };
-			const parent = dirname(dir);
-			if (parent === dir) break;
-			dir = parent;
-		}
+/** A shell the plugin launches: omp's pi-shell, or an executable the user chose. */
+export type LaunchShell =
+	| {
+		/** omp's pi-shell, launched as `<shell> bash`. */
+		readonly kind: "pi-shell";
+		/** The omp executable; `process.execPath` inside omp. */
+		readonly shell: string;
 	}
-
-	// 4. Well-known install roots.
-	const roots = [
-		env.ProgramFiles && join(env.ProgramFiles, "Git"),
-		env.ProgramW6432 && join(env.ProgramW6432, "Git"),
-		env["ProgramFiles(x86)"] && join(env["ProgramFiles(x86)"], "Git"),
-		env.LOCALAPPDATA && join(env.LOCALAPPDATA, "Programs", "Git"),
-	];
-	for (const root of roots) {
-		if (!root) continue;
-		const candidate = join(root, "bin", "bash.exe");
-		if (isFile(candidate)) return { path: candidate, source: "install-root" };
-	}
-	return undefined;
-}
-
-/**
- * The Windows default-shell probe: prefer a real bash (Git Bash / MSYS2),
- * excluding System32's WSL stub (it runs commands inside a WSL distro — or
- * errors out when none is installed — while looking like a normal bash).
- * Falls back to powershell. Exported separately from resolveDefaultShell so
- * tests can drive it with a synthetic PATH on any platform.
- */
-export function probeWindowsDefaultShell(
-	env: NodeJS.ProcessEnv,
-	exts: string[] = WINDOWS_EXEC_EXTS,
-): DefaultShell {
-	const bash = findWindowsBash(env);
-	if (bash) return { shell: bash.path, fellBack: false, bashSource: bash.source };
-	const powershell = findOnPath("powershell", env, { exts });
-	// Last resort: the canonical absolute location, never a bare name — a
-	// bare name would let Windows' cwd-first lookup execute a
-	// powershell.exe planted in an untrusted workdir.
-	return {
-		shell: powershell ?? system32("WindowsPowerShell", "v1.0", "powershell.exe"),
-		fellBack: true,
+	| {
+		/** A shell executable, or a bare name to resolve before spawning. */
+		readonly kind: "shell";
+		readonly shell: string;
 	};
+
+/** Where an explicit shell choice came from; a refusal names it. */
+export type ShellSource = "call" | "shellPath" | "SHELL";
+
+/** The shell a call runs in, or the refusal reported instead of launching one. */
+export type ShellChoice =
+	| LaunchShell
+	| {
+		/** An explicit choice the plugin never launches. */
+		readonly kind: "refused";
+		/** The refused executable; nothing is spawned. */
+		readonly shell: string;
+		/** Why it is refused: cmd.exe has neither POSIX syntax nor pi-shell's engine. */
+		readonly reason: "cmd";
+		/** The setting that supplied it. */
+		readonly source: ShellSource;
+	};
+
+export interface DefaultShellOptions {
+	/** The omp executable pi-shell runs through. Defaults to `process.execPath`, omp's own binary inside omp. */
+	readonly omp?: string;
+	/** Platform branch. Defaults to the real platform, so tests can drive the Windows default anywhere. */
+	readonly isWindows?: boolean;
+	/** Which source supplied `requested`; the `SHELL` fallback is its own. */
+	readonly requestedSource?: "call" | "shellPath";
+	/**
+	 * The host's cmd.exe test (`procmgr.isCmdShell`). Production passes omp's;
+	 * a stub host that cannot load it passes its own.
+	 */
+	readonly isCmdShell: (shell: string) => boolean;
 }
 
-let cachedDefaultShell: DefaultShell | undefined;
+/**
+ * The shell a call runs in: the caller's explicit choice (its `shell`
+ * argument, then omp's live `shellPath`), then `SHELL`, then the platform
+ * default. A blank choice counts as unset. An explicit cmd.exe is refused —
+ * never substituted by a lower-priority shell.
+ */
+export function resolveDefaultShell(
+	env: NodeJS.ProcessEnv | undefined,
+	requested: string | undefined,
+	options: DefaultShellOptions,
+): ShellChoice {
+	const choice = requested?.trim();
+	const explicit = choice || (env ?? process.env).SHELL?.trim();
+	if (explicit) {
+		return options.isCmdShell(explicit)
+			? { kind: "refused", shell: explicit, reason: "cmd", source: choice ? (options.requestedSource ?? "call") : "SHELL" }
+			: { kind: "shell", shell: explicit };
+	}
+	if (options.isWindows ?? IS_WINDOWS) return { kind: "pi-shell", shell: options.omp ?? process.execPath };
+	return { kind: "shell", shell: "bash" };
+}
 
 /**
- * No explicit tool argument: read the host setting, then SHELL, then the
- * platform default. Only the last-resort Windows probe is cached; settings
- * and environment are read for each new process.
+ * The argv that runs `cmd` in a launched shell. pi-shell is omp's own `bash`
+ * subcommand; `-c` — not the interactive REPL `omp bash` starts without it —
+ * keeps a session one command whose exit ends the shell, as an explicit bash
+ * gets.
  */
-export function resolveDefaultShell(env?: NodeJS.ProcessEnv, hostShell?: string): DefaultShell {
-	const preferred = hostShell?.trim() || (env ?? process.env).SHELL?.trim();
-	if (preferred) return { shell: preferred, fellBack: false };
-	if (!IS_WINDOWS) return { shell: "bash", fellBack: false };
-	if (env) return probeWindowsDefaultShell(env);
-	if (!cachedDefaultShell) cachedDefaultShell = probeWindowsDefaultShell(process.env);
-	return cachedDefaultShell;
+export function shellArgv(shell: LaunchShell, cmd: string): string[] {
+	switch (shell.kind) {
+		case "pi-shell":
+			return [shell.shell, "bash", "-c", cmd];
+		case "shell":
+			return buildShellCommand(shell.shell, cmd);
+	}
 }
 
 const resolvedBinaryCache = new Map<string, string>();
@@ -261,6 +198,9 @@ export function resolveBinary(bin: string, env?: NodeJS.ProcessEnv): string {
 	return resolved;
 }
 
+/** System32's bash.exe is the WSL stub — a different OS view entirely. */
+const SYSTEM32_RE = /[\\/]system32[\\/]/i;
+
 /**
  * Resolve a Windows SHELL binary to an absolute path, failing closed.
  *
@@ -269,33 +209,36 @@ export function resolveBinary(bin: string, env?: NodeJS.ProcessEnv): string {
  * (the LLM-supplied workdir) first, so "powershell" with a mangled PATH
  * would happily execute an attacker's powershell.exe from an untrusted
  * repo. Only .com/.exe are accepted (Node can't spawn .cmd/.bat directly).
+ *
+ * `PI_UNIFIED_EXEC_BASH` names the bash to use whenever a bash is resolved,
+ * ahead of PATH; other shell names ignore it.
  */
 export function resolveWindowsShell(bin: string, env?: NodeJS.ProcessEnv): string {
 	if (/[\\/]/.test(bin)) return bin; // explicit path: caller's responsibility
+	const cacheKey = `shell:${bin}`;
 	if (!env) {
-		const cached = resolvedBinaryCache.get(`shell:${bin}`);
+		const cached = resolvedBinaryCache.get(cacheKey);
 		if (cached) return cached;
 	}
 	const effectiveEnv = env ?? process.env;
-	// bash gets the extended probe (PATH → git-derived → install roots) so
-	// explicit shell:"bash" works on the common "git on PATH, bash not" setup.
-	const isBash = bin.replace(/\.(exe|com)$/i, "").toLowerCase() === "bash";
-	const found = isBash
-		? findWindowsBash(effectiveEnv)?.path
-		: findOnPath(bin, effectiveEnv, { exts: WINDOWS_SHELL_EXTS });
+	const bash = bin.replace(/\.(exe|com)$/i, "").toLowerCase() === "bash";
+	const override = bash ? effectiveEnv.PI_UNIFIED_EXEC_BASH?.trim() : undefined;
+	const found = override && isFile(override)
+		? override
+		// A bash name must not land on System32's WSL stub (a different OS view).
+		: findOnPath(bin, effectiveEnv, { exts: WINDOWS_SHELL_EXTS, exclude: bash ? SYSTEM32_RE : undefined });
 	if (!found) {
 		throw new Error(
-			isBash
-				? 'bash not found: not on PATH, not derivable from git.exe, and not in a known Git install root. Install Git for Windows, or set PI_UNIFIED_EXEC_BASH to your bash.exe.'
-				: `shell "${bin}" not found on PATH (searched ${WINDOWS_SHELL_EXTS.join("/")}). Pass an absolute path, or use "powershell" / "cmd" / an installed bash.`,
+			bash
+				? `bash not found on PATH (searched ${WINDOWS_SHELL_EXTS.join("/")}). Install Git for Windows, set PI_UNIFIED_EXEC_BASH to your bash.exe, or omit shell to run in omp's pi-shell (omp bash).`
+				: `shell "${bin}" not found on PATH (searched ${WINDOWS_SHELL_EXTS.join("/")}). Pass an absolute path, or use "powershell" or an installed bash.`,
 		);
 	}
-	if (!env) resolvedBinaryCache.set(`shell:${bin}`, found);
+	if (!env) resolvedBinaryCache.set(cacheKey, found);
 	return found;
 }
 
-/** Test hook: forget cached shell/binary probes. */
+/** Test hook: forget cached binary probes. */
 export function resetDefaultShellCache(): void {
-	cachedDefaultShell = undefined;
 	resolvedBinaryCache.clear();
 }

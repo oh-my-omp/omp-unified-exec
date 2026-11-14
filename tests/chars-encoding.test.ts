@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { activate } from "../src/index.ts";
+import { STUB_SHELL_PATH, stubShellHost } from "./stub-shell.ts";
 
 
 interface ToolDef {
@@ -61,7 +62,7 @@ function makeHarness() {
 	};
 	// The fake supplies only the ExtensionAPI surfaces consumed by the tool core.
 	const api = pi as unknown as Parameters<typeof activate>[0];
-	activate(api);
+	activate(api, undefined, STUB_SHELL_PATH, undefined, undefined, {}, undefined, undefined, undefined, stubShellHost);
 	return {
 		async call(toolName: string, params: any, signal?: AbortSignal) {
 			const def = tools[toolName];

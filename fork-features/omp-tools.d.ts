@@ -81,3 +81,7 @@ declare module "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle" {
 declare module "@oh-my-pi/pi-coding-agent/extensibility/plugins/loader" {
 	export const getPluginSettings: unknown;
 }
+
+declare module "@oh-my-pi/pi-utils" {
+	export const procmgr: unknown;
+}

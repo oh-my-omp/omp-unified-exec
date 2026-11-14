@@ -1,11 +1,12 @@
 /**
- * Unit tests for src/shell.ts: shell command construction, PATH lookup,
- * live host/environment defaults, and the Windows bash→powershell fallback.
+ * Unit tests for src/shell.ts: shell command construction, PATH lookup, the
+ * default-shell choice (pi-shell on Windows, bash on POSIX, explicit choices
+ * in between), the cmd refusal and `PI_UNIFIED_EXEC_BASH`.
  *
- * PATH-lookup and probe tests build synthetic PATH directories under a temp
- * dir and inject them via the env parameter, so both probe branches run on
- * every platform (Windows-style .exe probing works anywhere — it's just a
- * filename suffix).
+ * The platform branch is a parameter, so both defaults are asserted on every
+ * runner. PATH-lookup and resolution tests build synthetic PATH directories
+ * under a temp dir and inject them via the env parameter, so Windows-style
+ * .exe probing runs anywhere — it's just a filename suffix.
  */
 
 import { strict as assert } from "node:assert";
@@ -15,17 +16,30 @@ import { delimiter, join } from "node:path";
 import { after, describe, it } from "node:test";
 import {
 	buildShellCommand,
+	type DefaultShellOptions,
 	findOnPath,
-	findWindowsBash,
 	IS_WINDOWS,
-	probeWindowsDefaultShell,
+	resetDefaultShellCache,
 	resolveBinary,
 	resolveDefaultShell,
 	resolveWindowsShell,
-	resetDefaultShellCache,
+	shellArgv,
+	type ShellChoice,
 } from "../src/shell.ts";
 
 const WIN_EXTS = [".exe", ".cmd", ".bat", ""];
+
+/** The host's cmd.exe test, as omp's `procmgr.isCmdShell` answers it. */
+const isCmdShell = (shell: string): boolean => /(^|[\\/])cmd(\.exe)?$/i.test(shell);
+
+/** One selection with the stub classifier plus the case's own options. */
+function choose(
+	env: NodeJS.ProcessEnv | undefined,
+	requested?: string,
+	options: Partial<DefaultShellOptions> = {},
+): ShellChoice {
+	return resolveDefaultShell(env, requested, { isCmdShell, ...options });
+}
 
 /** Create a synthetic PATH dir containing the given (regular) files. */
 const tempRoots: string[] = [];
@@ -47,49 +61,60 @@ after(() => {
 
 describe("buildShellCommand", () => {
 	it("POSIX shells get -c", () => {
-		assert.deepEqual(buildShellCommand("bash", "echo hi").command, ["bash", "-c", "echo hi"]);
-		assert.deepEqual(buildShellCommand("sh", "ls").command, ["sh", "-c", "ls"]);
-		assert.deepEqual(buildShellCommand("zsh", "ls").command, ["zsh", "-c", "ls"]);
-		assert.equal(buildShellCommand("bash", "echo hi").windowsVerbatimArguments, undefined);
+		assert.deepEqual(buildShellCommand("bash", "echo hi"), ["bash", "-c", "echo hi"]);
+		assert.deepEqual(buildShellCommand("sh", "ls"), ["sh", "-c", "ls"]);
+		assert.deepEqual(buildShellCommand("zsh", "ls"), ["zsh", "-c", "ls"]);
 	});
 
 	it("absolute bash path still gets -c", () => {
-		const r = buildShellCommand("/usr/bin/bash", "echo hi");
-		assert.deepEqual(r.command, ["/usr/bin/bash", "-c", "echo hi"]);
+		assert.deepEqual(buildShellCommand("/usr/bin/bash", "echo hi"), ["/usr/bin/bash", "-c", "echo hi"]);
 	});
 
 	it("Windows bash.exe path gets -c (extension and case insensitive)", () => {
-		const r = buildShellCommand("C:\\Program Files\\Git\\bin\\BASH.EXE", "echo hi");
-		assert.deepEqual(r.command, ["C:\\Program Files\\Git\\bin\\BASH.EXE", "-c", "echo hi"]);
+		assert.deepEqual(buildShellCommand("C:\\Program Files\\Git\\bin\\BASH.EXE", "echo hi"), [
+			"C:\\Program Files\\Git\\bin\\BASH.EXE",
+			"-c",
+			"echo hi",
+		]);
 	});
 
 	it("powershell and pwsh allow PTY interaction with -NoProfile -NoLogo -Command", () => {
 		const flags = ["-NoProfile", "-NoLogo", "-Command", "Get-Date"];
-		assert.deepEqual(buildShellCommand("powershell", "Get-Date").command, ["powershell", ...flags]);
-		assert.deepEqual(buildShellCommand("pwsh", "Get-Date").command, ["pwsh", ...flags]);
-		assert.deepEqual(buildShellCommand("powershell.exe", "Get-Date").command, ["powershell.exe", ...flags]);
+		assert.deepEqual(buildShellCommand("powershell", "Get-Date"), ["powershell", ...flags]);
+		assert.deepEqual(buildShellCommand("pwsh", "Get-Date"), ["pwsh", ...flags]);
+		assert.deepEqual(buildShellCommand("powershell.exe", "Get-Date"), ["powershell.exe", ...flags]);
 	});
 
-	it("cmd gets /d /s /c with a quoted command and verbatim args (Windows)", () => {
-		const r = buildShellCommand("cmd", "dir /b", true);
-		assert.deepEqual(r.command, ["cmd", "/d", "/s", "/c", '"dir /b"']);
-		assert.equal(r.windowsVerbatimArguments, true);
-		const r2 = buildShellCommand("cmd.exe", "echo hi", true);
-		assert.deepEqual(r2.command, ["cmd.exe", "/d", "/s", "/c", '"echo hi"']);
+	it("multiline commands are passed through unchanged", () => {
+		assert.deepEqual(buildShellCommand("bash", "echo one\necho two"), ["bash", "-c", "echo one\necho two"]);
+	});
+});
+
+describe("shellArgv", () => {
+	it("runs pi-shell through omp's own bash subcommand", () => {
+		assert.deepEqual(shellArgv({ kind: "pi-shell", shell: "C:\\omp\\omp.exe" }, "echo hi"), [
+			"C:\\omp\\omp.exe",
+			"bash",
+			"-c",
+			"echo hi",
+		]);
+		assert.deepEqual(shellArgv({ kind: "pi-shell", shell: "/opt/omp/bin/omp" }, "echo hi"), [
+			"/opt/omp/bin/omp",
+			"bash",
+			"-c",
+			"echo hi",
+		]);
 	});
 
-	it("a POSIX binary that happens to be named cmd gets plain -c", () => {
-		const r = buildShellCommand("/opt/tools/cmd", "echo hi", false);
-		assert.deepEqual(r.command, ["/opt/tools/cmd", "-c", "echo hi"]);
-		assert.equal(r.windowsVerbatimArguments, undefined);
-	});
-
-	it("multiline commands for cmd.exe fail closed instead of silently truncating", () => {
-		assert.throws(() => buildShellCommand("cmd", "echo one\necho two", true), /multiline/);
-		assert.throws(() => buildShellCommand("cmd", "echo one\r\necho two", true), /multiline/);
-		// Multiline is fine for shells that support it.
-		assert.doesNotThrow(() => buildShellCommand("bash", "echo one\necho two", true));
-		assert.doesNotThrow(() => buildShellCommand("powershell", "echo one\necho two", true));
+	it("builds an explicit shell's own argv", () => {
+		assert.deepEqual(shellArgv({ kind: "shell", shell: "/bin/bash" }, "echo hi"), ["/bin/bash", "-c", "echo hi"]);
+		assert.deepEqual(shellArgv({ kind: "shell", shell: "pwsh" }, "Get-Date"), [
+			"pwsh",
+			"-NoProfile",
+			"-NoLogo",
+			"-Command",
+			"Get-Date",
+		]);
 	});
 });
 
@@ -137,86 +162,6 @@ describe("findOnPath", () => {
 	});
 });
 
-describe("findWindowsBash", () => {
-	it("PI_UNIFIED_EXEC_BASH override wins when it points at a file", () => {
-		const dir = makePathDir("envbash", ["custom-bash.exe"]);
-		const r = findWindowsBash({ PATH: "", PI_UNIFIED_EXEC_BASH: join(dir, "custom-bash.exe") });
-		assert.deepEqual(r, { path: join(dir, "custom-bash.exe"), source: "env" });
-	});
-
-	it("PI_UNIFIED_EXEC_BASH pointing at a nonexistent file is ignored", () => {
-		const dir = makePathDir("envbash2", ["bash.exe"]);
-		const r = findWindowsBash({ PATH: dir, PI_UNIFIED_EXEC_BASH: "C:\\nope\\bash.exe" });
-		assert.deepEqual(r, { path: join(dir, "bash.exe"), source: "path" });
-	});
-
-	it("finds bash on PATH first", () => {
-		const dir = makePathDir("pathbash", ["bash.exe"]);
-		assert.deepEqual(findWindowsBash({ PATH: dir }), { path: join(dir, "bash.exe"), source: "path" });
-	});
-
-	it("derives bash from git.exe in Git\\cmd (default installer PATH layout)", () => {
-		// The common setup: only <root>\cmd (git.exe) is on PATH; bash lives
-		// in <root>\bin.
-		const root = makePathDir("gitroot", ["cmd/git.exe", "bin/bash.exe"]);
-		const r = findWindowsBash({ PATH: join(root, "cmd") });
-		assert.deepEqual(r, { path: join(root, "bin", "bash.exe"), source: "git-derived" });
-	});
-
-	it("derives bash from git.exe in Git\\mingw64\\bin (two levels down)", () => {
-		const root = makePathDir("gitroot2", ["mingw64/bin/git.exe", "bin/bash.exe"]);
-		const r = findWindowsBash({ PATH: join(root, "mingw64", "bin") });
-		assert.deepEqual(r, { path: join(root, "bin", "bash.exe"), source: "git-derived" });
-	});
-
-	it("falls back to well-known install roots via env", () => {
-		const pf = makePathDir("pf", ["Git/bin/bash.exe"]);
-		const r = findWindowsBash({ PATH: "", ProgramFiles: pf });
-		assert.deepEqual(r, { path: join(pf, "Git", "bin", "bash.exe"), source: "install-root" });
-		const lad = makePathDir("lad", ["Programs/Git/bin/bash.exe"]);
-		const r2 = findWindowsBash({ PATH: "", LOCALAPPDATA: lad });
-		assert.deepEqual(r2, { path: join(lad, "Programs", "Git", "bin", "bash.exe"), source: "install-root" });
-	});
-
-	it("returns undefined when nothing is found", () => {
-		assert.equal(findWindowsBash({ PATH: "" }), undefined);
-	});
-});
-
-describe("probeWindowsDefaultShell", () => {
-	it("prefers bash when on PATH (absolute path, fellBack=false)", () => {
-		const bashDir = makePathDir("gitbash", ["bash.exe"]);
-		const psDir = makePathDir("ps1", ["powershell.exe"]);
-		const r = probeWindowsDefaultShell({ PATH: bashDir + delimiter + psDir });
-		assert.deepEqual(r, { shell: join(bashDir, "bash.exe"), fellBack: false, bashSource: "path" });
-	});
-
-	it("skips System32's WSL bash stub and falls back to powershell", () => {
-		const sys32 = makePathDir("sys", ["System32/bash.exe", "System32/powershell.exe"]);
-		const r = probeWindowsDefaultShell({ PATH: join(sys32, "System32") });
-		assert.equal(r.fellBack, true);
-		assert.equal(r.shell, join(sys32, "System32", "powershell.exe"));
-	});
-
-	it("uses git-derived bash when bash itself is off PATH", () => {
-		const root = makePathDir("gitroot3", ["cmd/git.exe", "bin/bash.exe"]);
-		const r = probeWindowsDefaultShell({ PATH: join(root, "cmd") });
-		assert.deepEqual(r, {
-			shell: join(root, "bin", "bash.exe"),
-			fellBack: false,
-			bashSource: "git-derived",
-		});
-	});
-
-	it("falls back to the canonical absolute powershell path when nothing is on PATH", () => {
-		// Never a bare name: Windows' cwd-first lookup could execute a
-		// planted powershell.exe from an untrusted workdir.
-		const r = probeWindowsDefaultShell({ PATH: "" });
-		assert.equal(r.fellBack, true);
-		assert.match(r.shell, /[\\/]System32[\\/]WindowsPowerShell[\\/]v1\.0[\\/]powershell\.exe$/i);
-	});
-});
-
 describe("resolveWindowsShell", () => {
 	it("resolves bare names to absolute .exe paths", () => {
 		const dir = makePathDir("ws", ["myshell.exe"]);
@@ -236,104 +181,144 @@ describe("resolveWindowsShell", () => {
 		assert.equal(resolveWindowsShell("C:\\tools\\x.exe", { PATH: "" }), "C:\\tools\\x.exe");
 	});
 
-	it("explicit shell:\"bash\" gets the extended probe (git-derived)", () => {
-		const root = makePathDir("gitroot4", ["cmd/git.exe", "bin/bash.exe"]);
-		assert.equal(resolveWindowsShell("bash", { PATH: join(root, "cmd") }), join(root, "bin", "bash.exe"));
-		assert.equal(resolveWindowsShell("bash.exe", { PATH: join(root, "cmd") }), join(root, "bin", "bash.exe"));
+	it("PI_UNIFIED_EXEC_BASH names the bash that a bash name resolves to", () => {
+		const override = makePathDir("envbash", ["custom-bash.exe"]);
+		const pathDir = makePathDir("pathbash", ["bash.exe"]);
+		const env = { PATH: pathDir, PI_UNIFIED_EXEC_BASH: join(override, "custom-bash.exe") };
+		assert.equal(resolveWindowsShell("bash", env), join(override, "custom-bash.exe"));
+		assert.equal(resolveWindowsShell("bash.exe", env), join(override, "custom-bash.exe"));
 	});
 
-	it("unresolvable bash throws the bash-specific guidance", () => {
+	it("ignores PI_UNIFIED_EXEC_BASH for other shells and when it names no file", () => {
+		const override = makePathDir("envbash2", ["custom-bash.exe"]);
+		const pathDir = makePathDir("pathbash2", ["powershell.exe", "bash.exe"]);
+		assert.equal(
+			resolveWindowsShell("powershell", { PATH: pathDir, PI_UNIFIED_EXEC_BASH: join(override, "custom-bash.exe") }),
+			join(pathDir, "powershell.exe"),
+		);
+		assert.equal(
+			resolveWindowsShell("bash", { PATH: pathDir, PI_UNIFIED_EXEC_BASH: join(override, "nope.exe") }),
+			join(pathDir, "bash.exe"),
+		);
+	});
+
+	it("keeps a bash name off System32's WSL stub", () => {
+		const stub = makePathDir("sys", ["System32/bash.exe"]);
+		const git = makePathDir("gitbin", ["bash.exe"]);
+		assert.equal(
+			resolveWindowsShell("bash", { PATH: join(stub, "System32") + delimiter + git }),
+			join(git, "bash.exe"),
+		);
+		assert.throws(() => resolveWindowsShell("bash", { PATH: join(stub, "System32") }), /pi-shell/);
+	});
+
+	it("unresolvable bash points at pi-shell and PI_UNIFIED_EXEC_BASH", () => {
 		assert.throws(() => resolveWindowsShell("bash", { PATH: "" }), /PI_UNIFIED_EXEC_BASH/);
+		assert.throws(() => resolveWindowsShell("bash", { PATH: "" }), /pi-shell/);
 	});
 });
 
 describe("resolveDefaultShell", () => {
-	it("prefers a trimmed host setting over SHELL without validating or substituting it", () => {
-		assert.deepEqual(resolveDefaultShell({ SHELL: "env-shell" }, " \t host-shell \n"), {
-			shell: "host-shell",
-			fellBack: false,
-		});
-		assert.deepEqual(resolveDefaultShell({ SHELL: "bash" }, "nonexistent-host-shell-4711"), {
-			shell: "nonexistent-host-shell-4711",
-			fellBack: false,
-		});
-	});
-
-	it("uses trimmed SHELL when the host setting is absent or blank", () => {
-		for (const hostShell of [undefined, "", " \t\n"]) {
-			assert.deepEqual(resolveDefaultShell({ SHELL: " \t env-shell \n" }, hostShell), {
-				shell: "env-shell",
-				fellBack: false,
+	it("Windows: the platform default is omp's pi-shell", () => {
+		for (const requested of [undefined, "", " \t\n"]) {
+			assert.deepEqual(choose({ PATH: "" }, requested, { isWindows: true, omp: "C:\\omp\\omp.exe" }), {
+				kind: "pi-shell",
+				shell: "C:\\omp\\omp.exe",
 			});
 		}
-		assert.deepEqual(resolveDefaultShell({ SHELL: "env-shell" }, "next-host-shell"), {
-			shell: "next-host-shell",
-			fellBack: false,
+		// Nothing on PATH changes it: there is no probe left to find a bash.
+		const bashDir = makePathDir("defaultbash", ["bash.exe"]);
+		assert.deepEqual(choose({ PATH: bashDir }, undefined, { isWindows: true, omp: "C:\\omp\\omp.exe" }), {
+			kind: "pi-shell",
+			shell: "C:\\omp\\omp.exe",
 		});
 	});
 
-	it("uses the platform fallback only when host and environment settings are empty", () => {
-		for (const SHELL of [undefined, "", " \t\n"]) {
-			const env = { PATH: "", SHELL };
-			const expected = IS_WINDOWS ? probeWindowsDefaultShell(env) : { shell: "bash", fellBack: false };
-			for (const hostShell of [undefined, "", " \t\n"]) {
-				assert.deepEqual(resolveDefaultShell(env, hostShell), expected);
-			}
+	it("Windows: the pi-shell executable defaults to the omp process's own binary", () => {
+		// Inside omp, process.execPath is the omp binary; a bun driver passes Bun.which("omp").
+		assert.deepEqual(choose({}, undefined, { isWindows: true }), { kind: "pi-shell", shell: process.execPath });
+	});
+
+	it("POSIX: the platform default stays bash", () => {
+		for (const requested of [undefined, "", " \t\n"]) {
+			assert.deepEqual(choose({ PATH: "" }, requested, { isWindows: false }), { kind: "shell", shell: "bash" });
 		}
+	});
+
+	it("prefers the caller's trimmed choice over SHELL and the default", () => {
+		assert.deepEqual(choose({ SHELL: "/bin/dash" }, "  /bin/zsh \n", { isWindows: true }), {
+			kind: "shell",
+			shell: "/bin/zsh",
+		});
+		assert.deepEqual(choose({ SHELL: "/bin/dash" }, "nonexistent-host-shell-4711", { isWindows: true }), {
+			kind: "shell",
+			shell: "nonexistent-host-shell-4711",
+		});
+	});
+
+	it("uses trimmed SHELL when the call and the host setting name nothing", () => {
+		for (const requested of [undefined, "", " \t\n"]) {
+			assert.deepEqual(choose({ SHELL: " \t /bin/dash \n" }, requested, { isWindows: true }), {
+				kind: "shell",
+				shell: "/bin/dash",
+			});
+		}
+	});
+
+	it("refuses an explicit cmd and names the setting that supplied it", () => {
+		assert.deepEqual(
+			choose({}, "C:\\Windows\\System32\\cmd.exe", { isWindows: true, requestedSource: "call" }),
+			{ kind: "refused", shell: "C:\\Windows\\System32\\cmd.exe", reason: "cmd", source: "call" },
+		);
+		assert.deepEqual(choose({}, "cmd", { isWindows: true, requestedSource: "shellPath" }), {
+			kind: "refused",
+			shell: "cmd",
+			reason: "cmd",
+			source: "shellPath",
+		});
+		// Neither the call nor the host setting names a shell: SHELL supplied it.
+		assert.deepEqual(choose({ SHELL: " cmd.exe " }, undefined, { isWindows: true }), {
+			kind: "refused",
+			shell: "cmd.exe",
+			reason: "cmd",
+			source: "SHELL",
+		});
+	});
+
+	it("keeps a non-cmd shell that merely contains the name", () => {
+		assert.deepEqual(choose({}, "C:\\tools\\cmdline.exe", { isWindows: true }), {
+			kind: "shell",
+			shell: "C:\\tools\\cmdline.exe",
+		});
 	});
 
 	it("reads each supplied environment without caching SHELL", () => {
 		const env: NodeJS.ProcessEnv = { SHELL: "first-env-shell" };
-		assert.equal(resolveDefaultShell(env).shell, "first-env-shell");
+		assert.deepEqual(choose(env), { kind: "shell", shell: "first-env-shell" });
 		env.SHELL = "second-env-shell";
-		assert.equal(resolveDefaultShell(env).shell, "second-env-shell");
-		assert.equal(resolveDefaultShell({ SHELL: "third-env-shell" }).shell, "third-env-shell");
+		assert.deepEqual(choose(env), { kind: "shell", shell: "second-env-shell" });
+		assert.deepEqual(choose({ SHELL: "third-env-shell" }), { kind: "shell", shell: "third-env-shell" });
 	});
 
 	it("reads live process settings and does not inherit them into an explicit environment", () => {
 		const previous = process.env.SHELL;
 		try {
 			process.env.SHELL = "first-process-shell";
-			assert.equal(resolveDefaultShell().shell, "first-process-shell");
+			assert.deepEqual(choose(undefined), { kind: "shell", shell: "first-process-shell" });
 			process.env.SHELL = " \t second-process-shell \n";
-			assert.equal(resolveDefaultShell().shell, "second-process-shell");
-			assert.equal(resolveDefaultShell(undefined, "first-host-shell").shell, "first-host-shell");
-			assert.equal(resolveDefaultShell(undefined, "second-host-shell").shell, "second-host-shell");
-			assert.equal(resolveDefaultShell(undefined, " \t").shell, "second-process-shell");
-			const env = { PATH: "" };
-			assert.deepEqual(
-				resolveDefaultShell(env),
-				IS_WINDOWS ? probeWindowsDefaultShell(env) : { shell: "bash", fellBack: false },
-			);
-		} finally {
-			if (previous === undefined) delete process.env.SHELL;
-			else process.env.SHELL = previous;
-		}
-	});
-
-	it("Windows: only the default fallback probe is cached, not host or SHELL settings", { skip: !IS_WINDOWS }, () => {
-		const previous = process.env.SHELL;
-		resetDefaultShellCache();
-		try {
-			delete process.env.SHELL;
-			const fallback = resolveDefaultShell();
-			assert.strictEqual(resolveDefaultShell(), fallback);
-			process.env.SHELL = "live-env-shell";
-			assert.deepEqual(resolveDefaultShell(), { shell: "live-env-shell", fellBack: false });
-			assert.deepEqual(resolveDefaultShell(undefined, "live-host-shell"), {
-				shell: "live-host-shell",
-				fellBack: false,
+			assert.deepEqual(choose(undefined), { kind: "shell", shell: "second-process-shell" });
+			assert.deepEqual(choose(undefined, "first-host-shell"), { kind: "shell", shell: "first-host-shell" });
+			assert.deepEqual(choose(undefined, "second-host-shell"), { kind: "shell", shell: "second-host-shell" });
+			assert.deepEqual(choose(undefined, " \t"), { kind: "shell", shell: "second-process-shell" });
+			// A supplied environment never sees the process's SHELL.
+			assert.deepEqual(choose({ PATH: "" }, undefined, { isWindows: false }), { kind: "shell", shell: "bash" });
+			assert.deepEqual(choose({ PATH: "" }, undefined, { isWindows: true, omp: "omp" }), {
+				kind: "pi-shell",
+				shell: "omp",
 			});
-			process.env.SHELL = " \t";
-			assert.strictEqual(resolveDefaultShell(), fallback);
-
-			const bashDir = makePathDir("cache", ["bash.exe"]);
-			assert.equal(resolveDefaultShell({ PATH: bashDir }).shell, join(bashDir, "bash.exe"));
-			assert.equal(resolveDefaultShell({ PATH: "" }).fellBack, true);
 		} finally {
 			if (previous === undefined) delete process.env.SHELL;
 			else process.env.SHELL = previous;
-			resetDefaultShellCache();
 		}
 	});
 });

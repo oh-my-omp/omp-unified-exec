@@ -10,6 +10,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { readTerminal } from "../fork-features/terminal-resource.ts";
 import { activate } from "../src/index.ts";
 import { IS_WINDOWS } from "../src/shell.ts";
+import { STUB_SHELL_PATH, stubShellHost } from "./stub-shell.ts";
 
 
 /**
@@ -45,7 +46,7 @@ function makeHarness() {
 	};
 	// The fake supplies only the ExtensionAPI surfaces consumed by the tool core.
 	const api = pi as unknown as Parameters<typeof activate>[0];
-	activate(api);
+	activate(api, undefined, STUB_SHELL_PATH, undefined, undefined, {}, undefined, undefined, undefined, stubShellHost);
 	return {
 		async call(toolName: string, params: any, signal?: AbortSignal) {
 			return tools[toolName].execute("id", params, signal, undefined, stubCtx);
@@ -177,19 +178,15 @@ describe("unified-exec PTY mode", () => {
 		}
 	});
 
-	it("Windows: shell=cmd with a PTY works (verbatim /c payload)", { skip: !IS_WINDOWS }, async () => {
-		// Keep cmd.exe's pre-quoted /s /c payload intact through Bun's
-		// windowsVerbatimArguments handling.
+	it("an explicit cmd never reaches a PTY", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		try {
-			const r = await h.call("exec_command", { title: "Test command", cmd: "echo tty-one& echo tty-two",
-				shell: "cmd",
-
+			const r = await h.call("exec_command", { title: "Test command", cmd: "echo tty-cmd", shell: "cmd",
 				yield_time_ms: 20000, });
-			assert.equal(r.details.exit_code, 0, JSON.stringify(r.details));
-			assert.ok(r.details.output.includes("tty-one"), `output=${r.details.output}`);
-			assert.ok(r.details.output.includes("tty-two"), `output=${r.details.output}`);
+			assert.equal(r.details.session_id, undefined, JSON.stringify(r.details));
+			assert.match(String(r.details.failure_message), /never launches cmd/, JSON.stringify(r.details));
+			assert.equal(r.details.terminal_url, undefined, JSON.stringify(r.details));
 		} finally {
 			await h.emit("session_shutdown");
 		}

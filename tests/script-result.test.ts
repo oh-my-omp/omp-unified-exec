@@ -24,6 +24,7 @@ import {
 } from "../src/script-result.ts";
 import { IS_WINDOWS } from "../src/shell.ts";
 import { finalizeKillResult, finalizeProcessResult, renderProcessResultText } from "../src/tool-result.ts";
+import { STUB_SHELL_PATH, stubShellHost } from "./stub-shell.ts";
 
 
 function finalScreen(text: string): FinalScreenOutput {
@@ -77,7 +78,7 @@ function makeHarness() {
 	};
 	// The fake supplies only the ExtensionAPI surfaces consumed by the tool core.
 	const api = pi as unknown as Parameters<typeof activate>[0];
-	activate(api);
+	activate(api, undefined, STUB_SHELL_PATH, undefined, undefined, {}, undefined, undefined, undefined, stubShellHost);
 	return {
 		tools,
 		call: (name: string, params: any) => tools[name].execute("test-call-id", params, undefined, undefined, ctx),

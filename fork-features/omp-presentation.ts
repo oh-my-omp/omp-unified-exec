@@ -17,6 +17,7 @@ import type { SessionStore } from "../src/session-store.ts";
 import type { TerminalAppearance } from "../src/terminal-screen.ts";
 import { truncationMarker } from "../src/tool-result.ts";
 import { type AgentHost, loadAgentHost } from "./agent-park.ts";
+import { loadShellHost, type ShellHost } from "./shell-host.ts";
 import { type CommandApprovalHost, loadCommandApprovalHost } from "./command-approval.ts";
 import { loadPluginSettingsReader, type PluginSettingsReader } from "./plugin-settings.ts";
 import { loadStopHost, type StopHost } from "./stop-gate.ts";
@@ -484,6 +485,7 @@ export function withHostPresentation(
 		stopHost?: StopHost,
 		pluginSettings?: PluginSettingsReader,
 		agentHost?: AgentHost,
+		shellHost?: ShellHost,
 	) => ActivatedExtension,
 ): (host: ExtensionAPI) => void | Promise<void> {
 	return (host) => {
@@ -494,11 +496,11 @@ export function withHostPresentation(
 		// The omp modules load before activating, so a reshaped omp fails plugin loading with nothing registered.
 		return Promise.all([
 			presentOnOmp(host), loadTernHudHost(), loadOmpAppearance(), loadOmpShellPath(host), loadCommandApprovalHost(),
-			loadGithubCacheInvalidation(), loadStopHost(), loadPluginSettingsReader(), loadAgentHost(),
-		]).then(async ([pi, hud, appearance, shellPath, approvalHost, invalidateGithubCache, stopHost, pluginSettings, agentHost]) => {
+			loadGithubCacheInvalidation(), loadStopHost(), loadPluginSettingsReader(), loadAgentHost(), loadShellHost(),
+		]).then(async ([pi, hud, appearance, shellPath, approvalHost, invalidateGithubCache, stopHost, pluginSettings, agentHost, shellHost]) => {
 			await retireTernPlugin();
 			await initializeTerminalUrls();
-			const activated = activate(pi, appearance, shellPath, approvalHost, invalidateGithubCache, {}, stopHost, pluginSettings, agentHost);
+			const activated = activate(pi, appearance, shellPath, approvalHost, invalidateGithubCache, {}, stopHost, pluginSettings, agentHost, shellHost);
 			mountTerminalHud(pi, activated.store, hud, activated.kill);
 			scheduleLogArchive();
 		});

@@ -10,7 +10,7 @@
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { IS_WINDOWS, isPosixShell, shellBase } from "../src/shell.ts";
+import { IS_WINDOWS, isPosixShell, type LaunchShell, shellBase } from "../src/shell.ts";
 import type { PluginSettingsReader } from "./plugin-settings.ts";
 
 export const INIT_FILE_KEY = "exec.initFile";
@@ -75,8 +75,11 @@ export type ShellScript =
  * string before running it, so aliases the file defines would not reach a
  * literal command. The source runs outside any `||`/`if` so the file's own
  * `set -e` keeps its meaning; a nonzero status ends the shell before `cmd`.
+ *
+ * pi-shell is omp's bash 5.3 engine, so it sources and expands aliases like
+ * bash, even though its executable is omp.
  */
-export function shellScript(initFile: InitFile, shellBin: string, cmd: string, isWindows: boolean = IS_WINDOWS): ShellScript {
+export function shellScript(initFile: InitFile, shell: LaunchShell, cmd: string, isWindows: boolean = IS_WINDOWS): ShellScript {
 	switch (initFile.kind) {
 		case "none":
 			return { kind: "ready", cmd };
@@ -85,14 +88,15 @@ export function shellScript(initFile: InitFile, shellBin: string, cmd: string, i
 		case "file":
 			break;
 	}
-	if (!isPosixShell(shellBin)) {
-		return { kind: "unusable", reason: `${INIT_FILE_KEY} is a POSIX shell script; ${shellBin} is not sh, bash, dash, ash, ksh or zsh. Unset ${INIT_FILE_KEY} or run the command under a POSIX shell.` };
+	const bash = shell.kind === "pi-shell" || shellBase(shell.shell) === "bash";
+	if (shell.kind === "shell" && !isPosixShell(shell.shell)) {
+		return { kind: "unusable", reason: `${INIT_FILE_KEY} is a POSIX shell script; ${shell.shell} is not sh, bash, dash, ash, ksh or zsh. Unset ${INIT_FILE_KEY} or run the command under a POSIX shell.` };
 	}
 	// Git Bash's MSYS runtime reads `C:/…` paths reliably.
 	const sourced = isWindows ? initFile.path.replaceAll("\\", "/") : initFile.path;
 	const lines = [
 		// Non-interactive bash expands aliases only with this option.
-		...(shellBase(shellBin) === "bash" ? ["shopt -s expand_aliases"] : []),
+		...(bash ? ["shopt -s expand_aliases"] : []),
 		`. ${posixQuote(sourced)}`,
 		`${STATUS_VAR}=$?`,
 		`if [ "$${STATUS_VAR}" -ne 0 ]; then exit "$${STATUS_VAR}"; fi`,

@@ -18,6 +18,7 @@ import { DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
 import { activate, EmptyPollRemovedError } from "../src/index.ts";
 import { readTerminal } from "../fork-features/terminal-resource.ts";
 import { IS_WINDOWS } from "../src/shell.ts";
+import { STUB_SHELL_PATH, stubShellHost } from "./stub-shell.ts";
 
 
 interface ToolDef {
@@ -35,7 +36,7 @@ interface ToolDef {
 	renderResult?: (...args: any[]) => unknown;
 }
 
-function makeHarness(shellPath?: () => string | undefined) {
+function makeHarness(shellPath: () => string | undefined = STUB_SHELL_PATH) {
 	const tools: Record<string, ToolDef> = {};
 	const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
 	const sentMessages: Array<{ customType: string; content: string }> = [];
@@ -85,7 +86,7 @@ function makeHarness(shellPath?: () => string | undefined) {
 	// Activate the tool core directly; factory admission is covered separately.
 	// The fake supplies only the ExtensionAPI surfaces consumed by the tool core.
 	const api = pi as unknown as Parameters<typeof activate>[0];
-	activate(api, undefined, shellPath);
+	activate(api, undefined, shellPath, undefined, undefined, {}, undefined, undefined, undefined, stubShellHost);
 
 	return {
 		async call(toolName: string, params: any, signal?: AbortSignal, onUpdate?: (partial: any) => void) {
@@ -169,7 +170,7 @@ describe("unified-exec e2e", () => {
 	});
 
 	// PowerShell's cold start on hosted Windows runners can exceed Bun's default 5 s test timeout; the call itself yields up to 20 s.
-	it("Windows: shell=powershell and shell=cmd get shell-appropriate flags", { skip: !IS_WINDOWS, timeout: 45_000 }, async () => {
+	it("Windows: shell=powershell keeps its flags and shell=cmd is refused", { skip: !IS_WINDOWS, timeout: 45_000 }, async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
 		const r1 = await h.call("exec_command", { title: "Test command", cmd: "Write-Output ps-ok", shell: "powershell", yield_time_ms: 20000 });
@@ -179,8 +180,10 @@ describe("unified-exec e2e", () => {
 			`powershell output=${JSON.stringify(r1.details.output)} session_id=${r1.details.session_id}`,
 		);
 		const r2 = await h.call("exec_command", { title: "Test command", cmd: "echo cmd-ok", shell: "cmd", yield_time_ms: 20000 });
-		assert.equal(r2.details.exit_code, 0, `cmd details=${JSON.stringify(r2.details)}`);
-		assert.ok(r2.details.output.includes("cmd-ok"), `cmd output=${JSON.stringify(r2.details.output)}`);
+		assert.equal(r2.details.session_id, undefined, JSON.stringify(r2.details));
+		assert.match(String(r2.details.failure_message), /never launches cmd/, JSON.stringify(r2.details));
+		assert.doesNotMatch(r2.details.output, /cmd-ok/);
+		assert.match(h.uiEvents.notifications.at(-1)?.message ?? "", /pi-shell/);
 		await h.emit("session_shutdown");
 	});
 
@@ -262,6 +265,32 @@ describe("unified-exec e2e", () => {
 		}
 	});
 
+	it("blank shell argument counts as no choice and falls back to shellPath, not SHELL", async () => {
+		const previous = process.env.SHELL;
+		let reads = 0;
+		const h = makeHarness(() => {
+			reads++;
+			return IS_WINDOWS ? "bash" : "/bin/sh";
+		});
+		try {
+			await h.emit("session_start");
+			process.env.SHELL = "definitely-not-a-real-shel-xyz";
+			for (const blank of ["", "   ", "\t\n "]) {
+				const result = await h.call("exec_command", { title: "Test command", cmd: "echo blank-shell-falls-through", shell: blank });
+				assert.equal(result.details.exit_code, 0, JSON.stringify(result.details));
+				assert.match(result.details.output, /blank-shell-falls-through/);
+				const shell: unknown = result.details.shell;
+				assert.ok(typeof shell === "string" && isAbsolute(shell), `unresolved shell: ${String(shell)}`);
+				assertReportedShell(result, shell);
+			}
+			assert.equal(reads, 3, "a blank shell argument must fall through to the live shellPath");
+		} finally {
+			if (previous === undefined) delete process.env.SHELL;
+			else process.env.SHELL = previous;
+			await h.emit("session_shutdown");
+		}
+	});
+
 	it("POSIX: live SHELL selects new PTYs while poll, list, kill, and streams retain the original shell", { skip: IS_WINDOWS }, async () => {
 		const previous = process.env.SHELL;
 		const h = makeHarness();
@@ -331,28 +360,23 @@ describe("unified-exec e2e", () => {
 		}
 	});
 
-	it("Windows: cmd.exe quoting survives operators, quotes, %VAR%, parens", { skip: !IS_WINDOWS, timeout: 45_000 }, async () => {
-		// These are exactly the inputs the /d /s /c "<cmd>" + verbatim-args
-		// mechanism exists for; `echo simple` would pass even if it broke.
+	it("an explicit cmd is refused before anything spawns", async () => {
 		const h = makeHarness();
 		await h.emit("session_start");
-		const cases: Array<{ cmd: string; expect: string[] }> = [
-			{ cmd: "echo one& echo two", expect: ["one", "two"] }, // & separator
-			{ cmd: 'echo "a & b"', expect: ['"a & b"'] }, // quoted & is literal
-			{ cmd: "echo %OS%", expect: ["Windows_NT"] }, // env expansion
-			{ cmd: "(echo grouped)", expect: ["grouped"] }, // parentheses
-			// findstr, not find: Git Bash environments often shadow Windows'
-			// find.exe with GNU find earlier on PATH.
-			{ cmd: "echo piped-x | findstr piped", expect: ["piped-x"] }, // pipe
-		];
-		for (const { cmd, expect } of cases) {
-			const r = await h.call("exec_command", { title: "Test command", cmd, shell: "cmd", yield_time_ms: 20000 });
-			assert.equal(r.details.exit_code, 0, `cmd=${cmd} details=${JSON.stringify(r.details)}`);
-			for (const e of expect) {
-				assert.ok(r.details.output.includes(e), `cmd=${cmd} expected "${e}" in output=${r.details.output}`);
-			}
+		try {
+			const r = await h.call("exec_command", { title: "Refused shell", cmd: "echo must-not-run", shell: "cmd.exe" });
+			assert.equal(r.details.session_id, undefined, JSON.stringify(r.details));
+			assert.equal(r.details.shell, "cmd.exe");
+			assert.match(String(r.details.failure_message), /never launches cmd/, JSON.stringify(r.details));
+			assert.doesNotMatch(r.details.output, /must-not-run/);
+			// The one notice is the refusal, and it points at pi-shell.
+			assert.equal(h.uiEvents.notifications.length, 1, JSON.stringify(h.uiEvents.notifications));
+			assert.match(h.uiEvents.notifications[0]?.message ?? "", /pi-shell/);
+			const listed = await h.call("list_sessions", {});
+			assert.equal(listed.details.running_count, 0);
+		} finally {
+			await h.emit("session_shutdown");
 		}
-		await h.emit("session_shutdown");
 	});
 
 	it("short-lived command returns exit_code and no session_id", async () => {
@@ -883,12 +907,13 @@ describe("unified-exec e2e", () => {
 
 	it("invalid explicit and environment-selected shells fail without running a fallback", async () => {
 		const previous = process.env.SHELL;
-		const h = makeHarness();
+		// No host setting: this test drives the explicit argument and SHELL.
+		const h = makeHarness(() => undefined);
 		const missingShell = "definitely-not-a-real-shell-xyz";
 		try {
 			await h.emit("session_start");
 			for (const explicit of [false, true]) {
-				process.env.SHELL = explicit ? (IS_WINDOWS ? "cmd" : "/bin/sh") : missingShell;
+				process.env.SHELL = explicit ? "/bin/sh" : missingShell;
 				const args = {
 					title: "Unavailable shell",
 					cmd: "echo fallback-must-not-run",

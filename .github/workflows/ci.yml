@@ -15,6 +15,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+    # One shell on every runner: the repository's own ci command lines are POSIX.
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - uses: actions/checkout@v6
@@ -41,11 +45,10 @@ jobs:
 
       - name: Test Bun PTY from compiled executable (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force .build | Out-Null
+          mkdir -p .build
           bun build --compile tests/bun-pty-runtime.mjs --outfile .build/bun-pty-runtime.exe
-          & ./.build/bun-pty-runtime.exe
+          ./.build/bun-pty-runtime.exe
 
       - name: Test
         run: bun test

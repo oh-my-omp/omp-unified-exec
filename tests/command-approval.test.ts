@@ -7,6 +7,7 @@ import {
 } from "../fork-features/command-approval.ts";
 import { bindSession, bindingContext, recheckBinding, type BoundSession } from "../fork-features/session-binding.ts";
 import { activate } from "../src/index.ts";
+import { STUB_SHELL_PATH, stubShellHost } from "./stub-shell.ts";
 
 // Canned literal segments exercise the port's branches, not shell parsing or
 // builtin parity. Real tokenizer and builtin comparisons run in real omp.
@@ -43,7 +44,7 @@ function harness(host: CommandApprovalHost) {
 		},
 		registerCommand() {}, registerShortcut() {}, registerFlag() {}, registerMessageRenderer() {}, getFlag() { return false; },
 	} as unknown as ExtensionAPI;
-	activate(api, undefined, undefined, host);
+	activate(api, undefined, STUB_SHELL_PATH, host, undefined, {}, undefined, undefined, undefined, stubShellHost);
 	const tool = tools.get("exec_command")!;
 	assert.ok(tool.approval);
 	assert.ok(tool.formatApprovalDetails);

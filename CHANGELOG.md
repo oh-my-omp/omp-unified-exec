@@ -4,6 +4,22 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Refused explicit `cmd` shells on Windows before spawning a process
+
+### Changed
+
+- Used omp's pi-shell as the Windows default shell and `bash` on other platforms
+- Resolved the default shell from the explicit argument, `shellPath`, `SHELL`, then the platform default, treating a blank argument as no choice
+- Used `-Command` for PowerShell/pwsh and `-c` for other shells
+- Honored `PI_UNIFIED_EXEC_BASH` for bash selections and skipped the System32 WSL stub
+- Sourced the exec init file under pi-shell with alias expansion enabled
+
+### Removed
+
+- Removed Windows Git Bash discovery and PowerShell fallback shell selection
+
 ### Fixed
 
 - Made the held-open session note on Windows omit the POSIX `setsid` detach recipe and name only `kill_session`

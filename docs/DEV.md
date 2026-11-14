@@ -10,10 +10,12 @@ and tool reference, see [../README.md](../README.md).
 - **Node and npm** for the npm lockfile/install workflow, ordinary `node`
   children in `tests/bun-pty-runtime.mjs`, and the unsupported-host rejection
   regression. Node is not a supported plugin host.
-- **Linux, macOS, or Windows.** On Windows, Git Bash is strongly
-  recommended: with no `shell` argument, omp `shellPath` or `SHELL`, it is
-  the platform default when found, otherwise commands run in `powershell`
-  (see [Shell selection](../README.md#shell-selection)).
+- **Linux, macOS, or Windows.** The platform default shell is omp's own
+  pi-shell (`omp bash`) on Windows and `bash` elsewhere. The stub host of the
+  test suite is not omp and has no pi-shell, so on Windows the suite runs its
+  terminals under the `bash` it is started from — Git for Windows, which the
+  CI job provides by running every step under bash (see
+  [Shell selection](../README.md#shell-selection)).
   Every PTY uses Bun's native `Bun.Terminal`.
 - **omp** installed and runnable (`omp --version`). Only omp is supported;
   Pi and other non-omp hosts fail at the extension factory before tool registration.
@@ -82,7 +84,7 @@ A sibling view, indexed by concern:
 | Bounded process/kill details + LLM-visible text | `src/tool-result.ts` (host-compatible `truncateTail`) |
 | C-style escape decoding for `chars` | `src/unescape.ts` |
 | Bun.Terminal backend, runtime admission, spawn preflight, shell-exit events, process-group signals, Windows tree-kill | `src/pty.ts` |
-| Shell selection & argv construction | `src/shell.ts` |
+| Shell selection & argv construction; omp's cmd.exe test loaded at factory time | `src/shell.ts`; `fork-features/shell-host.ts` |
 | `exec.initFile` plugin setting: parse, path resolution, the source-then-`eval` script for POSIX shells | `fork-features/exec-init.ts`; omp's POSIX-shell test in `src/shell.ts` (`isPosixShell`, shared with command approval); read per call in `runExecCommand` (`src/index.ts`); `tests/exec-init.test.ts` |
 | omp-only host admission, top-level `loadMode`, bash delegation, argument/result display adapters, live `shellPath` registry lookup | `fork-features/omp-presentation.ts` |
 | Tern terminal HUD: pill segment, Terminals view, terminal page | `fork-features/tern-terminal-hud.ts` |

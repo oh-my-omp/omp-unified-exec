@@ -10,6 +10,7 @@ import { strict as assert } from "node:assert";
 import { afterEach, describe, it } from "node:test";
 import { type AgentGeneration, type AgentHost, type AgentIdentity, parkedRuntimes, parseAgentHost } from "../fork-features/agent-park.ts";
 import { activate } from "../src/index.ts";
+import { STUB_SHELL_PATH, stubShellHost } from "./stub-shell.ts";
 
 const MINUTE = 60_000;
 const AGENT = "0-Worker";
@@ -95,7 +96,7 @@ function makeHarness(): Harness {
 		nowFn: () => now,
 		setIntervalFn: (cb) => { sweep = cb; return 1; },
 		clearIntervalFn: () => { sweep = undefined; },
-	}, undefined, undefined, omp);
+	}, undefined, undefined, omp, stubShellHost);
 	let nextCallId = 1;
 	const harness: Harness = {
 		sent,
