@@ -4,6 +4,11 @@ All notable changes to this project. **Newest entries go on top.**
 
 ## [Unreleased]
 
+### Fixed
+
+- Made the held-open session note on Windows omit the POSIX `setsid` detach recipe and name only `kill_session`
+- Shortened home-directory paths in the terminal HUD using the platform separator, so paths under home display as `~\...` on Windows
+
 ## [0.14.37] - 2026-11-12
 
 ### Changed

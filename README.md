@@ -914,7 +914,8 @@ LIFECYCLE_SWEEP_MS           = 60_000 (lifecycle check interval)
 - **Shell exit vs terminal close:** a session runs until its terminal closes.
   A descendant that survives the shell and still holds the PTY (e.g. a
   `nohup`'d or SIGHUP-ignoring job) keeps it open; such results carry a `note`
-  on how to detach it (`setsid cmd >log 2>&1 </dev/null &`), and the
+  on how to detach it (`setsid cmd >log 2>&1 </dev/null &`; on Windows, where
+  no session shell runs that recipe, the note names only `kill_session`), and the
   running-session widget marks the session `terminal held`. `kill_session`,
   reclaim and shutdown still signal the shell's process group then, so a
   descendant that stayed in it is ended; one that left it (`setsid`) is not.
